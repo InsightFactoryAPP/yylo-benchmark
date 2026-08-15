@@ -115,9 +115,41 @@ describe('Daily Ops workflow contract', () => {
 
       const valid = await readFile(checkpointPath, 'utf8');
       await expect(createFileDailyOpsCheckpointStore(checkpointPath).load(digest('other plan'))).rejects.toThrow('plan/schema drift');
-      const tampered = JSON.parse(valid) as { payload: { dispatched: string[] } }; tampered.payload.dispatched.push('forged');
+      const tampered = JSON.parse(valid) as { payload: { dispatch_intents: unknown[] } }; tampered.payload.dispatch_intents.push(['forged', { dispatch_id: 'forged', invocation_hash: digest('forged') }]);
       await writeFile(checkpointPath, JSON.stringify(tampered));
       await expect(createFileDailyOpsCheckpointStore(checkpointPath).load(plan.plan_id)).rejects.toThrow('integrity verification failed');
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
+  it('recovers an intent-only dispatch outage idempotently and rejects rebound intent tampering', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'daily-ops-intent-outage-')); const checkpointPath = path.join(directory, 'state.json');
+    try {
+      const plan = planDailyOps({ workflow, definitionBytes, runDate: '2026-08-12', variables: {}, selectedStepIds: [workflow.steps[0]!.step_id], models: [estimates[0]], judge, authorization: 'synthetic_no_production' });
+      let dispatchCount = 0; let recoveryCount = 0;
+      await expect(runSyntheticDailyOps({ plan, model: 'openai-codex/gpt-5.6-sol', checkpointStore: createFileDailyOpsCheckpointStore(checkpointPath), lock: createStrictSequentialLock(),
+        runner: { capability: 'synthetic_no_production', dispatch: async () => { dispatchCount += 1; throw new Error('interrupted after synthetic side effect'); },
+          recover: async () => { throw new Error('recovery belongs to restart'); } }, judge: async () => ({ resolved: true, evidence: 'unused' }),
+      })).rejects.toThrow('interrupted after synthetic side effect');
+
+      const [recovered] = await runSyntheticDailyOps({ plan, model: 'openai-codex/gpt-5.6-sol', checkpointStore: createFileDailyOpsCheckpointStore(checkpointPath), lock: createStrictSequentialLock(),
+        runner: { capability: 'synthetic_no_production', dispatch: async () => { dispatchCount += 1; throw new Error('duplicate dispatch'); },
+          recover: async (input) => { recoveryCount += 1; expect(input.previous).toBeUndefined(); return result(input.step.step_id, 'success', 'none'); } },
+        judge: async () => ({ resolved: true, evidence: 'intent-only recovery' }),
+      });
+      expect(dispatchCount).toBe(1); expect(recoveryCount).toBe(1);
+      expect(recovered!.recovery).toEqual({ state: 'recovered', dispatch_count: 1, recovery_count: 1 });
+
+      const envelope = JSON.parse(await readFile(checkpointPath, 'utf8')) as {
+        payload: { dispatch_intents: Array<[string, { dispatch_id: string; invocation_hash: `sha256:${string}` }]> };
+        integrity_hash: `sha256:${string}`;
+      };
+      envelope.payload.dispatch_intents[0]![1].invocation_hash = digest('rebound invocation');
+      envelope.integrity_hash = canonicalHash(envelope.payload);
+      await writeFile(checkpointPath, JSON.stringify(envelope));
+      await expect(runSyntheticDailyOps({ plan, model: 'openai-codex/gpt-5.6-sol', checkpointStore: createFileDailyOpsCheckpointStore(checkpointPath), lock: createStrictSequentialLock(),
+        runner: { capability: 'synthetic_no_production', dispatch: async () => { throw new Error('tamper dispatch'); }, recover: async () => { throw new Error('tamper recovery'); } },
+        judge: async () => { throw new Error('tamper judge'); },
+      })).rejects.toThrow('dispatch intent binding is invalid');
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
 

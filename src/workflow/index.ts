@@ -7,7 +7,7 @@ import type { CostEvidence } from '../contracts/schemas.js';
 export const DAILY_OPS_WORKFLOW_SCHEMA = 'juno_benchmark_daily_ops_workflow.v1' as const;
 export const DAILY_OPS_PLAN_SCHEMA = 'juno_benchmark_daily_ops_plan.v1' as const;
 export const DAILY_OPS_STEP_RECEIPT_SCHEMA = 'juno_benchmark_daily_ops_step_receipt.v1' as const;
-export const DAILY_OPS_CHECKPOINT_SCHEMA = 'juno_benchmark_daily_ops_checkpoint.v1' as const;
+export const DAILY_OPS_CHECKPOINT_SCHEMA = 'juno_benchmark_daily_ops_checkpoint.v2' as const;
 
 export type SharedResource = 'PROD_IF_BACKEND' | 'PROD_INSIGHTAGENT_BACKEND' | 'DATA_2026_PROVIDER';
 export const SHARED_RESOURCE_ORDER: readonly SharedResource[] = Object.freeze([
@@ -171,7 +171,8 @@ export interface WorkflowStepInvocation {
 export interface WorkflowCandidateRunner {
   readonly capability: 'synthetic_no_production';
   dispatch(input: WorkflowStepInvocation): Promise<WorkflowCandidateResult>;
-  recover(input: WorkflowStepInvocation & { readonly previous: WorkflowCandidateResult }): Promise<WorkflowCandidateResult>;
+  /** Recover the idempotent dispatch identity. `previous` is absent when interruption occurred before result persistence. */
+  recover(input: WorkflowStepInvocation & { readonly previous?: WorkflowCandidateResult }): Promise<WorkflowCandidateResult>;
 }
 export interface WorkflowJudgeDecision { readonly resolved: boolean; readonly evidence: string }
 export type WorkflowJudgeRunner = (input: { readonly judge: GovernedJudge; readonly scoring_id: string; readonly anonymous_candidate: string }) => Promise<WorkflowJudgeDecision>;
@@ -227,8 +228,12 @@ export interface WorkflowJudgementReceipt {
   readonly resolved: boolean;
   readonly evidence_hash: `sha256:${string}`;
 }
+export interface DailyOpsDispatchIntent {
+  readonly dispatch_id: string;
+  readonly invocation_hash: `sha256:${string}`;
+}
 export interface DailyOpsCheckpoint {
-  readonly dispatched: Set<string>;
+  readonly dispatch_intents: Map<string, DailyOpsDispatchIntent>;
   readonly stalled: Map<string, WorkflowCandidateResult>;
   readonly terminal: Map<string, DailyOpsStepReceipt>;
 }
@@ -239,17 +244,18 @@ export interface DailyOpsCheckpointStore {
 interface CheckpointPayload {
   readonly schema_version: typeof DAILY_OPS_CHECKPOINT_SCHEMA;
   readonly plan_id: `sha256:${string}`;
-  readonly dispatched: readonly string[];
+  readonly dispatch_intents: readonly (readonly [string, DailyOpsDispatchIntent])[];
   readonly stalled: readonly (readonly [string, WorkflowCandidateResult])[];
   readonly terminal: readonly (readonly [string, DailyOpsStepReceipt])[];
 }
 interface CheckpointEnvelope { readonly payload: CheckpointPayload; readonly integrity_hash: `sha256:${string}` }
-export function createDailyOpsCheckpoint(): DailyOpsCheckpoint { return { dispatched: new Set(), stalled: new Map(), terminal: new Map() }; }
+export function createDailyOpsCheckpoint(): DailyOpsCheckpoint { return { dispatch_intents: new Map(), stalled: new Map(), terminal: new Map() }; }
 
 export function serializeDailyOpsCheckpoint(planId: `sha256:${string}`, checkpoint: DailyOpsCheckpoint): string {
   assertHash(planId, 'checkpoint plan_id');
   const payload: CheckpointPayload = { schema_version: DAILY_OPS_CHECKPOINT_SCHEMA, plan_id: planId,
-    dispatched: [...checkpoint.dispatched].sort(), stalled: [...checkpoint.stalled.entries()].sort(([a], [b]) => a.localeCompare(b)),
+    dispatch_intents: [...checkpoint.dispatch_intents.entries()].sort(([a], [b]) => a.localeCompare(b)),
+    stalled: [...checkpoint.stalled.entries()].sort(([a], [b]) => a.localeCompare(b)),
     terminal: [...checkpoint.terminal.entries()].sort(([a], [b]) => a.localeCompare(b)) };
   return `${canonicalJson({ payload, integrity_hash: canonicalHash(payload) })}\n`;
 }
@@ -261,15 +267,17 @@ export function deserializeDailyOpsCheckpoint(serialized: string, expectedPlanId
     throw new Error('Daily Ops checkpoint plan/schema drift detected');
   }
   if (envelope.integrity_hash !== canonicalHash(envelope.payload)) throw new Error('Daily Ops checkpoint integrity verification failed');
-  const { dispatched, stalled, terminal } = envelope.payload;
-  if (!Array.isArray(dispatched) || !Array.isArray(stalled) || !Array.isArray(terminal)
-      || dispatched.some((id) => typeof id !== 'string')
+  const { dispatch_intents: dispatchIntents, stalled, terminal } = envelope.payload;
+  if (!Array.isArray(dispatchIntents) || !Array.isArray(stalled) || !Array.isArray(terminal)
+      || dispatchIntents.some((entry) => !Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== 'string'
+        || entry[1] === null || typeof entry[1] !== 'object' || entry[1].dispatch_id !== entry[0]
+        || !/^sha256:[0-9a-f]{64}$/u.test(entry[1].invocation_hash))
       || stalled.some((entry) => !Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== 'string')
       || terminal.some((entry) => !Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== 'string')) throw new Error('Daily Ops checkpoint structure is invalid');
-  const checkpoint: DailyOpsCheckpoint = { dispatched: new Set(dispatched), stalled: new Map(stalled), terminal: new Map(terminal) };
-  if (checkpoint.dispatched.size !== dispatched.length || checkpoint.stalled.size !== stalled.length || checkpoint.terminal.size !== terminal.length) throw new Error('Daily Ops checkpoint contains duplicate identities');
-  for (const [id] of checkpoint.stalled) if (!checkpoint.dispatched.has(id) || checkpoint.terminal.has(id)) throw new Error('Daily Ops stalled checkpoint state is inconsistent');
-  for (const [id, receipt] of checkpoint.terminal) if (!checkpoint.dispatched.has(id) || receipt.dispatch_id !== id) throw new Error('Daily Ops terminal checkpoint state is inconsistent');
+  const checkpoint: DailyOpsCheckpoint = { dispatch_intents: new Map(dispatchIntents), stalled: new Map(stalled), terminal: new Map(terminal) };
+  if (checkpoint.dispatch_intents.size !== dispatchIntents.length || checkpoint.stalled.size !== stalled.length || checkpoint.terminal.size !== terminal.length) throw new Error('Daily Ops checkpoint contains duplicate identities');
+  for (const [id] of checkpoint.stalled) if (!checkpoint.dispatch_intents.has(id) || checkpoint.terminal.has(id)) throw new Error('Daily Ops stalled checkpoint state is inconsistent');
+  for (const [id, receipt] of checkpoint.terminal) if (!checkpoint.dispatch_intents.has(id) || receipt.dispatch_id !== id) throw new Error('Daily Ops terminal checkpoint state is inconsistent');
   return checkpoint;
 }
 
@@ -335,21 +343,40 @@ export async function runSyntheticDailyOps(input: {
   if (input.plan.authorization !== 'synthetic_no_production' || input.plan.dispatch_permitted !== false || input.runner.capability !== 'synthetic_no_production') throw new Error('only synthetic no-production Daily Ops plans may execute');
   if (!input.plan.models.includes(input.model)) throw new Error('model is not bound by the Daily Ops plan');
   const checkpoint = await input.checkpointStore.load(input.plan.plan_id);
+  const expected: Map<string, { step: DailyOpsStepDefinition; invocationHash: `sha256:${string}` }> = new Map(input.plan.selected_step_ids.map((stepId) => {
+    const step = input.plan.workflow.steps.find((item) => item.step_id === stepId)!;
+    const dispatchId = canonicalHash({ plan_id: input.plan.plan_id, model: input.model, step_id: stepId });
+    const invocation: WorkflowStepInvocation = { dispatch_id: dispatchId, model: input.model, run_date: input.plan.run_date, variables: input.plan.variables, step };
+    return [dispatchId, { step, invocationHash: canonicalHash(invocation) }] as const;
+  }));
+  for (const [dispatchId, intent] of checkpoint.dispatch_intents) {
+    const bound = expected.get(dispatchId);
+    if (bound === undefined || intent.dispatch_id !== dispatchId || intent.invocation_hash !== bound.invocationHash) throw new Error(`dispatch intent binding is invalid for ${dispatchId}`);
+  }
+  for (const dispatchId of checkpoint.stalled.keys()) {
+    if (!expected.has(dispatchId)) throw new Error(`checkpoint contains an unbound dispatch identity ${dispatchId}`);
+  }
+  for (const [dispatchId, receipt] of checkpoint.terminal) {
+    const bound = expected.get(dispatchId);
+    if (bound === undefined || receipt.model !== input.model || receipt.step_id !== bound.step.step_id
+        || receipt.scoring_id !== bound.step.scoring_id) throw new Error(`terminal receipt binding is invalid for ${dispatchId}`);
+  }
   const receipts: DailyOpsStepReceipt[] = [];
   for (const stepId of input.plan.selected_step_ids) {
     const step = input.plan.workflow.steps.find((item) => item.step_id === stepId)!;
     const dispatchId = canonicalHash({ plan_id: input.plan.plan_id, model: input.model, step_id: stepId });
     const retained = checkpoint.terminal.get(dispatchId); if (retained !== undefined) { receipts.push(retained); continue; }
-    const invocation = { dispatch_id: dispatchId, model: input.model, run_date: input.plan.run_date, variables: input.plan.variables, step };
+    const invocation: WorkflowStepInvocation = { dispatch_id: dispatchId, model: input.model, run_date: input.plan.run_date, variables: input.plan.variables, step };
+    const invocationHash = canonicalHash(invocation);
     const prior = checkpoint.stalled.get(dispatchId); let recoveryCount = 0;
     const locked = await input.lock.withResources(step.resources, dispatchId, async () => {
       let result: WorkflowCandidateResult;
-      if (prior !== undefined || checkpoint.dispatched.has(dispatchId)) {
-        if (prior === undefined) throw new Error(`dispatch ${dispatchId} has no recoverable stalled evidence; refusing duplicate dispatch`);
-        recoveryCount = 1; result = await input.runner.recover({ ...invocation, previous: prior });
+      if (prior !== undefined || checkpoint.dispatch_intents.has(dispatchId)) {
+        recoveryCount = 1;
+        result = await input.runner.recover({ ...invocation, ...(prior === undefined ? {} : { previous: prior }) });
       } else {
-        checkpoint.dispatched.add(dispatchId);
-        await input.checkpointStore.save(input.plan.plan_id, checkpoint); // Durable before any dispatch.
+        checkpoint.dispatch_intents.set(dispatchId, { dispatch_id: dispatchId, invocation_hash: invocationHash });
+        await input.checkpointStore.save(input.plan.plan_id, checkpoint); // Durable idempotency intent before any dispatch.
         result = await input.runner.dispatch(invocation);
         if (result.status === 'stalled') {
           const persisted = sanitizeResultForCheckpoint(result, input.trustedSecrets ?? []);
