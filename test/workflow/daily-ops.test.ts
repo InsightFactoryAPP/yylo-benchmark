@@ -7,12 +7,12 @@ import {
 } from '../../src/workflow/index.js';
 
 const digest = (value: string): `sha256:${string}` => canonicalHash(value);
-const definitionBytes = readFileSync('../.juno_task/workflows/daily_product_ops.yaml');
+const definitionBytes = readFileSync('workflows/daily_product_ops.yaml');
 const definitionDigest = `sha256:${sha256Hex(definitionBytes)}` as const;
 const resources = ['PROD_IF_BACKEND', 'PROD_INSIGHTAGENT_BACKEND', 'DATA_2026_PROVIDER'] as const;
 const workflow: DailyOpsWorkflowDefinition = {
   schema_version: 'juno_benchmark_daily_ops_workflow.v1', workflow_id: 'daily-product-ops', workflow_revision: '2026-08-12.v1',
-  definition_path: '.juno_task/workflows/daily_product_ops.yaml', definition_hash: definitionDigest,
+  definition_path: 'juno-benchmark/workflows/daily_product_ops.yaml', definition_hash: definitionDigest,
   steps: Array.from({ length: 13 }, (_, index) => ({
     step_id: `daily-ops-${String(index + 1).padStart(2, '0')}`,
     scoring_id: `daily-ops-2026-08-12-${String(index + 1).padStart(2, '0')}`,

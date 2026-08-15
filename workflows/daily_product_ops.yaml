@@ -1,0 +1,22 @@
+schema_version: juno_benchmark_daily_ops_workflow.v1
+workflow_id: daily-product-ops
+workflow_revision: 2026-08-12.v1
+# This tracked contract is inert. Benchmark plans remain dispatch-disabled until a
+# separate reviewed production/spend authorization is implemented and supplied.
+variables:
+  run_date: YYYY-MM-DD
+  mode: synthetic_no_production
+steps:
+  - { step_id: daily-ops-01, scoring_id: daily-ops-2026-08-12-01, resource: PROD_IF_BACKEND }
+  - { step_id: daily-ops-02, scoring_id: daily-ops-2026-08-12-02, resource: PROD_INSIGHTAGENT_BACKEND }
+  - { step_id: daily-ops-03, scoring_id: daily-ops-2026-08-12-03, resource: DATA_2026_PROVIDER }
+  - { step_id: daily-ops-04, scoring_id: daily-ops-2026-08-12-04, resource: PROD_IF_BACKEND }
+  - { step_id: daily-ops-05, scoring_id: daily-ops-2026-08-12-05, resource: PROD_INSIGHTAGENT_BACKEND }
+  - { step_id: daily-ops-06, scoring_id: daily-ops-2026-08-12-06, resource: DATA_2026_PROVIDER }
+  - { step_id: daily-ops-07, scoring_id: daily-ops-2026-08-12-07, resource: PROD_IF_BACKEND }
+  - { step_id: daily-ops-08, scoring_id: daily-ops-2026-08-12-08, resource: PROD_INSIGHTAGENT_BACKEND }
+  - { step_id: daily-ops-09, scoring_id: daily-ops-2026-08-12-09, resource: DATA_2026_PROVIDER }
+  - { step_id: daily-ops-10, scoring_id: daily-ops-2026-08-12-10, resource: PROD_IF_BACKEND }
+  - { step_id: daily-ops-11, scoring_id: daily-ops-2026-08-12-11, resource: PROD_INSIGHTAGENT_BACKEND }
+  - { step_id: daily-ops-12, scoring_id: daily-ops-2026-08-12-12, resource: DATA_2026_PROVIDER }
+  - { step_id: daily-ops-13, scoring_id: daily-ops-2026-08-12-13, resource: PROD_IF_BACKEND }

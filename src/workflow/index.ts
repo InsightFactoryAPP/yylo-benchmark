@@ -68,7 +68,9 @@ function orderedResources(resources: readonly SharedResource[]): SharedResource[
 }
 function validateDefinition(definition: DailyOpsWorkflowDefinition): void {
   if (definition.schema_version !== DAILY_OPS_WORKFLOW_SCHEMA || !definition.workflow_id.trim() || !definition.workflow_revision.trim()) throw new Error('workflow identity is incomplete');
-  if (!definition.definition_path.startsWith('.juno_task/workflows/') || definition.definition_path.includes('..')) throw new Error('workflow definition must bind a tracked workflow path');
+  const trackedWorkflowPath = definition.definition_path.startsWith('.juno_task/workflows/')
+    || definition.definition_path.startsWith('juno-benchmark/workflows/');
+  if (!trackedWorkflowPath || definition.definition_path.includes('..')) throw new Error('workflow definition must bind a tracked workflow path');
   assertHash(definition.definition_hash, 'definition_hash');
   if (definition.steps.length !== 13) throw new Error('Daily Ops workflow must contain exactly 13 steps');
   const stepIds = definition.steps.map((step) => step.step_id); const scoringIds = definition.steps.map((step) => step.scoring_id);
