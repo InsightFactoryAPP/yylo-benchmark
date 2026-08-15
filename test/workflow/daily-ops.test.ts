@@ -1,9 +1,13 @@
 import { readFileSync } from 'node:fs';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { canonicalHash, sha256Hex } from '../../src/contracts/canonical.js';
 import {
-  createDailyOpsCheckpoint, createStrictSequentialLock, planDailyOps, rejudgeDailyOps, runSyntheticDailyOps,
-  type DailyOpsWorkflowDefinition, type WorkflowCandidateResult,
+  createDailyOpsCheckpoint, createFileDailyOpsCheckpointStore, createStrictSequentialLock, deserializeDailyOpsCheckpoint,
+  planDailyOps, rejudgeDailyOps, runSyntheticDailyOps, serializeDailyOpsCheckpoint,
+  type DailyOpsCheckpoint, type DailyOpsCheckpointStore, type DailyOpsWorkflowDefinition, type WorkflowCandidateResult,
 } from '../../src/workflow/index.js';
 
 const digest = (value: string): `sha256:${string}` => canonicalHash(value);
@@ -28,6 +32,12 @@ const estimates = [
   { model: 'zai/glm-5.2', estimated_candidate_usd: 8, estimated_judge_usd: 2.6, estimated_runtime_ms: 3 * 60 * 60_000 },
 ] as const;
 
+function memoryCheckpointStore(initial: DailyOpsCheckpoint = createDailyOpsCheckpoint()): DailyOpsCheckpointStore {
+  let seed: DailyOpsCheckpoint | undefined = initial; let serialized: string | undefined;
+  return { load: async (planId) => serialized === undefined ? (seed ?? createDailyOpsCheckpoint()) : deserializeDailyOpsCheckpoint(serialized, planId),
+    save: async (planId, checkpoint) => { serialized = serializeDailyOpsCheckpoint(planId, checkpoint); seed = undefined; } };
+}
+
 function result(step: string, status: WorkflowCandidateResult['status'], secret: string): WorkflowCandidateResult {
   return { status, terminal_class: status === 'success' ? 'candidate_success' : status === 'failure' ? 'step_failure' : 'harness_invalid', outer_session_id: `outer-${step}`, nested_session_id: `nested-${step}`, started_at: '2026-08-12T09:00:00.000Z',
     ended_at: '2026-08-12T09:00:01.000Z', runtime_ms: 1000, cost: { completeness: 'complete', usd: 0.01 },
@@ -39,13 +49,25 @@ describe('Daily Ops workflow contract', () => {
     expect(() => planDailyOps({ workflow, definitionBytes: Buffer.concat([definitionBytes, Buffer.from('\n# altered')]), runDate: '2026-08-12', variables: {}, models: [estimates[0]], judge, authorization: 'synthetic_no_production' })).toThrow('tracked workflow definition hash mismatch');
     expect(() => planDailyOps({ workflow: { ...workflow, definition_hash: digest('mismatched source') }, definitionBytes, runDate: '2026-08-12', variables: {}, models: [estimates[0]], judge, authorization: 'synthetic_no_production' })).toThrow('tracked workflow definition hash mismatch');
     expect(planDailyOps({ workflow, definitionBytes, runDate: '2026-08-12', variables: {}, models: [estimates[0]], judge, authorization: 'synthetic_no_production' }).workflow.definition_hash).toBe(definitionDigest);
+    const first = workflow.steps[0]!;
+    for (const altered of [
+      { ...first, step_id: 'adversarial-step' },
+      { ...first, scoring_id: 'adversarial-score' },
+      { ...first, prompt: 'adversarial prompt' },
+      { ...first, resources: ['DATA_2026_PROVIDER'] as const },
+    ]) {
+      expect(() => planDailyOps({ workflow: { ...workflow, steps: [altered, ...workflow.steps.slice(1)] }, definitionBytes, runDate: '2026-08-12', variables: {}, models: [estimates[0]], judge, authorization: 'synthetic_no_production' })).toThrow('workflow semantics do not match tracked definition bytes');
+    }
+    const changedSource = JSON.parse(definitionBytes.toString('utf8')) as { steps: Array<{ prompt: string }> };
+    changedSource.steps[0]!.prompt = 'source drift'; const changedBytes = Buffer.from(JSON.stringify(changedSource));
+    expect(() => planDailyOps({ workflow: { ...workflow, definition_hash: `sha256:${sha256Hex(changedBytes)}` }, definitionBytes: changedBytes, runDate: '2026-08-12', variables: {}, models: [estimates[0]], judge, authorization: 'synthetic_no_production' })).toThrow('workflow semantics do not match tracked definition bytes');
   });
 
   it('produces 13 sequential, redacted, session/cost/judge receipts and recovers a stall once', async () => {
     const secret = 'sk_test_SYNTHETIC_123456789';
     const plan = planDailyOps({ workflow, definitionBytes, runDate: '2026-08-12', variables: { mode: 'synthetic', credential_marker: secret }, models: [estimates[1]], judge, authorization: 'synthetic_no_production' });
     const dispatches: string[] = []; const recoveries: string[] = []; const judged: string[] = [];
-    const receipts = await runSyntheticDailyOps({ plan, model: 'openai-codex/gpt-5.6-terra', checkpoint: createDailyOpsCheckpoint(), lock: createStrictSequentialLock(), trustedSecrets: [secret],
+    const receipts = await runSyntheticDailyOps({ plan, model: 'openai-codex/gpt-5.6-terra', checkpointStore: memoryCheckpointStore(), lock: createStrictSequentialLock(), trustedSecrets: [secret],
       runner: {
         capability: 'synthetic_no_production' as const,
         dispatch: async (input) => { dispatches.push(input.dispatch_id); return result(input.step.step_id, input.step.step_id.endsWith('07') ? 'stalled' : 'success', secret); },
@@ -69,23 +91,40 @@ describe('Daily Ops workflow contract', () => {
     }
   });
 
-  it('resumes a durable stalled step without duplicate dispatch and never reruns terminal steps', async () => {
-    const plan = planDailyOps({ workflow, definitionBytes, runDate: '2026-08-12', variables: {}, selectedStepIds: [workflow.steps[0]!.step_id], models: [estimates[0]], judge, authorization: 'synthetic_no_production' });
-    const checkpoint = createDailyOpsCheckpoint(); const dispatchId = canonicalHash({ plan_id: plan.plan_id, model: 'openai-codex/gpt-5.6-sol', step_id: workflow.steps[0]!.step_id });
-    checkpoint.dispatched.add(dispatchId); checkpoint.stalled.set(dispatchId, result(workflow.steps[0]!.step_id, 'stalled', 'none'));
-    let dispatchCount = 0; let recoveryCount = 0;
-    const options = { plan, model: 'openai-codex/gpt-5.6-sol', checkpoint, lock: createStrictSequentialLock(),
-      runner: { capability: 'synthetic_no_production' as const, dispatch: async () => { dispatchCount += 1; throw new Error('duplicate'); }, recover: async () => { recoveryCount += 1; return result(workflow.steps[0]!.step_id, 'success', 'none'); } },
-      judge: async () => ({ resolved: true, evidence: 'recovered' }),
-    };
-    const first = await runSyntheticDailyOps(options); const second = await runSyntheticDailyOps(options);
-    expect(dispatchCount).toBe(0); expect(recoveryCount).toBe(1); expect(second[0]).toEqual(first[0]);
+  it('persists stalled recovery across outage/restart without duplicate dispatch and rejects tampering/drift', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'daily-ops-checkpoint-')); const checkpointPath = path.join(directory, 'state.json');
+    try {
+      const plan = planDailyOps({ workflow, definitionBytes, runDate: '2026-08-12', variables: {}, selectedStepIds: [workflow.steps[0]!.step_id], models: [estimates[0]], judge, authorization: 'synthetic_no_production' });
+      let dispatchCount = 0; let recoveryCount = 0;
+      const firstStore = createFileDailyOpsCheckpointStore(checkpointPath);
+      await expect(runSyntheticDailyOps({ plan, model: 'openai-codex/gpt-5.6-sol', checkpointStore: firstStore, lock: createStrictSequentialLock(),
+        runner: { capability: 'synthetic_no_production', dispatch: async (input) => { dispatchCount += 1; return result(input.step.step_id, 'stalled', 'none'); },
+          recover: async () => { recoveryCount += 1; throw new Error('synthetic outage'); } }, judge: async () => ({ resolved: true, evidence: 'unused' }),
+      })).rejects.toThrow('synthetic outage');
+
+      const restartedStore = createFileDailyOpsCheckpointStore(checkpointPath);
+      const recovered = await runSyntheticDailyOps({ plan, model: 'openai-codex/gpt-5.6-sol', checkpointStore: restartedStore, lock: createStrictSequentialLock(),
+        runner: { capability: 'synthetic_no_production', dispatch: async () => { dispatchCount += 1; throw new Error('duplicate dispatch'); },
+          recover: async (input) => { recoveryCount += 1; return result(input.step.step_id, 'success', 'none'); } }, judge: async () => ({ resolved: true, evidence: 'recovered' }),
+      });
+      const replayed = await runSyntheticDailyOps({ plan, model: 'openai-codex/gpt-5.6-sol', checkpointStore: createFileDailyOpsCheckpointStore(checkpointPath), lock: createStrictSequentialLock(),
+        runner: { capability: 'synthetic_no_production', dispatch: async () => { throw new Error('terminal redispatch'); }, recover: async () => { throw new Error('terminal recovery'); } },
+        judge: async () => { throw new Error('terminal rejudge'); },
+      });
+      expect(dispatchCount).toBe(1); expect(recoveryCount).toBe(2); expect(replayed).toEqual(recovered);
+
+      const valid = await readFile(checkpointPath, 'utf8');
+      await expect(createFileDailyOpsCheckpointStore(checkpointPath).load(digest('other plan'))).rejects.toThrow('plan/schema drift');
+      const tampered = JSON.parse(valid) as { payload: { dispatched: string[] } }; tampered.payload.dispatched.push('forged');
+      await writeFile(checkpointPath, JSON.stringify(tampered));
+      await expect(createFileDailyOpsCheckpointStore(checkpointPath).load(plan.plan_id)).rejects.toThrow('integrity verification failed');
+    } finally { await rm(directory, { recursive: true, force: true }); }
   });
 
   it('rejudges retained candidate truth without exposing a candidate dispatch API', async () => {
     const plan = planDailyOps({ workflow, definitionBytes, runDate: '2026-08-12', variables: {}, selectedStepIds: [workflow.steps[0]!.step_id], models: [estimates[2]], judge, authorization: 'synthetic_no_production' });
     const candidate = JSON.stringify({ transcript: 'synthetic output', artifacts: { receipt: 'ok' } }); let dispatches = 0;
-    const [receipt] = await runSyntheticDailyOps({ plan, model: 'openai-codex/gpt-5.6-luna', checkpoint: createDailyOpsCheckpoint(), lock: createStrictSequentialLock(),
+    const [receipt] = await runSyntheticDailyOps({ plan, model: 'openai-codex/gpt-5.6-luna', checkpointStore: memoryCheckpointStore(), lock: createStrictSequentialLock(),
       runner: { capability: 'synthetic_no_production' as const, dispatch: async (input) => { dispatches += 1; return { ...result(input.step.step_id, 'success', ''), transcript: 'synthetic output', artifacts: { receipt: 'ok' } }; }, recover: async () => { throw new Error('not used'); } },
       judge: async () => ({ resolved: false, evidence: 'v1' }),
     });
@@ -97,7 +136,7 @@ describe('Daily Ops workflow contract', () => {
   it('retains candidate failure versus harness invalidity and denies favorable-judge resolution', async () => {
     const selectedStepIds = workflow.steps.slice(0, 2).map((step) => step.step_id);
     const plan = planDailyOps({ workflow, definitionBytes, runDate: '2026-08-12', variables: {}, selectedStepIds, models: [estimates[0]], judge, authorization: 'synthetic_no_production' });
-    const [failed, invalid] = await runSyntheticDailyOps({ plan, model: 'openai-codex/gpt-5.6-sol', checkpoint: createDailyOpsCheckpoint(), lock: createStrictSequentialLock(),
+    const [failed, invalid] = await runSyntheticDailyOps({ plan, model: 'openai-codex/gpt-5.6-sol', checkpointStore: memoryCheckpointStore(), lock: createStrictSequentialLock(),
       runner: { capability: 'synthetic_no_production', dispatch: async (input) => input.step.step_id.endsWith('01')
         ? { ...result(input.step.step_id, 'failure', ''), transcript: 'failed', artifacts: { reason: 'candidate' } }
         : { ...result(input.step.step_id, 'failure', ''), terminal_class: 'harness_invalid', transcript: 'invalid', artifacts: { reason: 'harness' } },
@@ -118,6 +157,6 @@ describe('Daily Ops workflow contract', () => {
     expect(plan.selected_step_ids).toHaveLength(13); expect(plan.scoring_ids).toHaveLength(13); expect(plan.resources).toEqual(resources);
     expect(plan.execution).toBe('strictly_sequential'); expect(plan.dispatch_permitted).toBe(false);
     expect(plan.estimated_total_usd).toBeCloseTo(88.9); expect(plan.estimated_total_runtime_ms).toBe(12 * 60 * 60_000);
-    await expect(runSyntheticDailyOps({ plan, model: 'openai-codex/gpt-5.6-sol', checkpoint: createDailyOpsCheckpoint(), lock: createStrictSequentialLock(), runner: {} as never, judge: async () => ({ resolved: true, evidence: '' }) })).rejects.toThrow('only synthetic no-production');
+    await expect(runSyntheticDailyOps({ plan, model: 'openai-codex/gpt-5.6-sol', checkpointStore: memoryCheckpointStore(), lock: createStrictSequentialLock(), runner: {} as never, judge: async () => ({ resolved: true, evidence: '' }) })).rejects.toThrow('only synthetic no-production');
   });
 });

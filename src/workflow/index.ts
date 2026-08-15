@@ -1,14 +1,27 @@
-import { canonicalHash, sha256Hex } from '../contracts/canonical.js';
+import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
+import path from 'node:path';
+import { z } from 'zod';
+import { canonicalHash, canonicalJson, sha256Hex } from '../contracts/canonical.js';
 import type { CostEvidence } from '../contracts/schemas.js';
 
 export const DAILY_OPS_WORKFLOW_SCHEMA = 'juno_benchmark_daily_ops_workflow.v1' as const;
 export const DAILY_OPS_PLAN_SCHEMA = 'juno_benchmark_daily_ops_plan.v1' as const;
 export const DAILY_OPS_STEP_RECEIPT_SCHEMA = 'juno_benchmark_daily_ops_step_receipt.v1' as const;
+export const DAILY_OPS_CHECKPOINT_SCHEMA = 'juno_benchmark_daily_ops_checkpoint.v1' as const;
 
 export type SharedResource = 'PROD_IF_BACKEND' | 'PROD_INSIGHTAGENT_BACKEND' | 'DATA_2026_PROVIDER';
 export const SHARED_RESOURCE_ORDER: readonly SharedResource[] = Object.freeze([
   'PROD_IF_BACKEND', 'PROD_INSIGHTAGENT_BACKEND', 'DATA_2026_PROVIDER',
 ]);
+const TrackedWorkflowSchema = z.object({
+  schema_version: z.literal(DAILY_OPS_WORKFLOW_SCHEMA),
+  workflow_id: z.string().trim().min(1),
+  workflow_revision: z.string().trim().min(1),
+  steps: z.array(z.object({
+    step_id: z.string().trim().min(1), scoring_id: z.string().trim().min(1), prompt: z.string().trim().min(1),
+    resources: z.array(z.enum(['PROD_IF_BACKEND', 'PROD_INSIGHTAGENT_BACKEND', 'DATA_2026_PROVIDER'])),
+  }).strict()).length(13),
+}).strict();
 
 export interface DailyOpsStepDefinition {
   readonly step_id: string;
@@ -78,6 +91,21 @@ function validateDefinition(definition: DailyOpsWorkflowDefinition): void {
   for (const step of definition.steps) orderedResources(step.resources);
 }
 
+function workflowFromTrackedBytes(claimed: DailyOpsWorkflowDefinition, bytes: Uint8Array): DailyOpsWorkflowDefinition {
+  const observedHash = `sha256:${sha256Hex(bytes)}` as const;
+  if (bytes.byteLength === 0 || claimed.definition_hash !== observedHash) throw new Error(`tracked workflow definition hash mismatch for ${claimed.definition_path}`);
+  let decoded: unknown;
+  try { decoded = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown; }
+  catch { throw new Error(`tracked workflow definition is not strict JSON-compatible YAML: ${claimed.definition_path}`); }
+  const tracked = TrackedWorkflowSchema.parse(decoded);
+  const derived: DailyOpsWorkflowDefinition = { ...tracked, definition_path: claimed.definition_path, definition_hash: observedHash };
+  validateDefinition(derived);
+  const claimedSemantics = { schema_version: claimed.schema_version, workflow_id: claimed.workflow_id, workflow_revision: claimed.workflow_revision, steps: claimed.steps };
+  const trackedSemantics = { schema_version: derived.schema_version, workflow_id: derived.workflow_id, workflow_revision: derived.workflow_revision, steps: derived.steps };
+  if (canonicalHash(claimedSemantics) !== canonicalHash(trackedSemantics)) throw new Error(`workflow semantics do not match tracked definition bytes for ${claimed.definition_path}`);
+  return Object.freeze({ ...derived, steps: Object.freeze(derived.steps.map((step) => Object.freeze({ ...step, resources: Object.freeze([...step.resources]) }))) });
+}
+
 /** Build a hash-bound, dispatch-disabled plan. This function never launches a model. */
 export function planDailyOps(input: {
   readonly workflow: DailyOpsWorkflowDefinition;
@@ -91,25 +119,22 @@ export function planDailyOps(input: {
   readonly authorization: DailyOpsPlan['authorization'];
 }): DailyOpsPlan {
   validateDefinition(input.workflow);
-  const observedDefinitionHash = `sha256:${sha256Hex(input.definitionBytes)}`;
-  if (input.definitionBytes.byteLength === 0 || input.workflow.definition_hash !== observedDefinitionHash) {
-    throw new Error(`tracked workflow definition hash mismatch for ${input.workflow.definition_path}`);
-  }
+  const workflow = workflowFromTrackedBytes(input.workflow, input.definitionBytes);
   if (!/^\d{4}-\d{2}-\d{2}$/u.test(input.runDate) || Number.isNaN(Date.parse(`${input.runDate}T00:00:00Z`))) throw new Error('run date must be an ISO calendar date');
   if (Object.entries(input.variables).some(([key, value]) => !key.trim() || typeof value !== 'string')) throw new Error('workflow variables must be named strings');
   assertHash(input.judge.prompt_hash, 'judge prompt_hash'); assertHash(input.judge.rubric_hash, 'judge rubric_hash');
   if (!input.judge.judge_id.trim() || !input.judge.judge_version.trim()) throw new Error('governed judge identity is incomplete');
-  const selected = input.selectedStepIds === undefined ? input.workflow.steps.map((step) => step.step_id) : [...input.selectedStepIds];
+  const selected = input.selectedStepIds === undefined ? workflow.steps.map((step) => step.step_id) : [...input.selectedStepIds];
   if (selected.length === 0 || new Set(selected).size !== selected.length) throw new Error('selected steps must be non-empty and unique');
-  const selectedDefinitions = selected.map((id) => input.workflow.steps.find((step) => step.step_id === id) ?? (() => { throw new Error(`unknown Daily Ops step ${id}`); })());
-  const positions = selected.map((id) => input.workflow.steps.findIndex((step) => step.step_id === id));
+  const selectedDefinitions = selected.map((id) => workflow.steps.find((step) => step.step_id === id) ?? (() => { throw new Error(`unknown Daily Ops step ${id}`); })());
+  const positions = selected.map((id) => workflow.steps.findIndex((step) => step.step_id === id));
   if (positions.some((position, index) => index > 0 && position <= positions[index - 1]!)) throw new Error('selected steps must preserve tracked workflow order');
   if (input.models.length === 0 || input.models.some((item) => !exactModel(item.model) || item.estimated_candidate_usd < 0 || item.estimated_judge_usd < 0 || item.estimated_runtime_ms < 0)) throw new Error('model estimates must bind exact models and non-negative spend/runtime');
   if (new Set(input.models.map((item) => item.model)).size !== input.models.length) throw new Error('estimated models must be unique');
   const resources = orderedResources([...new Set(selectedDefinitions.flatMap((step) => step.resources))]);
   const estimates = input.models.map((item) => Object.freeze({ ...item }));
   const core = {
-    schema_version: DAILY_OPS_PLAN_SCHEMA, workflow: input.workflow, run_date: input.runDate,
+    schema_version: DAILY_OPS_PLAN_SCHEMA, workflow, run_date: input.runDate,
     variables: Object.fromEntries(Object.entries(input.variables).sort(([a], [b]) => a.localeCompare(b))),
     selected_step_ids: selected, scoring_ids: selectedDefinitions.map((step) => step.scoring_id),
     models: estimates.map((item) => item.model), resources, execution: 'strictly_sequential' as const,
@@ -207,10 +232,80 @@ export interface DailyOpsCheckpoint {
   readonly stalled: Map<string, WorkflowCandidateResult>;
   readonly terminal: Map<string, DailyOpsStepReceipt>;
 }
+export interface DailyOpsCheckpointStore {
+  load(expectedPlanId: `sha256:${string}`): Promise<DailyOpsCheckpoint>;
+  save(planId: `sha256:${string}`, checkpoint: DailyOpsCheckpoint): Promise<void>;
+}
+interface CheckpointPayload {
+  readonly schema_version: typeof DAILY_OPS_CHECKPOINT_SCHEMA;
+  readonly plan_id: `sha256:${string}`;
+  readonly dispatched: readonly string[];
+  readonly stalled: readonly (readonly [string, WorkflowCandidateResult])[];
+  readonly terminal: readonly (readonly [string, DailyOpsStepReceipt])[];
+}
+interface CheckpointEnvelope { readonly payload: CheckpointPayload; readonly integrity_hash: `sha256:${string}` }
 export function createDailyOpsCheckpoint(): DailyOpsCheckpoint { return { dispatched: new Set(), stalled: new Map(), terminal: new Map() }; }
+
+export function serializeDailyOpsCheckpoint(planId: `sha256:${string}`, checkpoint: DailyOpsCheckpoint): string {
+  assertHash(planId, 'checkpoint plan_id');
+  const payload: CheckpointPayload = { schema_version: DAILY_OPS_CHECKPOINT_SCHEMA, plan_id: planId,
+    dispatched: [...checkpoint.dispatched].sort(), stalled: [...checkpoint.stalled.entries()].sort(([a], [b]) => a.localeCompare(b)),
+    terminal: [...checkpoint.terminal.entries()].sort(([a], [b]) => a.localeCompare(b)) };
+  return `${canonicalJson({ payload, integrity_hash: canonicalHash(payload) })}\n`;
+}
+
+export function deserializeDailyOpsCheckpoint(serialized: string, expectedPlanId: `sha256:${string}`): DailyOpsCheckpoint {
+  let envelope: CheckpointEnvelope;
+  try { envelope = JSON.parse(serialized) as CheckpointEnvelope; } catch { throw new Error('Daily Ops checkpoint is not valid JSON'); }
+  if (envelope === null || typeof envelope !== 'object' || envelope.payload?.schema_version !== DAILY_OPS_CHECKPOINT_SCHEMA || envelope.payload.plan_id !== expectedPlanId) {
+    throw new Error('Daily Ops checkpoint plan/schema drift detected');
+  }
+  if (envelope.integrity_hash !== canonicalHash(envelope.payload)) throw new Error('Daily Ops checkpoint integrity verification failed');
+  const { dispatched, stalled, terminal } = envelope.payload;
+  if (!Array.isArray(dispatched) || !Array.isArray(stalled) || !Array.isArray(terminal)
+      || dispatched.some((id) => typeof id !== 'string')
+      || stalled.some((entry) => !Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== 'string')
+      || terminal.some((entry) => !Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== 'string')) throw new Error('Daily Ops checkpoint structure is invalid');
+  const checkpoint: DailyOpsCheckpoint = { dispatched: new Set(dispatched), stalled: new Map(stalled), terminal: new Map(terminal) };
+  if (checkpoint.dispatched.size !== dispatched.length || checkpoint.stalled.size !== stalled.length || checkpoint.terminal.size !== terminal.length) throw new Error('Daily Ops checkpoint contains duplicate identities');
+  for (const [id] of checkpoint.stalled) if (!checkpoint.dispatched.has(id) || checkpoint.terminal.has(id)) throw new Error('Daily Ops stalled checkpoint state is inconsistent');
+  for (const [id, receipt] of checkpoint.terminal) if (!checkpoint.dispatched.has(id) || receipt.dispatch_id !== id) throw new Error('Daily Ops terminal checkpoint state is inconsistent');
+  return checkpoint;
+}
+
+/** Atomic, integrity-checked persistence for restart-safe synthetic execution. */
+export function createFileDailyOpsCheckpointStore(checkpointPath: string): DailyOpsCheckpointStore {
+  const absolute = path.resolve(checkpointPath);
+  return {
+    async load(expectedPlanId) {
+      let bytes: Buffer;
+      try { bytes = await readFile(absolute); } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return createDailyOpsCheckpoint();
+        throw error;
+      }
+      if (bytes.length > 8 * 1024 * 1024) throw new Error('Daily Ops checkpoint exceeds durable size limit');
+      return deserializeDailyOpsCheckpoint(bytes.toString('utf8'), expectedPlanId);
+    },
+    async save(planId, checkpoint) {
+      await mkdir(path.dirname(absolute), { recursive: true, mode: 0o700 });
+      const temporary = `${absolute}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      let handle: Awaited<ReturnType<typeof open>> | undefined;
+      try {
+        handle = await open(temporary, 'wx', 0o600); await handle.writeFile(serializeDailyOpsCheckpoint(planId, checkpoint)); await handle.sync(); await handle.close(); handle = undefined;
+        await rename(temporary, absolute);
+        const directory = await open(path.dirname(absolute), 'r'); try { await directory.sync(); } finally { await directory.close(); }
+      } finally { await handle?.close().catch(() => undefined); await rm(temporary, { force: true }).catch(() => undefined); }
+    },
+  };
+}
 
 function secretRepresentations(secrets: readonly string[]): string[] {
   return [...new Set(secrets.flatMap((secret) => [secret, Buffer.from(secret).toString('hex'), Buffer.from(secret).toString('base64'), encodeURIComponent(secret)]))].filter(Boolean);
+}
+function sanitizeResultForCheckpoint(result: WorkflowCandidateResult, secrets: readonly string[]): WorkflowCandidateResult {
+  const values = secretRepresentations(secrets);
+  const scrub = (text: string): string => { let output = text; for (const value of values) output = output.split(value).join('[REDACTED]'); return output; };
+  return { ...result, transcript: scrub(result.transcript), artifacts: Object.fromEntries(Object.entries(result.artifacts).map(([name, value]) => [name, scrub(value)])) };
 }
 function redactCandidate(plan: DailyOpsPlan, result: WorkflowCandidateResult, secrets: readonly string[]): { anonymous: string; receipt: RedactionReceipt } {
   const values = secretRepresentations(secrets); let replacements = 0;
@@ -233,27 +328,34 @@ async function judgeCandidate(judge: WorkflowJudgeRunner, governed: GovernedJudg
 /** Execute a synthetic plan only; production/unapproved plans are structurally non-dispatchable. */
 export async function runSyntheticDailyOps(input: {
   readonly plan: DailyOpsPlan; readonly model: string; readonly runner: WorkflowCandidateRunner; readonly judge: WorkflowJudgeRunner;
-  readonly lock: WorkflowLock; readonly checkpoint: DailyOpsCheckpoint; readonly trustedSecrets?: readonly string[];
+  readonly lock: WorkflowLock; readonly checkpointStore: DailyOpsCheckpointStore; readonly trustedSecrets?: readonly string[];
 }): Promise<readonly DailyOpsStepReceipt[]> {
   const { plan_id: claimedPlanId, ...planCore } = input.plan;
   if (claimedPlanId !== canonicalHash(planCore)) throw new Error('Daily Ops plan hash is invalid');
   if (input.plan.authorization !== 'synthetic_no_production' || input.plan.dispatch_permitted !== false || input.runner.capability !== 'synthetic_no_production') throw new Error('only synthetic no-production Daily Ops plans may execute');
   if (!input.plan.models.includes(input.model)) throw new Error('model is not bound by the Daily Ops plan');
+  const checkpoint = await input.checkpointStore.load(input.plan.plan_id);
   const receipts: DailyOpsStepReceipt[] = [];
   for (const stepId of input.plan.selected_step_ids) {
     const step = input.plan.workflow.steps.find((item) => item.step_id === stepId)!;
     const dispatchId = canonicalHash({ plan_id: input.plan.plan_id, model: input.model, step_id: stepId });
-    const retained = input.checkpoint.terminal.get(dispatchId); if (retained !== undefined) { receipts.push(retained); continue; }
+    const retained = checkpoint.terminal.get(dispatchId); if (retained !== undefined) { receipts.push(retained); continue; }
     const invocation = { dispatch_id: dispatchId, model: input.model, run_date: input.plan.run_date, variables: input.plan.variables, step };
-    const prior = input.checkpoint.stalled.get(dispatchId); let recoveryCount = 0;
+    const prior = checkpoint.stalled.get(dispatchId); let recoveryCount = 0;
     const locked = await input.lock.withResources(step.resources, dispatchId, async () => {
       let result: WorkflowCandidateResult;
-      if (prior !== undefined || input.checkpoint.dispatched.has(dispatchId)) {
+      if (prior !== undefined || checkpoint.dispatched.has(dispatchId)) {
         if (prior === undefined) throw new Error(`dispatch ${dispatchId} has no recoverable stalled evidence; refusing duplicate dispatch`);
         recoveryCount = 1; result = await input.runner.recover({ ...invocation, previous: prior });
       } else {
-        input.checkpoint.dispatched.add(dispatchId); result = await input.runner.dispatch(invocation);
-        if (result.status === 'stalled') { input.checkpoint.stalled.set(dispatchId, result); recoveryCount = 1; result = await input.runner.recover({ ...invocation, previous: result }); }
+        checkpoint.dispatched.add(dispatchId);
+        await input.checkpointStore.save(input.plan.plan_id, checkpoint); // Durable before any dispatch.
+        result = await input.runner.dispatch(invocation);
+        if (result.status === 'stalled') {
+          const persisted = sanitizeResultForCheckpoint(result, input.trustedSecrets ?? []);
+          checkpoint.stalled.set(dispatchId, persisted); await input.checkpointStore.save(input.plan.plan_id, checkpoint);
+          recoveryCount = 1; result = await input.runner.recover({ ...invocation, previous: persisted });
+        }
       }
       if (result.status === 'stalled') throw new Error(`bounded recovery remained stalled for ${stepId}`);
       return result;
@@ -270,7 +372,8 @@ export async function runSyntheticDailyOps(input: {
       step_id: step.step_id, scoring_id: step.scoring_id, outer_session_id: result.outer_session_id, nested_session_id: result.nested_session_id,
       runtime_ms: result.runtime_ms, cost: result.cost, candidate_outcome: { status: result.status, terminal_class: result.terminal_class }, recovery: { state: recoveryCount === 0 ? 'not_needed' : 'recovered', dispatch_count: 1, recovery_count: recoveryCount },
       lock_events: locked.events, redaction: redacted.receipt, candidate_hash: candidateHash, judgement };
-    input.checkpoint.stalled.delete(dispatchId); input.checkpoint.terminal.set(dispatchId, receipt); receipts.push(receipt);
+    checkpoint.stalled.delete(dispatchId); checkpoint.terminal.set(dispatchId, receipt);
+    await input.checkpointStore.save(input.plan.plan_id, checkpoint); receipts.push(receipt);
   }
   return Object.freeze(receipts);
 }
