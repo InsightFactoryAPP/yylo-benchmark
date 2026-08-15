@@ -107,10 +107,17 @@ Git metadata. Bound deterministic fixtures cover Sol, Mini, Luna, and `zai/glm-5
 success/failure; missing, genuine-zero, and positive cost; patch evidence; missing and
 tampered grader receipts; and regrading retained evidence without candidate execution.
 
-This is an **offline D0** receipt. It excludes live workflow cases, typed production
-resource locks, frontier paid judging, and actual Sol/Mini/Luna/GLM dispatch. Those
-remain blocked by `D0tTNr` and require a separately reviewed production/spend plan;
-release readiness is neither that authority nor evidence that those cases ran.
+This is an **offline D0** receipt. It excludes live workflow execution, paid frontier
+judging, and actual Sol/Mini/Luna/GLM dispatch. The Daily Ops contract now provides a
+separate synthetic-only gate: one byte-hash-verified tracked 13-step
+definition/date/variable binding, stable per-step scoring IDs, typed strictly sequential
+shared-resource evidence, trusted-boundary redaction evidence, outer/nested session
+economics, bounded stalled recovery, explicit candidate-failure versus harness-invalid
+step truth, and governed rejudge over retained candidate truth. Its Aug. 12 Sol,
+`:mini` (`openai-codex/gpt-5.6-terra`), Luna, and GLM plan is explicitly
+`offline_unapproved`, dispatch-disabled, and estimate-only. Neither
+that plan nor release readiness grants the separately reviewed production/spend
+authority required by `D0tTNr`.
 
 The exact next-RC gate is: start from the receipt's clean commit/tree in the dedicated
 linked integration-owner worktree on branch `juno-mono-002`; rerun package tests,

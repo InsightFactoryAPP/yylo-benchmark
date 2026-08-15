@@ -18,3 +18,4 @@ export * from './release-readiness/index.js';
 export * from './registry/index.js';
 export * from './reporting/index.js';
 export * from './telemetry/index.js';
+export * from './workflow/index.js';
