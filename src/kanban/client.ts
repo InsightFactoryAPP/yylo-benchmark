@@ -60,7 +60,7 @@ export class PublicKanbanClient {
   private async invoke(arguments_: readonly string[]): Promise<{ stdout: string; stderr: string }> {
     const command = await resolveKanbanCommand(this.loaded);
     const child = spawn(command.executable, [...command.arguments, ...arguments_], {
-      cwd: this.loaded.projectRoot, env: process.env, stdio: ['ignore', 'pipe', 'pipe'], shell: false,
+      cwd: command.cwd, env: process.env, stdio: ['ignore', 'pipe', 'pipe'], shell: false,
     });
     const stdout: Buffer[] = []; const stderr: Buffer[] = [];
     let outputBytes = 0; let overflow = false;

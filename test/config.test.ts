@@ -1,9 +1,10 @@
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, realpath, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, realpath, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { loadConfig, resolveKanbanCommand } from '../src/config/index.js';
+import { PublicKanbanClient } from '../src/kanban/client.js';
 
 describe('configuration', () => {
   it('finds and validates a versioned project config', async () => {
@@ -37,14 +38,28 @@ describe('configuration', () => {
     execFileSync('git', ['init', '-b', 'product'], { cwd: root, stdio: 'ignore' });
     await mkdir(path.join(controller, '.juno_task', 'scripts'), { recursive: true });
     await mkdir(path.join(controller, '.juno_task', 'config'), { recursive: true });
-    await writeFile(path.join(controller, '.juno_task', 'scripts', 'kanban.sh'), 'registered');
+    const wrapper = path.join(controller, '.juno_task', 'scripts', 'kanban.sh');
+    await writeFile(wrapper, `#!/bin/sh
+controller=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
+if [ "$PWD" != "$controller" ]; then
+  echo "registered wrapper invoked outside controller: $PWD" >&2
+  exit 2
+fi
+printf '%s\\n' '[{"id":"CASE1","status":"done","body":"Fix it.","last_modified":"2026-08-12T00:00:00Z","feature_tags":["benchmark-case"],"related_tasks":null,"blocked_by":null,"fields":{}}]'
+`);
+    await chmod(wrapper, 0o755);
     await writeFile(path.join(controller, '.juno_task', 'config', 'metadata-controller.json'), '{}');
     execFileSync('git', ['init', '-b', 'metadata'], { cwd: controller, stdio: 'ignore' });
     execFileSync('git', ['config', 'juno.controller.path', controller], { cwd: root });
     execFileSync('git', ['config', 'juno.controller.branch', 'metadata'], { cwd: root });
     const loaded = await loadConfig({ cwd: root });
+    const canonicalController = await realpath(controller);
     await expect(resolveKanbanCommand(loaded)).resolves.toEqual({
-      executable: path.join(await realpath(controller), '.juno_task', 'scripts', 'kanban.sh'), arguments: [],
+      executable: path.join(canonicalController, '.juno_task', 'scripts', 'kanban.sh'),
+      arguments: [], cwd: canonicalController,
+    });
+    await expect(new PublicKanbanClient(loaded).getTask('CASE1')).resolves.toMatchObject({
+      id: 'CASE1', related_tasks: [], blocked_by: [],
     });
   });
 

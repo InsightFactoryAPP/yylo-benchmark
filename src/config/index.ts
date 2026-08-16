@@ -36,6 +36,12 @@ export interface LoadedConfig {
   readonly projectRoot: string;
 }
 
+export interface ResolvedKanbanCommand {
+  readonly executable: string;
+  readonly arguments: readonly string[];
+  readonly cwd: string;
+}
+
 async function exists(file: string): Promise<boolean> {
   try {
     await access(file, constants.R_OK);
@@ -61,7 +67,7 @@ async function gitValues(root: string, key: string): Promise<string[]> {
   }
 }
 
-async function registeredKanbanWrapper(projectRoot: string): Promise<string | null> {
+async function registeredKanbanWrapper(projectRoot: string): Promise<ResolvedKanbanCommand | null> {
   const [paths, branches] = await Promise.all([
     gitValues(projectRoot, 'juno.controller.path'), gitValues(projectRoot, 'juno.controller.branch'),
   ]);
@@ -86,7 +92,7 @@ async function registeredKanbanWrapper(projectRoot: string): Promise<string | nu
   if (stdout.trim() !== expected) {
     throw new Error(`registered metadata controller branch mismatch: expected ${expected}, found ${stdout.trim() || 'detached'}`);
   }
-  return wrapper;
+  return { executable: wrapper, arguments: [], cwd: controller };
 }
 
 async function findUp(start: string, name: string): Promise<string | null> {
@@ -131,15 +137,17 @@ export async function loadConfig(options: { cwd?: string; configPath?: string } 
   };
 }
 
-export async function resolveKanbanCommand(loaded: LoadedConfig): Promise<{ executable: string; arguments: readonly string[] }> {
+export async function resolveKanbanCommand(loaded: LoadedConfig): Promise<ResolvedKanbanCommand> {
   const environment = process.env['JUNO_BENCHMARK_KANBAN_COMMAND']?.trim();
-  if (environment !== undefined && environment !== '') return { executable: environment, arguments: [] };
+  if (environment !== undefined && environment !== '') {
+    return { executable: environment, arguments: [], cwd: loaded.projectRoot };
+  }
   if (loaded.config.kanban.executable !== undefined) {
-    return { executable: loaded.config.kanban.executable, arguments: loaded.config.kanban.arguments };
+    return { executable: loaded.config.kanban.executable, arguments: loaded.config.kanban.arguments, cwd: loaded.projectRoot };
   }
   const registered = await registeredKanbanWrapper(loaded.projectRoot);
-  if (registered !== null) return { executable: registered, arguments: [] };
+  if (registered !== null) return registered;
   const localWrapper = path.join(loaded.projectRoot, '.juno_task', 'scripts', 'kanban.sh');
-  if (await exists(localWrapper)) return { executable: localWrapper, arguments: [] };
-  return { executable: 'juno-kanban', arguments: [] };
+  if (await exists(localWrapper)) return { executable: localWrapper, arguments: [], cwd: loaded.projectRoot };
+  return { executable: 'juno-kanban', arguments: [], cwd: loaded.projectRoot };
 }
