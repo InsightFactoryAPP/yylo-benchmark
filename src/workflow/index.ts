@@ -468,7 +468,8 @@ export async function runSyntheticDailyOps(input: {
 
 /** Judge a retained anonymous candidate generation without accepting a candidate runner. */
 export async function rejudgeDailyOps(input: { readonly receipt: DailyOpsStepReceipt; readonly judge: GovernedJudge; readonly runner: WorkflowJudgeRunner; readonly anonymousCandidate: string }): Promise<WorkflowJudgementReceipt> {
-  if (canonicalHash(input.anonymousCandidate) !== input.receipt.candidate_hash) throw new Error('retained candidate does not match the step receipt');
-  const candidateEligible = input.receipt.candidate_outcome.status === 'success' && input.receipt.candidate_outcome.terminal_class === 'candidate_success';
-  return judgeCandidate(input.runner, input.judge, input.receipt.scoring_id, input.receipt.candidate_hash, input.anonymousCandidate, input.receipt.judgement.generation + 1, candidateEligible);
+  const receipt = validateTerminalReceipt(input.receipt);
+  if (canonicalHash(input.anonymousCandidate) !== receipt.candidate_hash) throw new Error('retained candidate does not match the step receipt');
+  const candidateEligible = receipt.candidate_outcome.status === 'success' && receipt.candidate_outcome.terminal_class === 'candidate_success';
+  return judgeCandidate(input.runner, input.judge, receipt.scoring_id, receipt.candidate_hash, input.anonymousCandidate, receipt.judgement.generation + 1, candidateEligible);
 }

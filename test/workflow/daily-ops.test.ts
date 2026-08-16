@@ -7,7 +7,7 @@ import { canonicalHash, sha256Hex } from '../../src/contracts/canonical.js';
 import {
   createDailyOpsCheckpoint, createFileDailyOpsCheckpointStore, createStrictSequentialLock, deserializeDailyOpsCheckpoint,
   planDailyOps, rejudgeDailyOps, runSyntheticDailyOps, serializeDailyOpsCheckpoint,
-  type DailyOpsCheckpoint, type DailyOpsCheckpointStore, type DailyOpsWorkflowDefinition, type WorkflowCandidateResult,
+  type DailyOpsCheckpoint, type DailyOpsCheckpointStore, type DailyOpsStepReceipt, type DailyOpsWorkflowDefinition, type WorkflowCandidateResult,
 } from '../../src/workflow/index.js';
 
 const digest = (value: string): `sha256:${string}` => canonicalHash(value);
@@ -194,6 +194,34 @@ describe('Daily Ops workflow contract', () => {
     const revisedJudge = { ...judge, judge_version: '2026-08-12.2', prompt_hash: digest('judge prompt v2') };
     const rejudged = await rejudgeDailyOps({ receipt: receipt!, judge: revisedJudge, anonymousCandidate: candidate, runner: async () => ({ resolved: true, evidence: 'v2' }) });
     expect(dispatches).toBe(1); expect(rejudged.candidate_hash).toBe(receipt!.candidate_hash); expect(rejudged.generation).toBe(2); expect(rejudged.resolved).toBe(true); expect(rejudged.judge).toEqual(revisedJudge);
+  });
+
+  it('rejects tampered rejudge outcome and generation receipts before invoking the judge', async () => {
+    const plan = planDailyOps({ workflow, definitionBytes, runDate: '2026-08-12', variables: {}, selectedStepIds: [workflow.steps[0]!.step_id], models: [estimates[2]], judge, authorization: 'synthetic_no_production' });
+    const candidate = JSON.stringify({ transcript: 'synthetic output', artifacts: { receipt: 'ok' } });
+    const [receipt] = await runSyntheticDailyOps({ plan, model: 'openai-codex/gpt-5.6-luna', checkpointStore: memoryCheckpointStore(), lock: createStrictSequentialLock(),
+      runner: { capability: 'synthetic_no_production' as const, dispatch: async (input) => ({ ...result(input.step.step_id, 'success', ''), transcript: 'synthetic output', artifacts: { receipt: 'ok' } }), recover: async () => { throw new Error('not used'); } },
+      judge: async () => ({ resolved: false, evidence: 'v1' }),
+    });
+    type MutableReceipt = {
+      candidate_outcome: { status: string; terminal_class: string };
+      judgement: { generation: number; judgement_id: `sha256:${string}` };
+      receipt_hash: `sha256:${string}`;
+      [key: string]: unknown;
+    };
+    let judgeCalls = 0;
+    const rejectingJudge = async () => { judgeCalls += 1; return { resolved: true, evidence: 'must not execute' }; };
+
+    const outcomeTampered = structuredClone(receipt!) as unknown as MutableReceipt;
+    outcomeTampered.candidate_outcome = { status: 'failure', terminal_class: 'step_failure' };
+    await expect(rejudgeDailyOps({ receipt: outcomeTampered as unknown as DailyOpsStepReceipt, judge, anonymousCandidate: candidate, runner: rejectingJudge })).rejects.toThrow('terminal receipt integrity is invalid');
+
+    const generationTampered = structuredClone(receipt!) as unknown as MutableReceipt;
+    generationTampered.judgement.generation += 10;
+    const { receipt_hash: _priorReceiptHash, ...generationTamperedCore } = generationTampered;
+    generationTampered.receipt_hash = canonicalHash(generationTamperedCore); // Recompute the outer receipt hash so the nested judgement guard is authoritative.
+    await expect(rejudgeDailyOps({ receipt: generationTampered as unknown as DailyOpsStepReceipt, judge, anonymousCandidate: candidate, runner: rejectingJudge })).rejects.toThrow('terminal judgement integrity is invalid');
+    expect(judgeCalls).toBe(0);
   });
 
   it('retains candidate failure versus harness invalidity and denies favorable-judge resolution', async () => {
