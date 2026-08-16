@@ -33,7 +33,7 @@ separate evidence; unavailable cost is never represented as zero.
 Candidate source is exported from an exact Git tree into a fresh repository with
 isolated Git objects. The first version trusts the same-user host filesystem and does
 not claim container isolation. Candidates use a shadow work board and cannot mutate
-the canonical controller.
+the canonical controller. For read-only case discovery from a product checkout, Benchmark prefers the exact `juno.controller.path`/`juno.controller.branch` registered metadata controller and refuses ambiguous, missing, non-metadata, or moved registrations instead of falling back to a retired local wrapper. Legacy public Kanban `related_tasks: null` and `blocked_by: null` values are normalized to empty relationships; malformed non-array values still fail closed.
 
 ## Operator sequence
 

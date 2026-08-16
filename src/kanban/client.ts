@@ -14,8 +14,10 @@ const revision = z.string().regex(/^[0-9a-f]{64}$/u);
 const KanbanTaskSchema = z.object({
   id: z.string().min(1), status: z.string().min(1), body: z.string(),
   last_modified: z.string().min(1), commit_hash: z.string().nullable().optional(),
-  feature_tags: z.array(z.string()), related_tasks: z.array(z.string()).default([]),
-  blocked_by: z.array(z.string()).default([]), fields: z.record(z.unknown()).default({}),
+  feature_tags: z.array(z.string()),
+  related_tasks: z.preprocess((value) => value === null ? [] : value, z.array(z.string()).default([])),
+  blocked_by: z.preprocess((value) => value === null ? [] : value, z.array(z.string()).default([])),
+  fields: z.record(z.unknown()).default({}),
 }).passthrough();
 const HistoryEventSchema = z.object({
   task_id: z.string().min(1), operation: z.string().min(1),

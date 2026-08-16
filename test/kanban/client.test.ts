@@ -25,6 +25,16 @@ describe('public Kanban control plane', () => {
     expect(calls).toContain('"--version"'); expect(calls).toContain('"--receipt-file"'); expect(calls).toContain('"--reject-duplicates"');
   });
 
+  it('normalizes legacy null relationship fields but rejects malformed values', async () => {
+    const legacy = optedInTask() as unknown as Record<string, unknown>;
+    legacy.related_tasks = null; legacy.blocked_by = null;
+    const accepted = await fixture({ tasks: { CASE1: legacy as never } });
+    await expect(accepted.client.getTask('CASE1')).resolves.toMatchObject({ related_tasks: [], blocked_by: [] });
+    legacy.related_tasks = 'CASE2';
+    const malformed = await fixture({ tasks: { CASE1: legacy as never } });
+    await expect(malformed.client.getTask('CASE1')).rejects.toThrow();
+  });
+
   it('fails closed on a concurrent source read and stale expected update', async () => {
     const concurrent = await fixture({ mutateDuringRead: true });
     await expect(concurrent.client.getRevisionedTask('CASE1')).rejects.toThrow(/changed concurrently/u);

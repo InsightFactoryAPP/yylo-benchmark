@@ -1,6 +1,8 @@
-import { access, readFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { access, readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { constants } from 'node:fs';
+import { promisify } from 'node:util';
 import { z } from 'zod';
 
 export const CONFIG_SCHEMA_VERSION = 'juno_benchmark_config.v1' as const;
@@ -41,6 +43,50 @@ async function exists(file: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+const execFileAsync = promisify(execFile);
+
+async function gitValues(root: string, key: string): Promise<string[]> {
+  try {
+    const { stdout } = await execFileAsync('git', ['-C', root, 'config', '--get-all', key], {
+      encoding: 'utf8', timeout: 5_000, maxBuffer: 64 * 1024,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+    });
+    return stdout.split(/\r?\n/u).map((value) => value.trim()).filter(Boolean);
+  } catch (error) {
+    const code = (error as { code?: unknown }).code;
+    if (code === 1) return [];
+    throw new Error(`cannot inspect registered metadata controller: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+async function registeredKanbanWrapper(projectRoot: string): Promise<string | null> {
+  const [paths, branches] = await Promise.all([
+    gitValues(projectRoot, 'juno.controller.path'), gitValues(projectRoot, 'juno.controller.branch'),
+  ]);
+  if (paths.length === 0 && branches.length === 0) return null;
+  if (paths.length !== 1 || branches.length !== 1) {
+    throw new Error('registered metadata controller is ambiguous or incomplete; run `yy doctor workspace`');
+  }
+  const declared = path.resolve(projectRoot, paths[0]!);
+  let controller: string;
+  try { controller = await realpath(declared); }
+  catch { throw new Error(`registered metadata controller does not exist: ${declared}`); }
+  const policy = path.join(controller, '.juno_task', 'config', 'metadata-controller.json');
+  const wrapper = path.join(controller, '.juno_task', 'scripts', 'kanban.sh');
+  if (!(await exists(policy)) || !(await exists(wrapper))) {
+    throw new Error(`registered metadata controller is not a readable metadata controller: ${controller}`);
+  }
+  const { stdout } = await execFileAsync('git', ['-C', controller, 'symbolic-ref', '--quiet', 'HEAD'], {
+    encoding: 'utf8', timeout: 5_000, maxBuffer: 64 * 1024,
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+  });
+  const expected = branches[0]!.startsWith('refs/heads/') ? branches[0]! : `refs/heads/${branches[0]!}`;
+  if (stdout.trim() !== expected) {
+    throw new Error(`registered metadata controller branch mismatch: expected ${expected}, found ${stdout.trim() || 'detached'}`);
+  }
+  return wrapper;
 }
 
 async function findUp(start: string, name: string): Promise<string | null> {
@@ -91,6 +137,8 @@ export async function resolveKanbanCommand(loaded: LoadedConfig): Promise<{ exec
   if (loaded.config.kanban.executable !== undefined) {
     return { executable: loaded.config.kanban.executable, arguments: loaded.config.kanban.arguments };
   }
+  const registered = await registeredKanbanWrapper(loaded.projectRoot);
+  if (registered !== null) return { executable: registered, arguments: [] };
   const localWrapper = path.join(loaded.projectRoot, '.juno_task', 'scripts', 'kanban.sh');
   if (await exists(localWrapper)) return { executable: localWrapper, arguments: [] };
   return { executable: 'juno-kanban', arguments: [] };
