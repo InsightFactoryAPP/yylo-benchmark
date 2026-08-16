@@ -114,7 +114,9 @@ and executable step/scoring/prompt/resource semantics are inseparable, dated var
 bindings, typed strictly sequential shared-resource evidence, trusted-boundary redaction
 evidence, outer/nested session economics, integrity-bound atomically persisted recovery
 checkpoints, explicit candidate-failure versus harness-invalid step truth, and governed
-rejudge over retained candidate truth. Its Aug. 12 Sol,
+rejudge over retained candidate truth that fails closed unless the caller supplies the
+original `receipt_hash` from a trusted immutable ledger (never from the mutable receipt
+being rejudged). Its Aug. 12 Sol,
 `:mini` (`openai-codex/gpt-5.6-terra`), Luna, and GLM plan is explicitly
 `offline_unapproved`, dispatch-disabled, and estimate-only. Neither
 that plan nor release readiness grants the separately reviewed production/spend

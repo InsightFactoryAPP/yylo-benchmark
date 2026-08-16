@@ -192,7 +192,7 @@ describe('Daily Ops workflow contract', () => {
       judge: async () => ({ resolved: false, evidence: 'v1' }),
     });
     const revisedJudge = { ...judge, judge_version: '2026-08-12.2', prompt_hash: digest('judge prompt v2') };
-    const rejudged = await rejudgeDailyOps({ receipt: receipt!, judge: revisedJudge, anonymousCandidate: candidate, runner: async () => ({ resolved: true, evidence: 'v2' }) });
+    const rejudged = await rejudgeDailyOps({ receipt: receipt!, trustedReceiptHash: receipt!.receipt_hash, judge: revisedJudge, anonymousCandidate: candidate, runner: async () => ({ resolved: true, evidence: 'v2' }) });
     expect(dispatches).toBe(1); expect(rejudged.candidate_hash).toBe(receipt!.candidate_hash); expect(rejudged.generation).toBe(2); expect(rejudged.resolved).toBe(true); expect(rejudged.judge).toEqual(revisedJudge);
   });
 
@@ -214,13 +214,19 @@ describe('Daily Ops workflow contract', () => {
 
     const outcomeTampered = structuredClone(receipt!) as unknown as MutableReceipt;
     outcomeTampered.candidate_outcome = { status: 'failure', terminal_class: 'step_failure' };
-    await expect(rejudgeDailyOps({ receipt: outcomeTampered as unknown as DailyOpsStepReceipt, judge, anonymousCandidate: candidate, runner: rejectingJudge })).rejects.toThrow('terminal receipt integrity is invalid');
+    const { receipt_hash: _priorOutcomeReceiptHash, ...outcomeTamperedCore } = outcomeTampered;
+    outcomeTampered.receipt_hash = canonicalHash(outcomeTamperedCore);
+    await expect(rejudgeDailyOps({ receipt: outcomeTampered as unknown as DailyOpsStepReceipt, trustedReceiptHash: receipt!.receipt_hash, judge, anonymousCandidate: candidate, runner: rejectingJudge })).rejects.toThrow('terminal receipt does not match trusted digest');
 
     const generationTampered = structuredClone(receipt!) as unknown as MutableReceipt;
     generationTampered.judgement.generation += 10;
-    const { receipt_hash: _priorReceiptHash, ...generationTamperedCore } = generationTampered;
-    generationTampered.receipt_hash = canonicalHash(generationTamperedCore); // Recompute the outer receipt hash so the nested judgement guard is authoritative.
-    await expect(rejudgeDailyOps({ receipt: generationTampered as unknown as DailyOpsStepReceipt, judge, anonymousCandidate: candidate, runner: rejectingJudge })).rejects.toThrow('terminal judgement integrity is invalid');
+    const { judgement_id: _priorJudgementId, ...generationTamperedJudgementCore } = generationTampered.judgement;
+    generationTampered.judgement.judgement_id = canonicalHash(generationTamperedJudgementCore);
+    const { receipt_hash: _priorGenerationReceiptHash, ...generationTamperedCore } = generationTampered;
+    generationTampered.receipt_hash = canonicalHash(generationTamperedCore);
+    await expect(rejudgeDailyOps({ receipt: generationTampered as unknown as DailyOpsStepReceipt, trustedReceiptHash: receipt!.receipt_hash, judge, anonymousCandidate: candidate, runner: rejectingJudge })).rejects.toThrow('terminal receipt does not match trusted digest');
+
+    await expect(rejudgeDailyOps({ receipt: receipt!, trustedReceiptHash: undefined as never, judge, anonymousCandidate: candidate, runner: rejectingJudge })).rejects.toThrow('trusted receipt_hash must be a canonical SHA-256');
     expect(judgeCalls).toBe(0);
   });
 
@@ -238,7 +244,7 @@ describe('Daily Ops workflow contract', () => {
     expect(invalid!.candidate_outcome).toEqual({ status: 'failure', terminal_class: 'harness_invalid' });
     expect(failed!.judgement.resolved).toBe(false); expect(invalid!.judgement.resolved).toBe(false);
     const retained = JSON.stringify({ transcript: 'failed', artifacts: { reason: 'candidate' } });
-    const rejudged = await rejudgeDailyOps({ receipt: failed!, judge: { ...judge, judge_version: '2026-08-12.2' }, anonymousCandidate: retained, runner: async () => ({ resolved: true, evidence: 'still favorable' }) });
+    const rejudged = await rejudgeDailyOps({ receipt: failed!, trustedReceiptHash: failed!.receipt_hash, judge: { ...judge, judge_version: '2026-08-12.2' }, anonymousCandidate: retained, runner: async () => ({ resolved: true, evidence: 'still favorable' }) });
     expect(rejudged.resolved).toBe(false);
   });
 

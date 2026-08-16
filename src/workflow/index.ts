@@ -466,9 +466,13 @@ export async function runSyntheticDailyOps(input: {
   return Object.freeze(receipts);
 }
 
-/** Judge a retained anonymous candidate generation without accepting a candidate runner. */
-export async function rejudgeDailyOps(input: { readonly receipt: DailyOpsStepReceipt; readonly judge: GovernedJudge; readonly runner: WorkflowJudgeRunner; readonly anonymousCandidate: string }): Promise<WorkflowJudgementReceipt> {
+/** Judge a retained anonymous candidate generation without accepting a candidate runner.
+ * `trustedReceiptHash` must come from the immutable receipt ledger, never from the supplied receipt.
+ */
+export async function rejudgeDailyOps(input: { readonly receipt: DailyOpsStepReceipt; readonly trustedReceiptHash: `sha256:${string}`; readonly judge: GovernedJudge; readonly runner: WorkflowJudgeRunner; readonly anonymousCandidate: string }): Promise<WorkflowJudgementReceipt> {
+  assertHash(input.trustedReceiptHash, 'trusted receipt_hash');
   const receipt = validateTerminalReceipt(input.receipt);
+  if (receipt.receipt_hash !== input.trustedReceiptHash) throw new Error('Daily Ops terminal receipt does not match trusted digest');
   if (canonicalHash(input.anonymousCandidate) !== receipt.candidate_hash) throw new Error('retained candidate does not match the step receipt');
   const candidateEligible = receipt.candidate_outcome.status === 'success' && receipt.candidate_outcome.terminal_class === 'candidate_success';
   return judgeCandidate(input.runner, input.judge, receipt.scoring_id, receipt.candidate_hash, input.anonymousCandidate, receipt.judgement.generation + 1, candidateEligible);
