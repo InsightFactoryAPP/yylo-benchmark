@@ -2,7 +2,7 @@ import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { canonicalHash, canonicalJson, sha256Hex } from '../contracts/canonical.js';
-import type { CostEvidence } from '../contracts/schemas.js';
+import { CostEvidenceSchema, type CostEvidence } from '../contracts/schemas.js';
 
 export const DAILY_OPS_WORKFLOW_SCHEMA = 'juno_benchmark_daily_ops_workflow.v1' as const;
 export const DAILY_OPS_PLAN_SCHEMA = 'juno_benchmark_daily_ops_plan.v1' as const;
@@ -218,6 +218,8 @@ export interface DailyOpsStepReceipt {
   readonly redaction: RedactionReceipt;
   readonly candidate_hash: `sha256:${string}`;
   readonly judgement: WorkflowJudgementReceipt;
+  /** Integrity of every terminal field, independently of the mutable checkpoint envelope. */
+  readonly receipt_hash: `sha256:${string}`;
 }
 export interface WorkflowJudgementReceipt {
   readonly judgement_id: `sha256:${string}`;
@@ -249,6 +251,50 @@ interface CheckpointPayload {
   readonly terminal: readonly (readonly [string, DailyOpsStepReceipt])[];
 }
 interface CheckpointEnvelope { readonly payload: CheckpointPayload; readonly integrity_hash: `sha256:${string}` }
+
+const HashSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/u);
+const GovernedJudgeSchema = z.object({
+  judge_id: z.string().trim().min(1), judge_version: z.string().trim().min(1), prompt_hash: HashSchema, rubric_hash: HashSchema,
+}).strict();
+const RedactionReceiptSchema = z.object({
+  schema_version: z.literal('juno_benchmark_redaction_receipt.v1'),
+  scanned_surfaces: z.tuple([z.literal('plan'), z.literal('transcript'), z.literal('artifacts')]),
+  representations: z.tuple([z.literal('raw'), z.literal('hex'), z.literal('base64'), z.literal('url')]),
+  replacements: z.number().int().nonnegative(), credential_boundary: z.literal('juno_benchmark_auth_launcher.v1'),
+  clean: z.literal(true), evidence_hash: HashSchema,
+}).strict();
+const WorkflowJudgementReceiptSchema = z.object({
+  judgement_id: HashSchema, candidate_hash: HashSchema, scoring_id: z.string().trim().min(1), judge: GovernedJudgeSchema,
+  generation: z.number().int().positive(), resolved: z.boolean(), evidence_hash: HashSchema,
+}).strict();
+const DailyOpsStepReceiptSchema = z.object({
+  schema_version: z.literal(DAILY_OPS_STEP_RECEIPT_SCHEMA), dispatch_id: HashSchema, model: z.string().trim().min(1),
+  step_id: z.string().trim().min(1), scoring_id: z.string().trim().min(1), outer_session_id: z.string().trim().min(1),
+  nested_session_id: z.string().trim().min(1), runtime_ms: z.number().finite().nonnegative(), cost: CostEvidenceSchema,
+  candidate_outcome: z.object({ status: z.enum(['success', 'failure']), terminal_class: z.enum(['candidate_success', 'step_failure', 'harness_invalid']) }).strict(),
+  recovery: z.object({ state: z.enum(['not_needed', 'recovered']), dispatch_count: z.literal(1), recovery_count: z.number().int().nonnegative() }).strict(),
+  lock_events: z.array(z.object({ sequence: z.number().int().positive(), action: z.enum(['acquire', 'release']),
+    resource: z.enum(['PROD_IF_BACKEND', 'PROD_INSIGHTAGENT_BACKEND', 'DATA_2026_PROVIDER']), dispatch_id: HashSchema }).strict()),
+  redaction: RedactionReceiptSchema, candidate_hash: HashSchema, judgement: WorkflowJudgementReceiptSchema, receipt_hash: HashSchema,
+}).strict();
+
+function validateTerminalReceipt(value: unknown): DailyOpsStepReceipt {
+  const parsed = DailyOpsStepReceiptSchema.safeParse(value);
+  if (!parsed.success) throw new Error('Daily Ops terminal receipt schema is invalid');
+  const receipt = parsed.data as DailyOpsStepReceipt;
+  const { evidence_hash: redactionHash, ...redactionCore } = receipt.redaction;
+  if (redactionHash !== canonicalHash(redactionCore)) throw new Error('Daily Ops terminal redaction integrity is invalid');
+  const { judgement_id: judgementId, ...judgementCore } = receipt.judgement;
+  if (judgementId !== canonicalHash(judgementCore)) throw new Error('Daily Ops terminal judgement integrity is invalid');
+  const { receipt_hash: receiptHash, ...receiptCore } = receipt;
+  if (receiptHash !== canonicalHash(receiptCore)) throw new Error('Daily Ops terminal receipt integrity is invalid');
+  const validOutcome = (receipt.candidate_outcome.status === 'success' && receipt.candidate_outcome.terminal_class === 'candidate_success')
+    || (receipt.candidate_outcome.status === 'failure' && (receipt.candidate_outcome.terminal_class === 'step_failure' || receipt.candidate_outcome.terminal_class === 'harness_invalid'));
+  if (!validOutcome || (receipt.candidate_outcome.status === 'failure' && receipt.judgement.resolved)) throw new Error('Daily Ops terminal outcome is invalid');
+  if ((receipt.recovery.state === 'not_needed') !== (receipt.recovery.recovery_count === 0)) throw new Error('Daily Ops terminal recovery evidence is invalid');
+  return receipt;
+}
+
 export function createDailyOpsCheckpoint(): DailyOpsCheckpoint { return { dispatch_intents: new Map(), stalled: new Map(), terminal: new Map() }; }
 
 export function serializeDailyOpsCheckpoint(planId: `sha256:${string}`, checkpoint: DailyOpsCheckpoint): string {
@@ -274,7 +320,8 @@ export function deserializeDailyOpsCheckpoint(serialized: string, expectedPlanId
         || !/^sha256:[0-9a-f]{64}$/u.test(entry[1].invocation_hash))
       || stalled.some((entry) => !Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== 'string')
       || terminal.some((entry) => !Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== 'string')) throw new Error('Daily Ops checkpoint structure is invalid');
-  const checkpoint: DailyOpsCheckpoint = { dispatch_intents: new Map(dispatchIntents), stalled: new Map(stalled), terminal: new Map(terminal) };
+  const validatedTerminal = terminal.map(([id, receipt]) => [id, validateTerminalReceipt(receipt)] as const);
+  const checkpoint: DailyOpsCheckpoint = { dispatch_intents: new Map(dispatchIntents), stalled: new Map(stalled), terminal: new Map(validatedTerminal) };
   if (checkpoint.dispatch_intents.size !== dispatchIntents.length || checkpoint.stalled.size !== stalled.length || checkpoint.terminal.size !== terminal.length) throw new Error('Daily Ops checkpoint contains duplicate identities');
   for (const [id] of checkpoint.stalled) if (!checkpoint.dispatch_intents.has(id) || checkpoint.terminal.has(id)) throw new Error('Daily Ops stalled checkpoint state is inconsistent');
   for (const [id, receipt] of checkpoint.terminal) if (!checkpoint.dispatch_intents.has(id) || receipt.dispatch_id !== id) throw new Error('Daily Ops terminal checkpoint state is inconsistent');
@@ -356,10 +403,23 @@ export async function runSyntheticDailyOps(input: {
   for (const dispatchId of checkpoint.stalled.keys()) {
     if (!expected.has(dispatchId)) throw new Error(`checkpoint contains an unbound dispatch identity ${dispatchId}`);
   }
-  for (const [dispatchId, receipt] of checkpoint.terminal) {
+  for (const [dispatchId, loadedReceipt] of checkpoint.terminal) {
+    const receipt = validateTerminalReceipt(loadedReceipt);
+    checkpoint.terminal.set(dispatchId, receipt);
     const bound = expected.get(dispatchId);
-    if (bound === undefined || receipt.model !== input.model || receipt.step_id !== bound.step.step_id
-        || receipt.scoring_id !== bound.step.scoring_id) throw new Error(`terminal receipt binding is invalid for ${dispatchId}`);
+    if (bound === undefined) throw new Error(`terminal receipt binding is invalid for ${dispatchId}`);
+    const judgementBound = receipt.judgement.candidate_hash === receipt.candidate_hash
+      && receipt.judgement.scoring_id === receipt.scoring_id
+      && canonicalHash(receipt.judgement.judge) === canonicalHash(input.plan.judge);
+    const resources = orderedResources(bound.step.resources);
+    const lockEventsBound = receipt.lock_events.length === resources.length * 2
+      && receipt.lock_events.every((event) => event.dispatch_id === dispatchId)
+      && canonicalHash(receipt.lock_events.slice(0, resources.length).map((event) => [event.action, event.resource]))
+        === canonicalHash(resources.map((resource) => ['acquire', resource]))
+      && canonicalHash(receipt.lock_events.slice(resources.length).map((event) => [event.action, event.resource]))
+        === canonicalHash([...resources].reverse().map((resource) => ['release', resource]));
+    if (receipt.dispatch_id !== dispatchId || receipt.model !== input.model || receipt.step_id !== bound.step.step_id
+        || receipt.scoring_id !== bound.step.scoring_id || !judgementBound || !lockEventsBound) throw new Error(`terminal receipt binding is invalid for ${dispatchId}`);
   }
   const receipts: DailyOpsStepReceipt[] = [];
   for (const stepId of input.plan.selected_step_ids) {
@@ -395,10 +455,11 @@ export async function runSyntheticDailyOps(input: {
     const redacted = redactCandidate(input.plan, result, input.trustedSecrets ?? []); const candidateHash = canonicalHash(redacted.anonymous);
     const candidateEligible = result.status === 'success' && result.terminal_class === 'candidate_success';
     const judgement = await judgeCandidate(input.judge, input.plan.judge, step.scoring_id, candidateHash, redacted.anonymous, 1, candidateEligible);
-    const receipt: DailyOpsStepReceipt = { schema_version: DAILY_OPS_STEP_RECEIPT_SCHEMA, dispatch_id: dispatchId, model: input.model,
+    const receiptCore = { schema_version: DAILY_OPS_STEP_RECEIPT_SCHEMA, dispatch_id: dispatchId, model: input.model,
       step_id: step.step_id, scoring_id: step.scoring_id, outer_session_id: result.outer_session_id, nested_session_id: result.nested_session_id,
-      runtime_ms: result.runtime_ms, cost: result.cost, candidate_outcome: { status: result.status, terminal_class: result.terminal_class }, recovery: { state: recoveryCount === 0 ? 'not_needed' : 'recovered', dispatch_count: 1, recovery_count: recoveryCount },
+      runtime_ms: result.runtime_ms, cost: result.cost, candidate_outcome: { status: result.status, terminal_class: result.terminal_class }, recovery: { state: recoveryCount === 0 ? 'not_needed' as const : 'recovered' as const, dispatch_count: 1 as const, recovery_count: recoveryCount },
       lock_events: locked.events, redaction: redacted.receipt, candidate_hash: candidateHash, judgement };
+    const receipt: DailyOpsStepReceipt = { ...receiptCore, receipt_hash: canonicalHash(receiptCore) };
     checkpoint.stalled.delete(dispatchId); checkpoint.terminal.set(dispatchId, receipt);
     await input.checkpointStore.save(input.plan.plan_id, checkpoint); receipts.push(receipt);
   }

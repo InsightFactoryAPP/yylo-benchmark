@@ -118,6 +118,37 @@ describe('Daily Ops workflow contract', () => {
       const tampered = JSON.parse(valid) as { payload: { dispatch_intents: unknown[] } }; tampered.payload.dispatch_intents.push(['forged', { dispatch_id: 'forged', invocation_hash: digest('forged') }]);
       await writeFile(checkpointPath, JSON.stringify(tampered));
       await expect(createFileDailyOpsCheckpointStore(checkpointPath).load(plan.plan_id)).rejects.toThrow('integrity verification failed');
+
+      type MutableTerminalReceipt = {
+        judgement: { resolved: boolean }; redaction: { replacements: number };
+        cost: { completeness: string; usd: number | null };
+        candidate_outcome: { status: string; terminal_class: string };
+      };
+      for (const [label, mutate, expected] of [
+        ['judgement', (receipt: MutableTerminalReceipt) => { receipt.judgement.resolved = !receipt.judgement.resolved; }, 'terminal judgement integrity'],
+        ['redaction', (receipt: MutableTerminalReceipt) => { receipt.redaction.replacements += 1; }, 'terminal redaction integrity'],
+        ['cost', (receipt: MutableTerminalReceipt) => { receipt.cost = { completeness: 'complete', usd: 999 }; }, 'terminal receipt integrity'],
+        ['outcome', (receipt: MutableTerminalReceipt) => { receipt.candidate_outcome.terminal_class = 'step_failure'; }, 'terminal receipt integrity'],
+      ] as const) {
+        const forged = JSON.parse(valid) as { payload: { terminal: Array<[string, MutableTerminalReceipt]> }; integrity_hash: `sha256:${string}` };
+        mutate(forged.payload.terminal[0]![1]);
+        forged.integrity_hash = canonicalHash(forged.payload); // Simulate an editor recomputing only the outer envelope hash.
+        await writeFile(checkpointPath, JSON.stringify(forged));
+        await expect(createFileDailyOpsCheckpointStore(checkpointPath).load(plan.plan_id), label).rejects.toThrow(expected);
+      }
+
+      const rebound = JSON.parse(valid) as {
+        payload: { terminal: Array<[string, MutableTerminalReceipt & { model: string; receipt_hash: `sha256:${string}` }]> };
+        integrity_hash: `sha256:${string}`;
+      };
+      const reboundReceipt = rebound.payload.terminal[0]![1]; reboundReceipt.model = 'openai-codex/gpt-5.6-terra';
+      const { receipt_hash: _priorReceiptHash, ...reboundCore } = reboundReceipt;
+      reboundReceipt.receipt_hash = canonicalHash(reboundCore); rebound.integrity_hash = canonicalHash(rebound.payload);
+      await writeFile(checkpointPath, JSON.stringify(rebound));
+      await expect(runSyntheticDailyOps({ plan, model: 'openai-codex/gpt-5.6-sol', checkpointStore: createFileDailyOpsCheckpointStore(checkpointPath), lock: createStrictSequentialLock(),
+        runner: { capability: 'synthetic_no_production', dispatch: async () => { throw new Error('binding dispatch'); }, recover: async () => { throw new Error('binding recovery'); } },
+        judge: async () => { throw new Error('binding judge'); },
+      })).rejects.toThrow('terminal receipt binding is invalid');
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
 
