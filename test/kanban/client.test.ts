@@ -23,6 +23,9 @@ describe('public Kanban control plane', () => {
     expect(created.receipt).toMatchObject({ operation: 'create', before_sha256: null, task_id: created.task.id });
     const calls = await readFile(callsPath, 'utf8');
     expect(calls).toContain('"--version"'); expect(calls).toContain('"--receipt-file"'); expect(calls).toContain('"--reject-duplicates"');
+    const parsed = calls.trim().split('\n').map((line) => JSON.parse(line) as string[]);
+    expect(parsed.filter((args) => args[0] !== '--version').every(
+      (args) => args[0] === '-f' && args[1] === 'json')).toBe(true);
   });
 
   it('normalizes legacy null relationship fields but rejects malformed values', async () => {

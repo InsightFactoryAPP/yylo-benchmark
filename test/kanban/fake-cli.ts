@@ -10,7 +10,8 @@ export async function installFakeKanban(root: string, state: FakeState): Promise
   await writeFile(script, `#!/usr/bin/env node
 import fs from 'node:fs';
 const statePath=${JSON.stringify(statePath)}, callsPath=${JSON.stringify(callsPath)};
-const args=process.argv.slice(2); fs.appendFileSync(callsPath, JSON.stringify(args)+'\\n');
+const rawArgs=process.argv.slice(2); fs.appendFileSync(callsPath, JSON.stringify(rawArgs)+'\\n');
+const args=rawArgs[0]==='-f'&&rawArgs[1]==='json'?rawArgs.slice(2):rawArgs;
 const state=JSON.parse(fs.readFileSync(statePath,'utf8')); const save=()=>fs.writeFileSync(statePath,JSON.stringify(state));
 const value=(flag)=>{const i=args.indexOf(flag); return i<0?undefined:args[i+1]};
 if(args[0]==='--version'){console.log('juno-kanban 2.0.5');process.exit(0)}

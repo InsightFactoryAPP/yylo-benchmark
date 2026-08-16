@@ -37,7 +37,7 @@ describe('benchmark case lint', () => {
   it('reads only public CLI JSON and closes stdin', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'juno-benchmark-case-'));
     const fixture = path.join(root, 'kanban-fixture.mjs');
-    await writeFile(fixture, `if (process.argv.slice(2).join(' ') !== 'get CASE1 -f json') process.exit(9);\nprocess.stdout.write(JSON.stringify([${JSON.stringify(task())}]));\n`, 'utf8');
+    await writeFile(fixture, `if (process.argv.slice(2).join(' ') !== '-f json get CASE1') process.exit(9);\nprocess.stdout.write(JSON.stringify([${JSON.stringify(task())}]));\n`, 'utf8');
     await chmod(fixture, 0o700);
     await writeFile(path.join(root, 'juno-benchmark.config.json'), JSON.stringify({
       schema_version: 'juno_benchmark_config.v1', repository_id: 'root',

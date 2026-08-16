@@ -82,6 +82,12 @@ export class PublicKanbanClient {
     return { stdout: out, stderr: errorText };
   }
 
+  private async invokeJson(arguments_: readonly string[]): Promise<{ stdout: string; stderr: string }> {
+    // argparse treats -f/--format as a global option, so it must precede the
+    // public Kanban subcommand (for example: `-f json get TASK`).
+    return this.invoke(['-f', 'json', ...arguments_]);
+  }
+
   private parseJson(text: string): unknown {
     try { return JSON.parse(text) as unknown; }
     catch (error) { throw new Error(`public Kanban CLI returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`); }
@@ -96,14 +102,14 @@ export class PublicKanbanClient {
 
   public async getTask(taskId: string): Promise<KanbanTask> {
     assertTaskId(taskId);
-    const { stdout } = await this.invoke(['get', taskId, '-f', 'json']);
+    const { stdout } = await this.invokeJson(['get', taskId]);
     const tasks = arrayFromJson(this.parseJson(stdout), 'task').map((item) => KanbanTaskSchema.parse(item));
     if (tasks.length !== 1 || tasks[0]?.id !== taskId) throw new Error(`public Kanban CLI returned ${tasks.length} tasks instead of exactly ${taskId}`);
     return tasks[0];
   }
 
   private async latestRevision(taskId: string): Promise<string> {
-    const { stdout } = await this.invoke(['history', taskId, '--limit', '1', '-f', 'json']);
+    const { stdout } = await this.invokeJson(['history', taskId, '--limit', '1']);
     const events = arrayFromJson(this.parseJson(stdout), 'history event').map((item) => HistoryEventSchema.parse(item));
     if (events.length !== 1 || events[0]?.task_id !== taskId) throw new Error(`public Kanban CLI has no exact revision for ${taskId}`);
     return events[0].after_sha256;
@@ -130,7 +136,7 @@ export class PublicKanbanClient {
     const temporary = await mkdtemp(path.join(os.tmpdir(), 'juno-benchmark-kanban-'));
     const receiptPath = path.join(temporary, 'receipt.json');
     try {
-      const { stdout } = await this.invoke([...args, '--receipt-file', receiptPath, '-f', 'json']);
+      const { stdout } = await this.invokeJson([...args, '--receipt-file', receiptPath]);
       const receipt = await this.readReceipt(receiptPath);
       if (receipt.operation !== expected.operation || receipt.before_sha256 !== expected.before) throw new Error('public Kanban receipt does not bind the requested mutation');
       const tasks = arrayFromJson(this.parseJson(stdout), 'task').map((item) => KanbanTaskSchema.parse(item));
@@ -145,7 +151,7 @@ export class PublicKanbanClient {
   public async listRelatedRecords(kind: BenchmarkRecordInput['kind'], sourceTaskId: string): Promise<readonly RevisionedTask[]> {
     assertTaskId(sourceTaskId); await this.assertCompatibleVersion();
     const tag = kind === 'experiment' ? 'benchmark-experiment' : 'benchmark-investigation';
-    const { stdout } = await this.invoke(['search', '--tag', tag, '--field', `benchmark.source_task_id=${sourceTaskId}`, '--limit', '1000', '--projection', 'full', '-f', 'json']);
+    const { stdout } = await this.invokeJson(['search', '--tag', tag, '--field', `benchmark.source_task_id=${sourceTaskId}`, '--limit', '1000', '--projection', 'full']);
     const tasks = arrayFromJson(this.parseJson(stdout), 'task').map((item) => KanbanTaskSchema.parse(item))
       .filter((task) => task.feature_tags.includes(tag) && task.related_tasks.includes(sourceTaskId));
     if (tasks.length >= 1000) throw new Error(`related ${kind} discovery reached its 1000-record safety bound`);
@@ -157,7 +163,7 @@ export class PublicKanbanClient {
   public async findRelatedRecord(input: Pick<BenchmarkRecordInput, 'kind' | 'sourceTaskId' | 'recordId'>): Promise<RevisionedTask | null> {
     assertTaskId(input.sourceTaskId); await this.assertCompatibleVersion();
     const tag = input.kind === 'experiment' ? 'benchmark-experiment' : 'benchmark-investigation';
-    const { stdout } = await this.invoke(['search', '--tag', tag, '--field', `benchmark.record_id=${input.recordId}`, '--limit', '2', '--projection', 'full', '-f', 'json']);
+    const { stdout } = await this.invokeJson(['search', '--tag', tag, '--field', `benchmark.record_id=${input.recordId}`, '--limit', '2', '--projection', 'full']);
     const tasks = arrayFromJson(this.parseJson(stdout), 'task').map((item) => KanbanTaskSchema.parse(item));
     const matches = tasks.filter((task) => task.related_tasks.includes(input.sourceTaskId));
     if (matches.length > 1) throw new Error(`multiple canonical ${input.kind} records exist for ${input.recordId}`);
