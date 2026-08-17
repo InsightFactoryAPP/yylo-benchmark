@@ -1,9 +1,9 @@
 # Juno Benchmark
 
-Private, independent Kanban-SOT longitudinal evaluation package. Juno Benchmark owns
-case validation, isolated snapshots, shadow boards, immutable evidence, execution
-reconciliation, recovery, reports, and bounded investigations. It invokes Juno Code
-for agent sessions and uses only the public Juno Kanban JSON/receipt CLI contract.
+Juno Benchmark is the longitudinal evaluation and immutable-evidence system for agent runs. It invokes [Juno Code](https://github.com/askbudi/juno-code), the AI coding-agent orchestration CLI, and uses [Juno Ledger](https://github.com/askbudi/juno-ledger), the Git-native task and workflow ledger, through its public JSON/receipt CLI contract.
+
+The private, independent package owns case validation, isolated snapshots, shadow
+boards, execution reconciliation, recovery, reports, and bounded investigations.
 
 ```bash
 npm install
