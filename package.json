@@ -1,7 +1,7 @@
 {
   "name": "@juno-ai/juno-benchmark",
-  "version": "0.1.0",
-  "description": "Kanban-SOT longitudinal evaluation contracts and CLI",
+  "version": "0.1.1",
+  "description": "Immutable task-case and project-owned workflow evaluation contracts and CLI",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -17,7 +17,11 @@
   "files": [
     "dist",
     "README.md",
-    "workflows"
+    "workflows",
+    "scripts/verify-convert-installed-acceptance.mjs",
+    "fixtures/convert-2026-08-12/expected.json",
+    "fixtures/convert-2026-08-12/policy.yaml",
+    "fixtures/convert-2026-08-12/rubric.md"
   ],
   "scripts": {
     "build": "tsup",
@@ -32,6 +36,7 @@
   },
   "dependencies": {
     "commander": "^11.1.0",
+    "yaml": "^2.9.0",
     "zod": "^3.22.4"
   },
   "devDependencies": {

@@ -8,8 +8,9 @@ import { PublicKanbanClient } from '../kanban/client.js';
 import { planExperiment, type ExecutionPlan } from './index.js';
 import { buildSnapshot } from '../snapshot/index.js';
 import { hashProjectWikis } from '../wiki/index.js';
+import { planWorkflowFromProject, type WorkflowExecutionPlan } from '../workflow/plan.js';
 
-export async function createPlanFromProject(input: { cwd: string; configPath?: string; taskId: string; models: readonly string[]; attempts: number }): Promise<ExecutionPlan> {
+export async function createPlanFromProject(input: { cwd: string; configPath?: string; taskId: string; models: readonly string[]; attempts: number; aggregateMaxUsd?: number }): Promise<ExecutionPlan> {
   const loaded = await loadConfig({ cwd: input.cwd, ...(input.configPath === undefined ? {} : { configPath: input.configPath }) });
   const modelSelectors: Record<string, string> = {};
   const models = input.models.map((selector) => {
@@ -33,8 +34,20 @@ export async function createPlanFromProject(input: { cwd: string; configPath?: s
       snapshotHash: snapshot.content_identity, wikiHashes: Object.fromEntries(wikis.map((wiki) => [wiki.path, wiki.sha256])),
       toolPolicyHash: canonicalHash({ schema_version: 'juno_benchmark_tool_policy.v1', canonical_routing: 'absent' }),
       budgetHash: canonicalHash({ schema_version: 'juno_benchmark_budget.v1', timeout_ms: 1_800_000 }),
-      packageVersion: PACKAGE_VERSION, junoVersion: await discoverJunoVersion(loaded.projectRoot) });
+      packageVersion: PACKAGE_VERSION, junoVersion: await discoverJunoVersion(loaded.projectRoot),
+      ...(input.aggregateMaxUsd === undefined ? {} : { aggregateMaxUsd: input.aggregateMaxUsd }) });
   } finally { await rm(temporary, { recursive: true, force: true }); }
+}
+
+export async function createWorkflowPlanFromProject(input: {
+  cwd: string; configPath?: string; workflowPath: string; policyPath: string; models: readonly string[]; attempts: number;
+  variables?: Readonly<Record<string, string | number | boolean | null>>; selectedStepIds?: readonly string[];
+}): Promise<WorkflowExecutionPlan> {
+  const loaded = await loadConfig({ cwd: input.cwd, ...(input.configPath === undefined ? {} : { configPath: input.configPath }) });
+  return planWorkflowFromProject({ projectRoot: loaded.projectRoot, repositoryId: loaded.config.repository_id,
+    workflowPath: input.workflowPath, policyPath: input.policyPath, models: input.models, modelAliases: loaded.config.model_aliases,
+    attempts: input.attempts, ...(input.variables === undefined ? {} : { variables: input.variables }),
+    ...(input.selectedStepIds === undefined ? {} : { selectedStepIds: input.selectedStepIds }) });
 }
 
 export async function discoverJunoVersion(projectRoot: string): Promise<string> {

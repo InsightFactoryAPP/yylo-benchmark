@@ -3,8 +3,11 @@ import { EvalCaseV1Schema, type EvalCaseV1 } from '../contracts/schemas.js';
 import { lintBenchmarkCase } from '../case/lint.js';
 import { PublicKanbanClient, type CanonicalRecord } from '../kanban/client.js';
 import { ImmutableArtifactRegistry, type ArtifactReference } from '../registry/index.js';
+import { z } from 'zod';
+import { WorkflowExecutionPlanObjectSchema, WorkflowExecutionPlanSchema, type WorkflowExecutionPlan } from '../workflow/plan.js';
 
 export const PLAN_SCHEMA_VERSION = 'juno_benchmark_plan.v1' as const;
+export const DEFAULT_TASK_AGGREGATE_MAX_USD = 20;
 export interface PlanInputs {
   readonly taskId: string;
   /** Exact provider/model identities. Alias selectors must be resolved before planning. */
@@ -17,6 +20,7 @@ export interface PlanInputs {
   readonly budgetHash: `sha256:${string}`;
   readonly packageVersion: string;
   readonly junoVersion: string;
+  readonly aggregateMaxUsd?: number;
 }
 export interface ExecutionPlan {
   readonly schema_version: typeof PLAN_SCHEMA_VERSION;
@@ -33,8 +37,37 @@ export interface ExecutionPlan {
   readonly budget_hash: `sha256:${string}`;
   readonly package_version: string;
   readonly juno_version: string;
+  readonly spend_limits: { readonly currency: 'USD'; readonly aggregate_max_usd: number; readonly per_attempt_max_usd: number };
   readonly isolation: { readonly git_objects: 'isolated'; readonly host_filesystem: 'trusted'; readonly container: 'none' };
 }
+const planHash = z.string().regex(/^sha256:[0-9a-f]{64}$/u);
+export const TaskExecutionPlanSchema = z.object({
+  schema_version: z.literal(PLAN_SCHEMA_VERSION), plan_id: planHash, case: EvalCaseV1Schema,
+  models: z.array(z.string().regex(/^[^:/\s]+\/[^:/\s]+$/u)).min(1), model_selectors: z.record(z.string().trim().min(1)),
+  attempts: z.number().int().positive(), snapshot_hash: planHash, wiki_hashes: z.record(planHash),
+  tool_policy_hash: planHash, budget_hash: planHash, package_version: z.string().trim().min(1), juno_version: z.string().trim().min(1),
+  spend_limits: z.object({ currency: z.literal('USD'), aggregate_max_usd: z.number().finite().positive(), per_attempt_max_usd: z.number().finite().positive() }).strict(),
+  isolation: z.object({ git_objects: z.literal('isolated'), host_filesystem: z.literal('trusted'), container: z.literal('none') }).strict(),
+}).strict();
+export const TaskExecutionAuthorizationSchema = z.object({
+  schema_version: z.literal('juno_benchmark_task_authorization.v1'), plan_id: planHash,
+  authorization_id: z.string().trim().min(1), models: z.array(z.string().regex(/^[^:/\s]+\/[^:/\s]+$/u)).min(1),
+  expires_at: z.string().datetime({ offset: true }), currency: z.literal('USD'),
+  aggregate_max_usd: z.number().finite().positive(), per_attempt_max_usd: z.number().finite().positive(),
+}).strict();
+export type TaskExecutionAuthorization = z.infer<typeof TaskExecutionAuthorizationSchema>;
+/** The schema_version is the durable plan-kind discriminator; task plans bind spend limits into their hash. */
+export const BenchmarkPlanSchema = z.discriminatedUnion('schema_version', [TaskExecutionPlanSchema, WorkflowExecutionPlanObjectSchema]);
+export type BenchmarkPlan = ExecutionPlan | WorkflowExecutionPlan;
+export function parseBenchmarkPlan(value: unknown): BenchmarkPlan {
+  const discriminated = BenchmarkPlanSchema.parse(value);
+  const plan = discriminated.schema_version === 'juno_benchmark_workflow_plan.v1'
+    ? WorkflowExecutionPlanSchema.parse(discriminated) : discriminated as BenchmarkPlan;
+  const { plan_id: claimed, ...core } = plan;
+  if (claimed !== canonicalHash(core)) throw new Error('execution plan hash is invalid');
+  return plan;
+}
+
 export type RecordPolicy = { readonly noRecord?: false } | { readonly noRecord: true; readonly nonCanonicalScope: 'fixture' | 'local' };
 export interface AcceptedPlan {
   readonly canonical: boolean;
@@ -82,6 +115,11 @@ export async function planExperiment(client: PublicKanbanClient, input: PlanInpu
   if (Object.keys(input.modelSelectors ?? {}).some((model) => !models.includes(model))) throw new Error('model selector binding has no planned exact model');
   hash(input.snapshotHash, 'snapshot hash'); hash(input.toolPolicyHash, 'tool-policy hash'); hash(input.budgetHash, 'budget hash');
   for (const [wikiPath, wikiHash] of Object.entries(input.wikiHashes)) { if (wikiPath.trim() === '') throw new Error('empty wiki path'); hash(wikiHash, 'wiki hash'); }
+  const aggregateMaxUsd = input.aggregateMaxUsd ?? DEFAULT_TASK_AGGREGATE_MAX_USD;
+  if (!Number.isFinite(aggregateMaxUsd) || aggregateMaxUsd <= 0) throw new Error('aggregate max USD must be a positive finite number');
+  const dispatchCount = models.length * input.attempts;
+  const perAttemptMaxUsd = Math.floor((aggregateMaxUsd * 1_000_000) / dispatchCount) / 1_000_000;
+  if (perAttemptMaxUsd <= 0) throw new Error('aggregate max USD is too small for the planned task attempts');
   const source = await client.getRevisionedTask(input.taskId);
   const benchmarkCase = exactCase(lintBenchmarkCase(source.task), source.revision);
   const core = {
@@ -89,6 +127,7 @@ export async function planExperiment(client: PublicKanbanClient, input: PlanInpu
     snapshot_hash: input.snapshotHash, wiki_hashes: Object.fromEntries(Object.entries(input.wikiHashes).sort(([a], [b]) => a.localeCompare(b))),
     tool_policy_hash: input.toolPolicyHash, budget_hash: input.budgetHash,
     package_version: input.packageVersion, juno_version: input.junoVersion,
+    spend_limits: { currency: 'USD' as const, aggregate_max_usd: aggregateMaxUsd, per_attempt_max_usd: perAttemptMaxUsd },
     isolation: { git_objects: 'isolated', host_filesystem: 'trusted', container: 'none' } as const,
   };
   return Object.freeze({ ...core, plan_id: canonicalHash(core) });

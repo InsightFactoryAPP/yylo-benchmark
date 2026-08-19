@@ -22,10 +22,10 @@ describe('command and plugin registration', () => {
   it('predeclares the complete v1 command surface', () => {
     const definitions = createCommandRegistry().definitions();
     expect(definitions.map((item) => item.path.join(' '))).toEqual([
-      'init', 'case lint', 'plan', 'run', 'regrade', 'doctor', 'report', 'investigate', 'release-readiness',
+      'init', 'case lint', 'plan', 'run', 'recover', 'rejudge', 'regrade', 'doctor', 'report', 'investigate', 'release-readiness',
     ]);
     expect(definitions.filter((item) => item.available).map((item) => item.path.join(' '))).toEqual([
-      'init', 'case lint', 'plan', 'run', 'regrade', 'doctor', 'report', 'investigate', 'release-readiness',
+      'init', 'case lint', 'plan', 'run', 'recover', 'rejudge', 'regrade', 'doctor', 'report', 'investigate', 'release-readiness',
     ]);
     expect(Object.isFrozen(definitions[0])).toBe(true);
     expect(Object.isFrozen(definitions[0]?.path)).toBe(true);

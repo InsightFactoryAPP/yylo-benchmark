@@ -6,7 +6,7 @@ import type { FileHandle } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import type { CandidateInvocation, CandidateRunner } from '../execution/index.js';
+import { validateTaskAttemptSpendAuthorization, type CandidateInvocation, type CandidateRunner } from '../execution/index.js';
 import type { ProcessEvidence } from '../telemetry/index.js';
 
 export const AUTH_LAUNCHER_PROTOCOL = 'juno_benchmark_auth_launcher.v1' as const;
@@ -180,6 +180,8 @@ async function credentialBytes(options: AuthenticatedLauncherOptions, repository
 }
 
 async function resolveBoundary(options: AuthenticatedLauncherOptions, input: CandidateInvocation): Promise<ResolvedBoundary> {
+  try { validateTaskAttemptSpendAuthorization(input); }
+  catch { throw safeError('task dispatch is missing an exact unexpired spend authorization'); }
   const separator = input.attempt.model.indexOf('/');
   const modelProvider = separator > 0 ? input.attempt.model.slice(0, separator) : '';
   const bareModel = separator > 0 ? input.attempt.model.slice(separator + 1) : '';
@@ -267,6 +269,8 @@ export function createAuthenticatedJunoRunner(options: AuthenticatedLauncherOpti
       if (probe.timedOut || probe.code !== 0) throw safeError('version probe failed');
       const version = probe.stdout.trim().replace(/^juno-code\s+v?/u, '').replace(/^v/u, '');
       if (version !== input.attempt.juno_version) throw safeError('Juno Code version mismatch');
+      try { validateTaskAttemptSpendAuthorization(input); }
+      catch { throw safeError('task dispatch spend authorization expired or drifted during version probe'); }
       const started = new Date(); const monotonic = process.hrtime.bigint();
       const launched = await invokeLauncher(launchProcess, boundary, input, 'launch', input.timeoutMs);
       const ended = new Date();
@@ -285,6 +289,7 @@ export function createAuthenticatedJunoRunner(options: AuthenticatedLauncherOpti
     prepared?.boundary.secret.fill(0);
     prepared = { input, boundary };
   };
+  Object.defineProperty(runner, 'requiresSpendAuthorization', { value: true, enumerable: true });
   return runner;
 }
 

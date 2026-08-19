@@ -1,0 +1,510 @@
+{
+  "schema_version": "juno_benchmark_workflow_policy.v1",
+  "judge": {
+    "judge_id": "frontier-governed",
+    "judge_version": "2026-08-12.1",
+    "model": "openai-codex/gpt-5.6-sol",
+    "rubric_hash": "sha256:fe2cf822622b7fb02d35b6b6f2f5678c40d168ac97327b5b818fefb136016c67"
+  },
+  "authorization": {
+    "authorization_id": "convert-2026-08-12-production-and-spend-required",
+    "production": true,
+    "spend": true
+  },
+  "recovery": {
+    "ambiguous_effect": "manual",
+    "max_recovery_attempts": 1
+  },
+  "redaction": {
+    "secret_patterns": [
+      "API_KEY",
+      "TOKEN"
+    ],
+    "retain_prompts": false
+  },
+  "estimates": {
+    "models": [
+      {
+        "model": "openai-codex/gpt-5.6-sol",
+        "candidate_usd": 54,
+        "judge_usd": 2.6,
+        "runtime_ms": 14400000
+      },
+      {
+        "model": "openai-codex/gpt-5.6-terra",
+        "candidate_usd": 15,
+        "judge_usd": 2.6,
+        "runtime_ms": 10800000
+      },
+      {
+        "model": "openai-codex/gpt-5.6-luna",
+        "candidate_usd": 1.5,
+        "judge_usd": 2.6,
+        "runtime_ms": 7200000
+      },
+      {
+        "model": "zai/glm-5.2",
+        "candidate_usd": 8,
+        "judge_usd": 2.6,
+        "runtime_ms": 10800000
+      }
+    ]
+  },
+  "steps": [
+    {
+      "step_id": "purchases",
+      "scoring_id": "convert-2026-08-12-purchases",
+      "side_effect": "production",
+      "resources": [
+        {
+          "type": "production",
+          "id": "PROD_IF_BACKEND",
+          "access": "exclusive"
+        },
+        {
+          "type": "production",
+          "id": "PROD_INSIGHTAGENT_BACKEND",
+          "access": "exclusive"
+        },
+        {
+          "type": "shared_resource",
+          "id": "DATA_2026_PROVIDER",
+          "access": "exclusive"
+        }
+      ],
+      "limits": {
+        "timeout_ms": 3600000,
+        "max_usd": 10
+      },
+      "authorization": "production_and_spend",
+      "recovery": "manual",
+      "redaction": {
+        "patterns": [
+          "API_KEY",
+          "TOKEN"
+        ],
+        "retain_prompt": false
+      }
+    },
+    {
+      "step_id": "upgraded_users_posthog_patterns",
+      "scoring_id": "convert-2026-08-12-upgraded_users_posthog_patterns",
+      "side_effect": "production",
+      "resources": [
+        {
+          "type": "production",
+          "id": "PROD_IF_BACKEND",
+          "access": "exclusive"
+        },
+        {
+          "type": "production",
+          "id": "PROD_INSIGHTAGENT_BACKEND",
+          "access": "exclusive"
+        },
+        {
+          "type": "shared_resource",
+          "id": "DATA_2026_PROVIDER",
+          "access": "exclusive"
+        }
+      ],
+      "limits": {
+        "timeout_ms": 3600000,
+        "max_usd": 10
+      },
+      "authorization": "production_and_spend",
+      "recovery": "manual",
+      "redaction": {
+        "patterns": [
+          "API_KEY",
+          "TOKEN"
+        ],
+        "retain_prompt": false
+      }
+    },
+    {
+      "step_id": "product_exception_triage",
+      "scoring_id": "convert-2026-08-12-product_exception_triage",
+      "side_effect": "production",
+      "resources": [
+        {
+          "type": "production",
+          "id": "PROD_IF_BACKEND",
+          "access": "exclusive"
+        },
+        {
+          "type": "production",
+          "id": "PROD_INSIGHTAGENT_BACKEND",
+          "access": "exclusive"
+        },
+        {
+          "type": "shared_resource",
+          "id": "DATA_2026_PROVIDER",
+          "access": "exclusive"
+        }
+      ],
+      "limits": {
+        "timeout_ms": 3600000,
+        "max_usd": 10
+      },
+      "authorization": "production_and_spend",
+      "recovery": "manual",
+      "redaction": {
+        "patterns": [
+          "API_KEY",
+          "TOKEN"
+        ],
+        "retain_prompt": false
+      }
+    },
+    {
+      "step_id": "login_issue_patterns",
+      "scoring_id": "convert-2026-08-12-login_issue_patterns",
+      "side_effect": "production",
+      "resources": [
+        {
+          "type": "production",
+          "id": "PROD_IF_BACKEND",
+          "access": "exclusive"
+        },
+        {
+          "type": "production",
+          "id": "PROD_INSIGHTAGENT_BACKEND",
+          "access": "exclusive"
+        },
+        {
+          "type": "shared_resource",
+          "id": "DATA_2026_PROVIDER",
+          "access": "exclusive"
+        }
+      ],
+      "limits": {
+        "timeout_ms": 3600000,
+        "max_usd": 10
+      },
+      "authorization": "production_and_spend",
+      "recovery": "manual",
+      "redaction": {
+        "patterns": [
+          "API_KEY",
+          "TOKEN"
+        ],
+        "retain_prompt": false
+      }
+    },
+    {
+      "step_id": "auth_friction",
+      "scoring_id": "convert-2026-08-12-auth_friction",
+      "side_effect": "production",
+      "resources": [
+        {
+          "type": "production",
+          "id": "PROD_IF_BACKEND",
+          "access": "exclusive"
+        },
+        {
+          "type": "production",
+          "id": "PROD_INSIGHTAGENT_BACKEND",
+          "access": "exclusive"
+        },
+        {
+          "type": "shared_resource",
+          "id": "DATA_2026_PROVIDER",
+          "access": "exclusive"
+        }
+      ],
+      "limits": {
+        "timeout_ms": 3600000,
+        "max_usd": 10
+      },
+      "authorization": "production_and_spend",
+      "recovery": "manual",
+      "redaction": {
+        "patterns": [
+          "API_KEY",
+          "TOKEN"
+        ],
+        "retain_prompt": false
+      }
+    },
+    {
+      "step_id": "first_time_product_visitor_funnel",
+      "scoring_id": "convert-2026-08-12-first_time_product_visitor_funnel",
+      "side_effect": "production",
+      "resources": [
+        {
+          "type": "production",
+          "id": "PROD_IF_BACKEND",
+          "access": "exclusive"
+        },
+        {
+          "type": "production",
+          "id": "PROD_INSIGHTAGENT_BACKEND",
+          "access": "exclusive"
+        },
+        {
+          "type": "shared_resource",
+          "id": "DATA_2026_PROVIDER",
+          "access": "exclusive"
+        }
+      ],
+      "limits": {
+        "timeout_ms": 3600000,
+        "max_usd": 10
+      },
+      "authorization": "production_and_spend",
+      "recovery": "manual",
+      "redaction": {
+        "patterns": [
+          "API_KEY",
+          "TOKEN"
+        ],
+        "retain_prompt": false
+      }
+    },
+    {
+      "step_id": "user_activity_dot_plot",
+      "scoring_id": "convert-2026-08-12-user_activity_dot_plot",
+      "side_effect": "production",
+      "resources": [
+        {
+          "type": "production",
+          "id": "PROD_IF_BACKEND",
+          "access": "exclusive"
+        },
+        {
+          "type": "production",
+          "id": "PROD_INSIGHTAGENT_BACKEND",
+          "access": "exclusive"
+        },
+        {
+          "type": "shared_resource",
+          "id": "DATA_2026_PROVIDER",
+          "access": "exclusive"
+        }
+      ],
+      "limits": {
+        "timeout_ms": 3600000,
+        "max_usd": 10
+      },
+      "authorization": "production_and_spend",
+      "recovery": "manual",
+      "redaction": {
+        "patterns": [
+          "API_KEY",
+          "TOKEN"
+        ],
+        "retain_prompt": false
+      }
+    },
+    {
+      "step_id": "user_activity_dot_plot_review",
+      "scoring_id": "convert-2026-08-12-user_activity_dot_plot_review",
+      "side_effect": "production",
+      "resources": [
+        {
+          "type": "production",
+          "id": "PROD_IF_BACKEND",
+          "access": "exclusive"
+        },
+        {
+          "type": "production",
+          "id": "PROD_INSIGHTAGENT_BACKEND",
+          "access": "exclusive"
+        },
+        {
+          "type": "shared_resource",
+          "id": "DATA_2026_PROVIDER",
+          "access": "exclusive"
+        }
+      ],
+      "limits": {
+        "timeout_ms": 3600000,
+        "max_usd": 10
+      },
+      "authorization": "production_and_spend",
+      "recovery": "manual",
+      "redaction": {
+        "patterns": [
+          "API_KEY",
+          "TOKEN"
+        ],
+        "retain_prompt": false
+      }
+    },
+    {
+      "step_id": "data_provider_drain_progress",
+      "scoring_id": "convert-2026-08-12-data_provider_drain_progress",
+      "side_effect": "production",
+      "resources": [
+        {
+          "type": "production",
+          "id": "PROD_IF_BACKEND",
+          "access": "exclusive"
+        },
+        {
+          "type": "production",
+          "id": "PROD_INSIGHTAGENT_BACKEND",
+          "access": "exclusive"
+        },
+        {
+          "type": "shared_resource",
+          "id": "DATA_2026_PROVIDER",
+          "access": "exclusive"
+        }
+      ],
+      "limits": {
+        "timeout_ms": 3600000,
+        "max_usd": 10
+      },
+      "authorization": "production_and_spend",
+      "recovery": "manual",
+      "redaction": {
+        "patterns": [
+          "API_KEY",
+          "TOKEN"
+        ],
+        "retain_prompt": false
+      }
+    },
+    {
+      "step_id": "if_backend_prod_issue_export",
+      "scoring_id": "convert-2026-08-12-if_backend_prod_issue_export",
+      "side_effect": "production",
+      "resources": [
+        {
+          "type": "production",
+          "id": "PROD_IF_BACKEND",
+          "access": "exclusive"
+        },
+        {
+          "type": "production",
+          "id": "PROD_INSIGHTAGENT_BACKEND",
+          "access": "exclusive"
+        },
+        {
+          "type": "shared_resource",
+          "id": "DATA_2026_PROVIDER",
+          "access": "exclusive"
+        }
+      ],
+      "limits": {
+        "timeout_ms": 3600000,
+        "max_usd": 10
+      },
+      "authorization": "production_and_spend",
+      "recovery": "manual",
+      "redaction": {
+        "patterns": [
+          "API_KEY",
+          "TOKEN"
+        ],
+        "retain_prompt": false
+      }
+    },
+    {
+      "step_id": "insightagent_backend_prod_issue_export",
+      "scoring_id": "convert-2026-08-12-insightagent_backend_prod_issue_export",
+      "side_effect": "production",
+      "resources": [
+        {
+          "type": "production",
+          "id": "PROD_IF_BACKEND",
+          "access": "exclusive"
+        },
+        {
+          "type": "production",
+          "id": "PROD_INSIGHTAGENT_BACKEND",
+          "access": "exclusive"
+        },
+        {
+          "type": "shared_resource",
+          "id": "DATA_2026_PROVIDER",
+          "access": "exclusive"
+        }
+      ],
+      "limits": {
+        "timeout_ms": 3600000,
+        "max_usd": 10
+      },
+      "authorization": "production_and_spend",
+      "recovery": "manual",
+      "redaction": {
+        "patterns": [
+          "API_KEY",
+          "TOKEN"
+        ],
+        "retain_prompt": false
+      }
+    },
+    {
+      "step_id": "data_provider_crontab_logs",
+      "scoring_id": "convert-2026-08-12-data_provider_crontab_logs",
+      "side_effect": "production",
+      "resources": [
+        {
+          "type": "production",
+          "id": "PROD_IF_BACKEND",
+          "access": "exclusive"
+        },
+        {
+          "type": "production",
+          "id": "PROD_INSIGHTAGENT_BACKEND",
+          "access": "exclusive"
+        },
+        {
+          "type": "shared_resource",
+          "id": "DATA_2026_PROVIDER",
+          "access": "exclusive"
+        }
+      ],
+      "limits": {
+        "timeout_ms": 3600000,
+        "max_usd": 10
+      },
+      "authorization": "production_and_spend",
+      "recovery": "manual",
+      "redaction": {
+        "patterns": [
+          "API_KEY",
+          "TOKEN"
+        ],
+        "retain_prompt": false
+      }
+    },
+    {
+      "step_id": "product_analytics_conversion_behavior",
+      "scoring_id": "convert-2026-08-12-product_analytics_conversion_behavior",
+      "side_effect": "production",
+      "resources": [
+        {
+          "type": "production",
+          "id": "PROD_IF_BACKEND",
+          "access": "exclusive"
+        },
+        {
+          "type": "production",
+          "id": "PROD_INSIGHTAGENT_BACKEND",
+          "access": "exclusive"
+        },
+        {
+          "type": "shared_resource",
+          "id": "DATA_2026_PROVIDER",
+          "access": "exclusive"
+        }
+      ],
+      "limits": {
+        "timeout_ms": 3600000,
+        "max_usd": 10
+      },
+      "authorization": "production_and_spend",
+      "recovery": "manual",
+      "redaction": {
+        "patterns": [
+          "API_KEY",
+          "TOKEN"
+        ],
+        "retain_prompt": false
+      }
+    }
+  ]
+}

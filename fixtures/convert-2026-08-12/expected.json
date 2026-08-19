@@ -1,0 +1,61 @@
+{
+  "schema_version": "juno_benchmark_installed_acceptance_fixture.v1",
+  "consumer": "Convert",
+  "historical_date": "2026-08-12",
+  "historical_source_ref": "detached@816fa6272fb7071d7e9cbe20aeaa232a0d4920e3",
+  "historical_source_commit": "816fa6272fb7071d7e9cbe20aeaa232a0d4920e3",
+  "workflow_path": ".juno_task/workflows/daily_product_ops.yaml",
+  "workflow_raw_sha256": "sha256:31814602a5e288bdea3a9845ee7f2cee3cdba51e8ea9d1e4de56238807006322",
+  "workflow_semantics_sha256": "sha256:86e9f67b1fdec22feba29bdcc3545fc0f38f24599ccd75da20feaf20dc88cd9d",
+  "current_step_count": 17,
+  "selected_step_ids": [
+    "purchases",
+    "upgraded_users_posthog_patterns",
+    "product_exception_triage",
+    "login_issue_patterns",
+    "auth_friction",
+    "first_time_product_visitor_funnel",
+    "user_activity_dot_plot",
+    "user_activity_dot_plot_review",
+    "data_provider_drain_progress",
+    "if_backend_prod_issue_export",
+    "insightagent_backend_prod_issue_export",
+    "data_provider_crontab_logs",
+    "product_analytics_conversion_behavior"
+  ],
+  "injection_step_ids": [
+    "purchases",
+    "upgraded_users_posthog_patterns",
+    "product_exception_triage",
+    "login_issue_patterns",
+    "first_time_product_visitor_funnel",
+    "user_activity_dot_plot_review",
+    "data_provider_drain_progress",
+    "if_backend_prod_issue_export",
+    "insightagent_backend_prod_issue_export",
+    "data_provider_crontab_logs",
+    "product_analytics_conversion_behavior"
+  ],
+  "models": [
+    "openai-codex/gpt-5.6-sol",
+    "openai-codex/gpt-5.6-terra",
+    "openai-codex/gpt-5.6-luna",
+    "zai/glm-5.2"
+  ],
+  "execution": "strictly_sequential",
+  "resources": [
+    "production:PROD_IF_BACKEND",
+    "production:PROD_INSIGHTAGENT_BACKEND",
+    "shared_resource:DATA_2026_PROVIDER"
+  ],
+  "judge": {
+    "judge_id": "frontier-governed",
+    "judge_version": "2026-08-12.1",
+    "model": "openai-codex/gpt-5.6-sol",
+    "rubric_hash": "sha256:fe2cf822622b7fb02d35b6b6f2f5678c40d168ac97327b5b818fefb136016c67"
+  },
+  "estimated_total_usd": 88.9,
+  "estimated_total_runtime_ms": 43200000,
+  "authorization": "required_but_not_granted",
+  "dispatch_expected": 0
+}

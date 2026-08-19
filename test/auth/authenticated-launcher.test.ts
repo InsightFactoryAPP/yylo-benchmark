@@ -6,11 +6,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { authenticatedLauncherOptionsFromEnvironment, createAuthenticatedJunoRunner } from '../../src/auth/index.js';
 import type { AttemptV1 } from '../../src/contracts/schemas.js';
 import { reconcileJunoTelemetry } from '../../src/telemetry/index.js';
+import { canonicalHash } from '../../src/contracts/canonical.js';
 
 const digest = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
 const h = `sha256:${'1'.repeat(64)}` as const;
 function attemptFor(provider: string, model: string): AttemptV1 {
-  return { schema_version: 'juno_benchmark_attempt.v1', attempt_id: 'A', experiment_id: 'E', case_input_hash: h,
+  return { schema_version: 'juno_benchmark_attempt.v1', attempt_id: 'A', experiment_id: h, case_input_hash: h,
     snapshot_hash: h, prompt_hash: h, agent: 'juno-code', provider, model, tool_policy_hash: h,
     budget_hash: h, package_version: '0.1.0', juno_version: '9.8.7', session_topology: 'fresh' };
 }
@@ -29,7 +30,7 @@ const requiredIdentities = [
 
 type LeakMode = 'raw-stdout' | 'json-stdout' | 'json-stderr';
 
-async function syntheticLauncher(root: string, options: { leak?: LeakMode; rewriteProvider?: string; probeGate?: { entered: string; release: string } } = {}): Promise<{ executable: string; sha256: string }> {
+async function syntheticLauncher(root: string, options: { leak?: LeakMode; rewriteProvider?: string; probeGate?: { entered: string; release: string }; launchReceived?: string } = {}): Promise<{ executable: string; sha256: string }> {
   const executable = path.join(root, 'reviewed-launcher.mjs');
   const source = `#!/usr/bin/env node
 import fs from 'node:fs'; import { spawnSync } from 'node:child_process';
@@ -43,6 +44,7 @@ if(operation==='probe'){
   console.log(version); process.exit(0);
 }
 const secret=fs.readFileSync(3,'utf8'); fs.closeSync(3);
+const launchReceived=${JSON.stringify(options.launchReceived)}; if(launchReceived)fs.writeFileSync(launchReceived,'received',{mode:0o600});
 const leakMode=${JSON.stringify(options.leak)};
 if (leakMode==='raw-stdout') { console.log(secret); process.exit(0); }
 if (leakMode==='json-stdout') { console.log(JSON.stringify(secret)); process.exit(0); }
@@ -87,7 +89,14 @@ async function waitForPinnedDirectory(excluded: ReadonlySet<string>): Promise<st
 }
 
 function invocation(repository: string, selectedAttempt: AttemptV1 = attempt) {
-  return { attempt: selectedAttempt, repository, prompt: 'synthetic prompt', environment: { HOME: path.join(repository, '.home'), XDG_CONFIG_HOME: path.join(repository, '.xdg'), PATH: process.env.PATH }, timeoutMs: 5_000 };
+  const grant = { schema_version: 'juno_benchmark_task_authorization.v1' as const, plan_id: selectedAttempt.experiment_id as `sha256:${string}`,
+    authorization_id: 'fixture', models: [selectedAttempt.model], expires_at: '2099-01-01T00:00:00.000Z', currency: 'USD' as const,
+    aggregate_max_usd: 20, per_attempt_max_usd: 20 };
+  return { attempt: selectedAttempt, repository, prompt: 'synthetic prompt', environment: { HOME: path.join(repository, '.home'), XDG_CONFIG_HOME: path.join(repository, '.xdg'), PATH: process.env.PATH }, timeoutMs: 5_000,
+    spendAuthorization: { schema_version: 'juno_benchmark_task_spend_dispatch.v1' as const, authorization_hash: canonicalHash(grant),
+      plan_id: selectedAttempt.experiment_id as `sha256:${string}`, authorization_id: 'fixture', model: selectedAttempt.model,
+      provider: selectedAttempt.provider, attempt: 1, currency: 'USD' as const, attempt_max_usd: 20, aggregate_max_usd: 20,
+      reserved_before_usd: 0, remaining_before_usd: 20, expires_at: '2099-01-01T00:00:00.000Z', grant } };
 }
 
 async function fixture(prefix: string) {
@@ -113,6 +122,32 @@ describe('authenticated launcher boundary', () => {
         evidence: { expected_identity: { provider, model: model.slice(model.indexOf('/') + 1) } } });
       expect(selectedAttempt).toMatchObject({ provider, model }); expect(JSON.stringify(evidence)).not.toContain(secret);
       expect(await readFile(launcher.executable, 'utf8')).not.toContain(secret);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it('rejects a hashed expired grant with a forged future envelope expiry before credentials or provider work', async () => {
+    const { root, repository } = await fixture('benchmark-auth-expiry-binding-'); const launcher = await syntheticLauncher(root);
+    const request = invocation(repository); const expiredGrant = { ...request.spendAuthorization.grant, expires_at: '2020-01-01T00:00:00.000Z' };
+    const runner = createAuthenticatedJunoRunner({ ...launcher, provider: 'openai', credential: { kind: 'environment', name: 'OPENAI_API_KEY' } });
+    await expect(runner.preflight?.({ ...request, spendAuthorization: { ...request.spendAuthorization,
+      authorization_hash: canonicalHash(expiredGrant), grant: expiredGrant } })).rejects.toThrow(/spend authorization/u);
+  });
+
+  it('revalidates expiry after probing before releasing credentials to the provider launcher', async () => {
+    const { root, repository } = await fixture('benchmark-auth-expiry-probe-');
+    const gate = { entered: path.join(root, 'probe-entered'), release: path.join(root, 'probe-release') };
+    const launchReceived = path.join(root, 'launch-received'); const launcher = await syntheticLauncher(root, { probeGate: gate, launchReceived });
+    const secret = randomBytes(32).toString('base64url'); vi.stubEnv('OPENAI_API_KEY', secret);
+    try {
+      const request = invocation(repository); const expiresAt = new Date(Date.now() + 300).toISOString();
+      const grant = { ...request.spendAuthorization.grant, expires_at: expiresAt };
+      const expiring = { ...request, spendAuthorization: { ...request.spendAuthorization, expires_at: expiresAt,
+        authorization_hash: canonicalHash(grant), grant } };
+      const runner = createAuthenticatedJunoRunner({ ...launcher, provider: 'openai', credential: { kind: 'environment', name: 'OPENAI_API_KEY' } });
+      const pending = runner(expiring); await waitForFile(gate.entered);
+      await new Promise((resolve) => setTimeout(resolve, 400)); await writeFile(gate.release, 'release');
+      await expect(pending).rejects.toThrow(/expired or drifted/u);
+      await expect(access(launchReceived)).rejects.toThrow();
     } finally { vi.unstubAllEnvs(); }
   });
 
@@ -233,8 +268,8 @@ describe('authenticated launcher boundary', () => {
       const unsafe = createAuthenticatedJunoRunner({ ...launcher, provider: 'openai-codex', credential: { kind: 'environment', name: 'OPENAI_API_KEY' } });
       await expect(unsafe.preflight?.(invocation(repository, attemptFor('openai-codex', 'openai-codex/gpt-5.6-sol')))).rejects.toThrow(/transport is not allowlisted/u);
       const rewrittenProvider = createAuthenticatedJunoRunner({ ...launcher, provider: 'openai-codex', credential: { kind: 'environment', name: 'OPENAI_CODEX_TOKEN' } });
-      await expect(rewrittenProvider.preflight?.(invocation(repository, attemptFor('openai', 'openai-codex/gpt-5.6-sol')))).rejects.toThrow(/exactly match/u);
-      await expect(rewrittenProvider.preflight?.(invocation(repository, attemptFor('openai-codex', 'openai/gpt-5.6-sol')))).rejects.toThrow(/exactly match/u);
+      await expect(rewrittenProvider.preflight?.(invocation(repository, attemptFor('openai', 'openai-codex/gpt-5.6-sol')))).rejects.toThrow(/spend authorization/u);
+      await expect(rewrittenProvider.preflight?.(invocation(repository, attemptFor('openai-codex', 'openai/gpt-5.6-sol')))).rejects.toThrow(/spend authorization/u);
     } finally {
       vi.unstubAllEnvs();
       if (priorCodexToken === undefined) delete process.env['OPENAI_CODEX_TOKEN']; else process.env['OPENAI_CODEX_TOKEN'] = priorCodexToken;

@@ -5,11 +5,12 @@ import path from 'node:path';
 import { canonicalHash, canonicalJson, sha256Hex } from '../contracts/canonical.js';
 import { AttemptV1Schema, NormalizedResultV1Schema, type AttemptV1, type NormalizedResultV1 } from '../contracts/schemas.js';
 import type { PublicKanbanClient, RevisionedTask } from '../kanban/client.js';
-import { acceptPlan, validatePlanModelBindings, type ExecutionPlan, type RecordPolicy } from '../planning/index.js';
+import { acceptPlan, TaskExecutionAuthorizationSchema, validatePlanModelBindings, type ExecutionPlan, type RecordPolicy, type TaskExecutionAuthorization } from '../planning/index.js';
 import { ImmutableArtifactRegistry, type ArtifactReference, type ManifestEntry } from '../registry/index.js';
 import { sanitizeCandidateEnvironment } from '../shadow-kanban/index.js';
 import { reconcileJunoTelemetry, type ProcessEvidence } from '../telemetry/index.js';
 import { gradeRetainedAttempt, verifyRequiredGraderReceipt, type GraderRunner } from '../grading/index.js';
+import { PersistentTypedResourceLocks } from './resource-lock.js';
 
 export interface PreparedAttempt {
   readonly repository: string;
@@ -25,10 +26,46 @@ export interface CandidateInvocation {
   readonly prompt: string;
   readonly environment: NodeJS.ProcessEnv;
   readonly timeoutMs: number;
+  readonly spendAuthorization?: TaskAttemptSpendAuthorization;
+}
+export interface TaskAttemptSpendAuthorization {
+  readonly schema_version: 'juno_benchmark_task_spend_dispatch.v1'; readonly authorization_hash: `sha256:${string}`;
+  readonly plan_id: `sha256:${string}`; readonly authorization_id: string; readonly model: string; readonly provider: string;
+  readonly attempt: number; readonly currency: 'USD'; readonly attempt_max_usd: number; readonly aggregate_max_usd: number;
+  readonly reserved_before_usd: number; readonly remaining_before_usd: number; readonly expires_at: string;
+  readonly grant: TaskExecutionAuthorization;
+}
+
+export function validateTaskAttemptSpendAuthorization(input: CandidateInvocation): TaskAttemptSpendAuthorization {
+  const spend = input.spendAuthorization;
+  if (spend === undefined) throw new Error('Juno task dispatch is missing an exact unexpired spend authorization');
+  let grant: TaskExecutionAuthorization;
+  try { grant = TaskExecutionAuthorizationSchema.parse(spend.grant); }
+  catch { throw new Error('Juno task dispatch is missing an exact unexpired spend authorization'); }
+  const reserved = spend.reserved_before_usd; const remaining = spend.remaining_before_usd;
+  const separator = spend.model.indexOf('/');
+  const modelProvider = separator > 0 ? spend.model.slice(0, separator) : '';
+  if (spend.schema_version !== 'juno_benchmark_task_spend_dispatch.v1'
+      || canonicalHash(grant) !== spend.authorization_hash || grant.plan_id !== spend.plan_id
+      || grant.authorization_id !== spend.authorization_id || grant.models.includes(spend.model) === false
+      || grant.currency !== spend.currency || grant.aggregate_max_usd !== spend.aggregate_max_usd
+      || grant.per_attempt_max_usd !== spend.attempt_max_usd || spend.plan_id !== input.attempt.experiment_id
+      || spend.model !== input.attempt.model || spend.provider !== input.attempt.provider
+      || modelProvider === '' || spend.provider !== modelProvider
+      || !Number.isInteger(spend.attempt) || spend.attempt < 1
+      || !Number.isFinite(reserved) || reserved < 0 || !Number.isFinite(remaining) || remaining < 0
+      || Math.abs((spend.aggregate_max_usd - reserved) - remaining) > 1e-9
+      || reserved + spend.attempt_max_usd > spend.aggregate_max_usd + 1e-9
+      || spend.expires_at !== grant.expires_at || !Number.isFinite(Date.parse(grant.expires_at))
+      || Date.parse(grant.expires_at) <= Date.now()) {
+    throw new Error('Juno task dispatch is missing an exact unexpired spend authorization');
+  }
+  return spend;
 }
 export type CandidateRunner = ((input: CandidateInvocation) => Promise<ProcessEvidence>) & {
   /** Admission hook runs before the durable dispatch marker and any paid operation. */
   preflight?: (input: CandidateInvocation) => Promise<void>;
+  readonly requiresSpendAuthorization?: true;
 };
 export interface RunExperimentOptions {
   readonly client: PublicKanbanClient;
@@ -39,6 +76,8 @@ export interface RunExperimentOptions {
   readonly grader?: GraderRunner | undefined;
   readonly recordPolicy?: RecordPolicy;
   readonly timeoutMs?: number;
+  readonly authorization?: TaskExecutionAuthorization;
+  readonly locks?: PersistentTypedResourceLocks;
 }
 export interface AttemptOutcome { readonly attempt: AttemptV1; readonly result: NormalizedResultV1; readonly provider: string; readonly recovered: boolean }
 export interface ExperimentOutcome { readonly experimentTaskId: string | null; readonly attempts: readonly AttemptOutcome[]; readonly recovered: boolean }
@@ -85,6 +124,21 @@ async function dispatchedAttempts(registry: ImmutableArtifactRegistry, id: strin
     result.add(value.attempt_id);
   }
   return result;
+}
+
+function taskAuthorization(plan: ExecutionPlan, authorization: TaskExecutionAuthorization | undefined, required: boolean): {
+  grant: TaskExecutionAuthorization | null; hash: `sha256:${string}` | null;
+} {
+  if (!required && authorization === undefined) return { grant: null, hash: null };
+  if (authorization === undefined) throw new Error('cost-bearing task execution requires explicit plan-bound spend authorization');
+  const grant = TaskExecutionAuthorizationSchema.parse(authorization);
+  if (grant.plan_id !== plan.plan_id || canonicalHash(grant.models) !== canonicalHash(plan.models)
+      || grant.currency !== plan.spend_limits.currency || grant.aggregate_max_usd !== plan.spend_limits.aggregate_max_usd
+      || grant.per_attempt_max_usd !== plan.spend_limits.per_attempt_max_usd) {
+    throw new Error('task execution spend authorization does not exactly match the immutable plan');
+  }
+  if (Date.parse(grant.expires_at) <= Date.now()) throw new Error('task execution spend authorization is expired');
+  return { grant, hash: canonicalHash(grant) };
 }
 
 async function gitCommand(repository: string, args: readonly string[], extraEnvironment: NodeJS.ProcessEnv = {}, input?: Buffer): Promise<Buffer> {
@@ -192,7 +246,8 @@ async function updateCanonicalIndex(options: Pick<RunExperimentOptions, 'client'
 }
 
 /** Execute each immutable attempt once. A durable dispatch marker forbids automatic redispatch after a crash. */
-export async function runExperiment(options: RunExperimentOptions): Promise<ExperimentOutcome> {
+async function runExperimentWithPlanLease(options: RunExperimentOptions): Promise<ExperimentOutcome> {
+  const verifiedSpend = taskAuthorization(options.plan, options.authorization, options.runner.requiresSpendAuthorization === true);
   const accepted = await acceptPlan(options.client, options.registry, options.plan, options.recordPolicy);
   const source = await options.client.getRevisionedTask(options.plan.case.task_id);
   if (source.revision !== options.plan.case.task_revision) throw new Error('benchmark case changed after plan acceptance');
@@ -212,12 +267,28 @@ export async function runExperiment(options: RunExperimentOptions): Promise<Expe
     }
     const prepared = await options.prepareAttempt(item);
     if (prepared.snapshotHash !== options.plan.snapshot_hash) throw new Error(`prepared snapshot does not match plan for ${item.attempt_id}`);
-    const invocation = { attempt: item, repository: prepared.repository, prompt: source.task.body, environment: sanitizeCandidateEnvironment(process.env, prepared.repository), timeoutMs: options.timeoutMs ?? 30 * 60_000 };
+    const ordinalBefore = options.plan.models.indexOf(model) * options.plan.attempts + (ordinal - 1);
+    const reservedBefore = Math.round(ordinalBefore * options.plan.spend_limits.per_attempt_max_usd * 1_000_000) / 1_000_000;
+    if (verifiedSpend.grant !== null && reservedBefore + options.plan.spend_limits.per_attempt_max_usd > verifiedSpend.grant.aggregate_max_usd + 1e-9) {
+      throw new Error(`task aggregate USD ceiling would be exceeded before dispatching ${item.attempt_id}`);
+    }
+    const spendAuthorization = verifiedSpend.grant === null || verifiedSpend.hash === null ? undefined : Object.freeze({
+      schema_version: 'juno_benchmark_task_spend_dispatch.v1' as const, authorization_hash: verifiedSpend.hash,
+      plan_id: options.plan.plan_id, authorization_id: verifiedSpend.grant.authorization_id, model: item.model, provider: item.provider,
+      attempt: ordinal, currency: 'USD' as const, attempt_max_usd: options.plan.spend_limits.per_attempt_max_usd,
+      aggregate_max_usd: verifiedSpend.grant.aggregate_max_usd, reserved_before_usd: reservedBefore,
+      remaining_before_usd: Math.round((verifiedSpend.grant.aggregate_max_usd - reservedBefore) * 1_000_000) / 1_000_000,
+      expires_at: verifiedSpend.grant.expires_at, grant: verifiedSpend.grant,
+    });
+    const invocation = { attempt: item, repository: prepared.repository, prompt: source.task.body, environment: sanitizeCandidateEnvironment(process.env, prepared.repository), timeoutMs: options.timeoutMs ?? 30 * 60_000,
+      ...(spendAuthorization === undefined ? {} : { spendAuthorization }) };
     // Credential source and immutable launcher identity must be admitted before
     // recording dispatch. A rejected boundary can therefore be retried safely
     // without ever duplicating a paid attempt.
     await options.runner.preflight?.(invocation);
-    const dispatch = await jsonArtifact(options.registry, 'attempt-dispatched', { schema_version: 'juno_benchmark_dispatch.v1', attempt_id: item.attempt_id, snapshot_hash: prepared.snapshotHash, shadow_hash: prepared.shadowHash });
+    const dispatch = await jsonArtifact(options.registry, 'attempt-dispatched', { schema_version: 'juno_benchmark_dispatch.v1', attempt_id: item.attempt_id,
+      snapshot_hash: prepared.snapshotHash, shadow_hash: prepared.shadowHash, authorization_hash: verifiedSpend.hash,
+      spend_reservation_usd: spendAuthorization?.attempt_max_usd ?? 0 });
     await appendOnce(options.registry, key, dispatch);
     let processEvidence: ProcessEvidence;
     try {
@@ -234,6 +305,9 @@ export async function runExperiment(options: RunExperimentOptions): Promise<Expe
     const patchedEvidence = { ...processEvidence, attemptId: item.attempt_id, expectedModel: item.model,
       expectedJunoVersion: item.juno_version, patchHash: patchReference.sha256 };
     const reconciled = reconcileJunoTelemetry(patchedEvidence);
+    if (spendAuthorization !== undefined && reconciled.result.cost.usd !== null && reconciled.result.cost.usd > spendAuthorization.attempt_max_usd) {
+      throw new Error(`task attempt ${item.attempt_id} exceeded its immutable per-attempt USD ceiling`);
+    }
     const stdout = await options.registry.put('stdout', processEvidence.stdout); const stderr = await options.registry.put('stderr', processEvidence.stderr);
     const evidenceReference = await options.registry.put('structured-juno-evidence', canonicalJson(reconciled.evidence));
     if (evidenceReference.sha256 !== reconciled.result.terminal_evidence_hash) throw new Error('terminal evidence hash reconciliation failed');
@@ -252,6 +326,12 @@ export async function runExperiment(options: RunExperimentOptions): Promise<Expe
     await updateCanonicalIndex(options, canonical, outcomes, await options.registry.verifyExperiment(key));
   }
   return { experimentTaskId: canonical?.task.id ?? null, attempts: outcomes, recovered: accepted.recovered || outcomes.some((item) => item.recovered) };
+}
+
+export async function runExperiment(options: RunExperimentOptions): Promise<ExperimentOutcome> {
+  const locks = options.locks ?? new PersistentTypedResourceLocks({ root: path.join(options.registry.root, 'locks') });
+  const lease = await locks.acquire([{ type: 'task_plan', id: options.plan.plan_id }]);
+  try { return await runExperimentWithPlanLease(options); } finally { await lease.release(); }
 }
 
 /** Re-run governed grading from retained candidate artifacts; no candidate runner or workspace is accepted. */
@@ -309,11 +389,13 @@ async function probeJunoVersion(executable: string, leadingArguments: readonly s
 }
 
 export function createJunoRunner(options: SpawnJunoOptions = {}): CandidateRunner {
-  return async (input) => {
+  const runner = async (input: CandidateInvocation) => {
+    validateTaskAttemptSpendAuthorization(input);
     const executable = options.executable ?? process.env['JUNO_BENCHMARK_JUNO_EXECUTABLE'] ?? 'yy';
     const leadingArguments = options.leadingArguments ?? [];
     const observedJunoVersion = await probeJunoVersion(executable, leadingArguments, input.environment, input.repository, options.versionTimeoutMs ?? 10_000);
     if (observedJunoVersion !== input.attempt.juno_version) throw new Error(`Juno Code version mismatch: plan requires ${input.attempt.juno_version}, executable reports ${observedJunoVersion}`);
+    validateTaskAttemptSpendAuthorization(input);
     const args = [...leadingArguments, 'pi', '--execution-envelope', '--model', input.attempt.model, input.prompt];
     const started = new Date(); const monotonic = process.hrtime.bigint();
     const child = spawn(executable, args, { cwd: input.repository, env: input.environment, stdio: ['ignore', 'pipe', 'pipe'], shell: false });
@@ -333,6 +415,7 @@ export function createJunoRunner(options: SpawnJunoOptions = {}): CandidateRunne
       startedAt: started.toISOString(), endedAt: ended.toISOString(), elapsedMs, exitCode: closed.code, signal: closed.signal,
       timedOut, stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8'), patchHash: null };
   };
+  return Object.assign(runner, { requiresSpendAuthorization: true as const });
 }
 
 export async function readExecutionPlan(planPath: string): Promise<ExecutionPlan> {

@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { Command } from 'commander';
+import { Option, type Command } from 'commander';
 import { lintBenchmarkCase } from '../case/lint.js';
 import { canonicalJson } from '../contracts/canonical.js';
 import { CONFIG_FILENAME, CONFIG_SCHEMA_VERSION, loadConfig } from '../config/index.js';
@@ -8,8 +8,12 @@ import { PublicKanbanClient } from '../kanban/client.js';
 import { doctorExperiment } from '../doctor/index.js';
 import { createJunoRunner, readExecutionPlan, regradeExperiment, runExperiment, writeExecutionPlan } from '../execution/index.js';
 import { createSnapshotPreparer } from '../execution/prepare.js';
-import { createPlanFromProject } from '../planning/cli.js';
+import { createPlanFromProject, createWorkflowPlanFromProject } from '../planning/cli.js';
+import { parseBenchmarkPlan, TaskExecutionAuthorizationSchema, type BenchmarkPlan } from '../planning/index.js';
+import { PersistentTypedResourceLocks } from '../execution/resource-lock.js';
 import { ImmutableArtifactRegistry } from '../registry/index.js';
+import { createReviewedWorkflowBoundary, executeWorkflowPlan, workflowBoundaryOptionsFromEnvironment } from '../workflow/runtime.js';
+import { readWorkflowEvidenceReceipts, rejudgeRetainedWorkflowStep, storeWorkflowExperimentReport } from '../workflow/evidence.js';
 import { generateLongitudinalReport } from '../reporting/index.js';
 import { createJunoInvestigationAgent, investigateRetainedEvidence } from '../investigation/index.js';
 import { authenticatedLauncherOptionsFromEnvironment, createAuthenticatedJunoRunner } from '../auth/index.js';
@@ -67,30 +71,151 @@ function privateRegistry(): ImmutableArtifactRegistry {
   return new ImmutableArtifactRegistry(root);
 }
 
+function collect(value: string, previous: string[]): string[] { return [...previous, value]; }
+async function readJson(pathname: string, label: string): Promise<unknown> {
+  try { return JSON.parse(await readFile(pathname, 'utf8')) as unknown; }
+  catch (error) { throw new Error(`cannot read ${label} ${pathname}: ${error instanceof Error ? error.message : String(error)}`); }
+}
+async function readBenchmarkPlan(planPath: string): Promise<BenchmarkPlan> {
+  const value = await readJson(planPath, 'benchmark plan');
+  try { return parseBenchmarkPlan(value); }
+  catch (error) { throw new Error(`malformed benchmark plan ${planPath}: ${error instanceof Error ? error.message : String(error)}`); }
+}
+async function readTaskAuthorization(authorizationPath: string | undefined, context: CommandContext) {
+  if (authorizationPath === undefined) return undefined;
+  const absolute = path.resolve(context.cwd, authorizationPath);
+  try { return TaskExecutionAuthorizationSchema.parse(await readJson(absolute, 'task authorization')); }
+  catch (error) { throw new Error(`malformed task authorization ${absolute}: ${error instanceof Error ? error.message : String(error)}`); }
+}
+function workflowStorage(context: CommandContext): { registry: ImmutableArtifactRegistry; locks: PersistentTypedResourceLocks } {
+  const root = process.env['JUNO_BENCHMARK_REGISTRY']?.trim() || path.join(context.cwd, '.juno_task', 'artifacts', 'juno-benchmark');
+  return { registry: new ImmutableArtifactRegistry(root), locks: new PersistentTypedResourceLocks({ root: path.join(root, 'locks') }) };
+}
+async function workflowBoundary() {
+  const options = workflowBoundaryOptionsFromEnvironment();
+  if (options === null) throw new Error('live workflow execution requires JUNO_BENCHMARK_WORKFLOW_BOUNDARY and JUNO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256');
+  return createReviewedWorkflowBoundary(options);
+}
+function variables(values: readonly string[]): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const value of values) {
+    const separator = value.indexOf('=');
+    if (separator < 1) throw new Error(`workflow variable must use key=value syntax: ${value}`);
+    const key = value.slice(0, separator); if (result[key] !== undefined) throw new Error(`duplicate workflow variable: ${key}`);
+    result[key] = value.slice(separator + 1);
+  }
+  return result;
+}
 const plan = definition(['plan'], 'Create a deterministic execution plan', 'control-plane', true, (command, context) => {
-  command.requiredOption('--task <task-id>').requiredOption('--models <models>').option('--attempts <count>', 'Attempts per model', '1').option('--output <path>').option('--dry-run', 'Explicitly affirm read-only planning').action(async (options: { task: string; models: string; attempts: string; output?: string }) => {
-    const attempts = Number(options.attempts); const models = options.models.split(',').map((item) => item.trim()).filter(Boolean);
-    const result = await createPlanFromProject({ cwd: context.cwd, ...(context.configPath === undefined ? {} : { configPath: context.configPath }), taskId: options.task, models, attempts });
-    if (options.output !== undefined) await writeExecutionPlan(path.resolve(context.cwd, options.output), result);
-    context.writeStdout(`${canonicalJson(result)}\n`);
-  });
+  command.addOption(new Option('--task <task-id>', 'Plan a legacy Kanban task case').conflicts('workflow'))
+    .addOption(new Option('--workflow <path>', 'Plan a tracked Workflow Runner YAML').conflicts('task'))
+    .requiredOption('--models <models>').option('--steps-file <path>', 'Hash-bound workflow benchmark policy sidecar')
+    .option('--steps <ids>', 'Comma-separated stable workflow step IDs').option('--var <key=value>', 'Bind a workflow variable', collect, [])
+    .option('--max-usd <amount>', 'Immutable aggregate spend ceiling in USD (default: 20)')
+    .option('--attempts <count>', 'Attempts per model', '1').option('--output <path>').option('--dry-run', 'Explicitly affirm read-only planning')
+    .action(async (options: { task?: string; workflow?: string; models: string; stepsFile?: string; steps?: string; var: string[]; maxUsd?: string; attempts: string; output?: string }) => {
+      if ((options.task === undefined) === (options.workflow === undefined)) throw new Error('exactly one of --task or --workflow is required');
+      if (options.workflow !== undefined && options.maxUsd !== undefined) throw new Error('--max-usd applies only to legacy task-case plans; workflow cost is best-effort evidence');
+      const attempts = Number(options.attempts); const models = options.models.split(',').map((item) => item.trim()).filter(Boolean);
+      const common = { cwd: context.cwd, ...(context.configPath === undefined ? {} : { configPath: context.configPath }), models, attempts };
+      const result = options.task !== undefined
+        ? await createPlanFromProject({ ...common, taskId: options.task, ...(options.maxUsd === undefined ? {} : { aggregateMaxUsd: Number(options.maxUsd) }) })
+        : await createWorkflowPlanFromProject({ ...common, workflowPath: options.workflow!,
+          policyPath: options.stepsFile ?? (() => { throw new Error('--steps-file is required with --workflow'); })(),
+          variables: variables(options.var), ...(options.steps === undefined ? {} : { selectedStepIds: options.steps.split(',').map((item) => item.trim()).filter(Boolean) }) });
+      if (options.output !== undefined) {
+        const destination = path.resolve(context.cwd, options.output);
+        if (result.schema_version === 'juno_benchmark_plan.v1') await writeExecutionPlan(destination, result);
+        else await writeFile(destination, `${canonicalJson(result)}\n`, { flag: 'wx', mode: 0o600 });
+      }
+      context.writeStdout(`${canonicalJson(result)}\n`);
+    });
 });
 
-const run = definition(['run'], 'Execute an immutable plan', 'execution', true, (command, context) => {
-  command.requiredOption('--plan <path>').option('--no-record').option('--non-canonical-scope <scope>').action(async (options: { plan: string; record: boolean; nonCanonicalScope?: string }) => {
-    const loaded = await loadConfig({ cwd: context.cwd, ...(context.configPath === undefined ? {} : { configPath: context.configPath }) });
-    const executionPlan = await readExecutionPlan(path.resolve(context.cwd, options.plan)); const client = new PublicKanbanClient(loaded); const registry = privateRegistry();
-    const workRoot = process.env['JUNO_BENCHMARK_WORK_ROOT']?.trim() || path.join(registry.root, 'work'); await mkdir(workRoot, { recursive: true, mode: 0o700 });
-    const policy = options.record === false ? { noRecord: true as const, nonCanonicalScope: options.nonCanonicalScope as 'fixture' | 'local' } : {};
-    const authenticated = authenticatedLauncherOptionsFromEnvironment();
-    const runner = authenticated === null ? createJunoRunner() : createAuthenticatedJunoRunner(authenticated);
-    const profileName = executionPlan.case.case_ref.grader_profile;
-    const profile = loaded.config.grader_profiles[profileName];
-    const grader = profile === undefined ? undefined : createCommandGrader({ executable: profile.executable, arguments: profile.arguments,
-      graderId: profile.grader_id, graderVersion: profile.grader_version, sha256: profile.sha256 as `sha256:${string}`, cwd: loaded.projectRoot });
-    const result = await runExperiment({ client, registry, plan: executionPlan, prepareAttempt: createSnapshotPreparer({ projectRoot: loaded.projectRoot, workRoot, plan: executionPlan, client }), runner, grader, recordPolicy: policy });
-    context.writeStdout(`${canonicalJson(result)}\n`);
-  });
+const run = definition(['run'], 'Execute an immutable task or workflow plan (workflow --dry-run never dispatches)', 'execution', true, (command, context) => {
+  command.requiredOption('--plan <path>').option('--steps-file <path>', 'Workflow policy sidecar used for immediate hash verification')
+    .option('--authorization <path>', 'Explicit plan-bound execution authorization').option('--dry-run', 'Verify and render a workflow plan with zero dispatch')
+    .option('--no-record').option('--non-canonical-scope <scope>').action(async (options: { plan: string; stepsFile?: string; authorization?: string; dryRun?: boolean; record: boolean; nonCanonicalScope?: string }) => {
+      const absolutePlan = path.resolve(context.cwd, options.plan); const benchmarkPlan = await readBenchmarkPlan(absolutePlan);
+      if (benchmarkPlan.schema_version === 'juno_benchmark_workflow_plan.v1') {
+        if (options.record === false || options.nonCanonicalScope !== undefined) throw new Error('--no-record and --non-canonical-scope apply only to task-case plans');
+        if (options.stepsFile === undefined) throw new Error('--steps-file is required for workflow run binding verification');
+        if (options.authorization !== undefined) throw new Error('workflow execution no longer accepts spend authorization; cost is best-effort evidence');
+        const storage = workflowStorage(context);
+        const boundary = options.dryRun === true ? undefined : await workflowBoundary();
+        const result = await executeWorkflowPlan({ plan: benchmarkPlan, projectRoot: context.cwd, policyPath: options.stepsFile,
+          registry: storage.registry, locks: storage.locks,
+          ...(boundary === undefined ? { dryRun: true as const } : { dispatcher: boundary.dispatcher, judge: boundary.judge }) });
+        context.writeStdout(`${canonicalJson(result)}\n`); return;
+      }
+      if (options.dryRun === true || options.stepsFile !== undefined) throw new Error('workflow options cannot be combined with a task-case plan');
+      const loaded = await loadConfig({ cwd: context.cwd, ...(context.configPath === undefined ? {} : { configPath: context.configPath }) });
+      const executionPlan = await readExecutionPlan(absolutePlan); const client = new PublicKanbanClient(loaded); const registry = privateRegistry();
+      const locks = new PersistentTypedResourceLocks({ root: path.join(registry.root, 'locks') });
+      const workRoot = process.env['JUNO_BENCHMARK_WORK_ROOT']?.trim() || path.join(registry.root, 'work'); await mkdir(workRoot, { recursive: true, mode: 0o700 });
+      const policy = options.record === false ? { noRecord: true as const, nonCanonicalScope: options.nonCanonicalScope as 'fixture' | 'local' } : {};
+      const authenticated = authenticatedLauncherOptionsFromEnvironment();
+      const runner = authenticated === null ? createJunoRunner() : createAuthenticatedJunoRunner(authenticated);
+      const authorization = await readTaskAuthorization(options.authorization, context);
+      const profileName = executionPlan.case.case_ref.grader_profile; const profile = loaded.config.grader_profiles[profileName];
+      const grader = profile === undefined ? undefined : createCommandGrader({ executable: profile.executable, arguments: profile.arguments,
+        graderId: profile.grader_id, graderVersion: profile.grader_version, sha256: profile.sha256 as `sha256:${string}`, cwd: loaded.projectRoot });
+      const result = await runExperiment({ client, registry, plan: executionPlan, prepareAttempt: createSnapshotPreparer({ projectRoot: loaded.projectRoot, workRoot, plan: executionPlan, client }), runner, grader,
+        ...(authorization === undefined ? {} : { authorization }), recordPolicy: policy, locks });
+      context.writeStdout(`${canonicalJson(result)}\n`);
+    });
+});
+
+const recover = definition(['recover'], 'Recover a workflow plan from durable intent without blind redispatch', 'execution', true, (command, context) => {
+  command.requiredOption('--plan <path>').requiredOption('--steps-file <path>')
+    .option('--authorization <path>', 'Explicit plan-bound workflow execution authorization')
+    .option('--dry-run', 'Verify recovery bindings and order with zero dispatch')
+    .action(async (options: { plan: string; stepsFile: string; authorization?: string; dryRun?: boolean }) => {
+      const benchmarkPlan = await readBenchmarkPlan(path.resolve(context.cwd, options.plan));
+      if (benchmarkPlan.schema_version !== 'juno_benchmark_workflow_plan.v1') throw new Error('recover supports workflow plans only; task-case recovery remains automatic in run');
+      const storage = workflowStorage(context); const boundary = options.dryRun === true ? undefined : await workflowBoundary();
+      if (options.authorization !== undefined) throw new Error('workflow recovery no longer accepts spend authorization; cost is best-effort evidence');
+      const result = await executeWorkflowPlan({ plan: benchmarkPlan, projectRoot: context.cwd,
+        policyPath: options.stepsFile, registry: storage.registry, locks: storage.locks,
+        ...(boundary === undefined ? { dryRun: true as const } : { dispatcher: boundary.dispatcher, judge: boundary.judge }) });
+      context.writeStdout(`${canonicalJson({ operation: 'recover', ...result })}\n`);
+    });
+});
+
+const rejudgeWorkflow = definition(['rejudge'], 'Rejudge retained workflow truth without candidate dispatch', 'execution', true, (command, context) => {
+  command.requiredOption('--plan <path>').requiredOption('--steps-file <path>', 'Workflow policy sidecar used for immediate hash verification')
+    .option('--judge <selector>', 'Requested governed judge selector')
+    .option('--dry-run', 'Verify immutable rejudge inputs with zero judge or candidate dispatch')
+    .action(async (options: { plan: string; stepsFile: string; judge?: string; dryRun?: boolean }) => {
+      const benchmarkPlan = await readBenchmarkPlan(path.resolve(context.cwd, options.plan));
+      if (benchmarkPlan.schema_version !== 'juno_benchmark_workflow_plan.v1') throw new Error('rejudge supports workflow plans only; use regrade for task-case plans');
+      const storage = workflowStorage(context); const verified = await executeWorkflowPlan({ plan: benchmarkPlan, projectRoot: context.cwd,
+        policyPath: options.stepsFile, registry: storage.registry, locks: storage.locks, dryRun: true });
+      if (!('immutable_hashes' in verified)) throw new Error('workflow rejudge dry-run unexpectedly entered execution');
+      const requestedJudge = options.judge ?? benchmarkPlan.policy.judge.model;
+      const resolvedJudge = requestedJudge === benchmarkPlan.policy.judge.model ? requestedJudge
+        : Object.entries(benchmarkPlan.model_selectors).find(([, selector]) => selector === requestedJudge)?.[0];
+      if (resolvedJudge !== benchmarkPlan.policy.judge.model) throw new Error('requested workflow judge does not match the immutable governed judge policy');
+      if (options.dryRun === true) {
+        context.writeStdout(`${canonicalJson({ schema_version: 'juno_benchmark_workflow_rejudge_dry_run.v1', operation: 'rejudge',
+          plan_id: benchmarkPlan.plan_id, candidate_dispatch_count: 0, judge_dispatch_count: 0,
+          requested_judge: requestedJudge, retained_candidate_receipts_expected: benchmarkPlan.execution_order.length,
+          policy_semantics_sha256: benchmarkPlan.policy_semantics_sha256, immutable_hashes: verified.immutable_hashes })}\n`); return;
+      }
+      const boundary = await workflowBoundary(); const experimentId = `workflow-${benchmarkPlan.plan_id.slice(7)}`;
+      const receipts = await readWorkflowEvidenceReceipts(storage.registry, experimentId);
+      if (receipts.length !== benchmarkPlan.execution_order.length) throw new Error('workflow rejudge requires a complete retained receipt set');
+      const judgements = [];
+      for (const receipt of receipts) {
+        judgements.push(await rejudgeRetainedWorkflowStep({ registry: storage.registry, experimentId,
+          receipt, trustedReceiptHash: receipt.receipt_hash, expectedPolicySemanticsHash: benchmarkPlan.policy_semantics_sha256 as `sha256:${string}`,
+          judge: benchmarkPlan.policy.judge, runner: boundary.judge, locks: storage.locks }));
+      }
+      const report = await storeWorkflowExperimentReport(storage.registry, benchmarkPlan);
+      context.writeStdout(`${canonicalJson({ schema_version: 'juno_benchmark_workflow_rejudge.v1', operation: 'rejudge',
+        plan_id: benchmarkPlan.plan_id, candidate_dispatch_count: 0, judge_dispatch_count: judgements.length,
+        requested_judge: requestedJudge, boundary: boundary.identity, judgements, report })}\n`);
+    });
 });
 
 const regrade = definition(['regrade'], 'Regrade retained candidate evidence without candidate execution', 'execution', true, (command, context) => {
@@ -143,6 +268,8 @@ export const BUILTIN_COMMANDS: readonly CommandDefinition[] = Object.freeze([
   caseLint,
   plan,
   run,
+  recover,
+  rejudgeWorkflow,
   regrade,
   doctor,
   report,
