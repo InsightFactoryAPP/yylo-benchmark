@@ -4,9 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { AUTH_LAUNCHER_PROTOCOL } from '../../src/auth/index.js';
+import { canonicalHash } from '../../src/contracts/canonical.js';
 import { PersistentTypedResourceLocks } from '../../src/execution/resource-lock.js';
 import { ImmutableArtifactRegistry } from '../../src/registry/index.js';
-import { buildWorkflowExperimentReport, readWorkflowEvidenceReceipts, rejudgeRetainedWorkflowStep } from '../../src/workflow/evidence.js';
+import { buildWorkflowExperimentReport, readWorkflowEvidenceReceipts, rejudgeRetainedWorkflowStep, verifyWorkflowEvidenceReceiptValue, type WorkflowEvidenceReceipt } from '../../src/workflow/evidence.js';
 import { planWorkflowFromProject, type WorkflowPolicy } from '../../src/workflow/plan.js';
 import { executeWorkflowPlan, type TrustedWorkflowDispatcher, type WorkflowRuntimeInvocation, type WorkflowRuntimeTerminalResult } from '../../src/workflow/runtime.js';
 
@@ -81,5 +82,30 @@ describe('workflow evidence and observational cost', () => {
     expect(judgement.generation).toBe(2); expect(judgement.resolved).toBe(true);
     const roles = (await registry.verifyExperiment(experimentId)).map((entry) => entry.role);
     expect(roles).toContain('workflow-rejudge-intent'); expect(roles).toContain('workflow-rejudge-receipt');
+  });
+
+  it('keeps restart recovery independent from durable resume counts', async () => {
+    const item = await fixture(); const registry = new ImmutableArtifactRegistry(path.join(item.root, 'registry'));
+    const locks = new PersistentTypedResourceLocks({ root: path.join(item.root, 'locks') });
+    const lost = { protocol: AUTH_LAUNCHER_PROTOCOL, providers: new Set(['openai-codex']), preflight: async () => undefined,
+      dispatch: async (): Promise<never> => { throw new Error('process loss'); }, reconcile: async () => ({ state: 'proven_not_dispatched' as const }),
+      resume: async (input) => terminal(input, { completeness: 'unavailable', usd: null }) };
+    await expect(executeWorkflowPlan({ plan: item.plan, projectRoot: item.root, policyPath: item.policyPath, registry, locks, dispatcher: lost,
+      judge: async () => ({ resolved: true, evidence: 'pass' }) })).rejects.toThrow(/process loss/u);
+    await executeWorkflowPlan({ plan: item.plan, projectRoot: item.root, policyPath: item.policyPath, registry, locks,
+      dispatcher: { ...lost, dispatch: async (input) => terminal(input, { completeness: 'unavailable', usd: null }) },
+      judge: async () => ({ resolved: true, evidence: 'pass' }) });
+    const experimentId = `workflow-${item.plan.plan_id.slice(7)}`;
+    const receipt = (await readWorkflowEvidenceReceipts(registry, experimentId))[0]!;
+    expect(receipt.dispatch_recovery).toMatchObject({ recovered: true, recovery_count: 1 });
+    const { receipt_hash: priorHash, ...core } = receipt;
+    expect(priorHash).toBe(canonicalHash(core));
+    const rehash = (dispatchRecovery: WorkflowEvidenceReceipt['dispatch_recovery']): WorkflowEvidenceReceipt =>
+      ({ ...core, dispatch_recovery: dispatchRecovery, receipt_hash: canonicalHash({ ...core, dispatch_recovery: dispatchRecovery }) });
+    expect(() => verifyWorkflowEvidenceReceiptValue(rehash({ ...core.dispatch_recovery, recovered: false })))
+      .toThrow(/workflow recovery evidence is invalid/u);
+    expect(() => verifyWorkflowEvidenceReceiptValue(rehash({ ...core.dispatch_recovery, recovered: true, recovery_count: 0 }))).not.toThrow();
+    expect(() => verifyWorkflowEvidenceReceiptValue(rehash({ ...core.dispatch_recovery, recovered: 'true' as unknown as boolean, recovery_count: 0 })))
+      .toThrow(/workflow recovery evidence is invalid/u);
   });
 });

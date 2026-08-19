@@ -275,7 +275,7 @@ export async function executeWorkflowPlan(options: WorkflowRuntimeOptions): Prom
             await retainAndGradeWorkflowStep({ registry: options.registry, experimentId: experiment, plan, dispatchId: input.dispatch_id,
               invocationHash: input.invocation_hash, model: input.model, provider: input.provider, attempt: input.attempt, stepId: input.step_id,
               observedProvider: result.observed_provider, observedModel: result.observed_model, runnerRunId: result.runner_run_id,
-              effect: result.effect, recoveryCount, evidence: result.evidence as WorkflowCandidateEvidence, judge,
+              effect: result.effect, recoveryCount, recovered: wasRecovered, evidence: result.evidence as WorkflowCandidateEvidence, judge,
               beforeJudgeDispatch: async () => appendJson(options.registry, experiment, 'workflow-judge-intent', judgeIntent) });
           }
           const terminal: WorkflowStepTerminal = { schema_version: WORKFLOW_STEP_TERMINAL_SCHEMA_VERSION, dispatch_id: input.dispatch_id, invocation_hash: input.invocation_hash,

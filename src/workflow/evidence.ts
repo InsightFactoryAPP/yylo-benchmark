@@ -128,7 +128,8 @@ export function verifyWorkflowEvidenceReceiptValue(value: unknown): WorkflowEvid
   if (receipt_hash !== canonicalHash(core)) throw new Error(`workflow evidence receipt integrity failed for ${receipt.dispatch_id}`);
   if (receipt.judge_outcome.candidate_truth_hash !== receipt.candidate_truth_hash || receipt.judge_outcome.scoring_id !== receipt.scoring_id) throw new Error('workflow evidence judge binding is invalid');
   if (!Number.isInteger(receipt.dispatch_recovery.recovery_count) || receipt.dispatch_recovery.recovery_count < 0
-      || receipt.dispatch_recovery.recovered !== (receipt.dispatch_recovery.recovery_count > 0)) throw new Error('workflow recovery evidence is invalid');
+      || typeof receipt.dispatch_recovery.recovered !== 'boolean'
+      || (receipt.dispatch_recovery.recovery_count > 0 && !receipt.dispatch_recovery.recovered)) throw new Error('workflow recovery evidence is invalid');
   if (receipt.terminal_class === 'resolved' && (receipt.candidate_outcome.status !== 'success' || receipt.harness_validity.status !== 'valid' || !receipt.judge_outcome.resolved)) throw new Error('workflow resolved truth is inconsistent');
   return receipt;
 }
@@ -136,7 +137,7 @@ export function verifyWorkflowEvidenceReceiptValue(value: unknown): WorkflowEvid
 export async function retainAndGradeWorkflowStep(input: {
   readonly registry: ImmutableArtifactRegistry; readonly experimentId: string; readonly plan: WorkflowExecutionPlan;
   readonly dispatchId: Hash; readonly invocationHash: Hash; readonly model: string; readonly provider: string; readonly attempt: number; readonly stepId: string;
-  readonly observedProvider: string; readonly observedModel: string; readonly runnerRunId: string; readonly effect: 'none' | 'completed'; readonly recoveryCount: number;
+  readonly observedProvider: string; readonly observedModel: string; readonly runnerRunId: string; readonly effect: 'none' | 'completed'; readonly recoveryCount: number; readonly recovered: boolean;
   readonly evidence: WorkflowCandidateEvidence; readonly judge: GovernedWorkflowJudgeRunner;
   readonly beforeJudgeDispatch: () => Promise<void>;
 }): Promise<WorkflowEvidenceReceipt> {
@@ -178,7 +179,7 @@ export async function retainAndGradeWorkflowStep(input: {
     sessions: { outer_session_id: input.evidence.outer_session_id, nested_session_ids: input.evidence.nested_session_ids },
     runtime: { started_at: input.evidence.started_at, ended_at: input.evidence.ended_at, runtime_ms: input.evidence.runtime_ms }, cost: input.evidence.cost,
     candidate_outcome: input.evidence.candidate_outcome, harness_validity: harnessValidity, judge_outcome: judgement,
-    dispatch_recovery: { recovered: input.recoveryCount > 0, dispatch_count: 1 as const, recovery_count: input.recoveryCount, runner_run_id: input.runnerRunId, effect: input.effect },
+    dispatch_recovery: { recovered: input.recovered, dispatch_count: 1 as const, recovery_count: input.recoveryCount, runner_run_id: input.runnerRunId, effect: input.effect },
     evidence_ref: evidenceRef, artifacts_ref: artifactsRef, candidate_truth_ref: candidateTruthRef, candidate_truth_hash: candidateTruthHash,
     redaction: { ...redactionCore, evidence_hash: canonicalHash(redactionCore) }, terminal_class: terminalClass };
   const receipt: WorkflowEvidenceReceipt = { ...core, receipt_hash: canonicalHash(core) };

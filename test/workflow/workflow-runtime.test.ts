@@ -143,6 +143,19 @@ steps:
     expect(receipts[0]!.dispatch_recovery).toMatchObject({ recovered: true, recovery_count: 2 });
   });
 
+  it('marks terminal reconciliation recovered without consuming resume attempts', async () => {
+    const item = await fixture({ policy: policy('retry_safe') }); const shared = options(item); let reconciles = 0; let resumes = 0;
+    await expect(executeWorkflowPlan({ ...shared, dispatcher: dispatcher({ dispatch: async () => { throw new Error('process loss'); } }) }))
+      .rejects.toThrow(/process loss/u);
+    const outcome = await executeWorkflowPlan({ ...shared, dispatcher: dispatcher({
+      reconcile: async (input) => { reconciles += 1; return { state: 'terminal' as const, result: terminal(input) }; },
+      resume: async (input) => { resumes += 1; return terminal(input); } }) });
+    expect(reconciles).toBe(1); expect(resumes).toBe(0); expect(outcome).toMatchObject({ recovered: true });
+    const receipts = await readWorkflowEvidenceReceipts(shared.registry, `workflow-${item.plan.plan_id.slice(7)}`);
+    expect(receipts[0]!.dispatch_recovery).toMatchObject({ recovered: true, recovery_count: 0 });
+    expect(receipts[1]!.dispatch_recovery).toMatchObject({ recovered: false, recovery_count: 0 });
+  });
+
   it('keeps dry-run read-only and reports best-effort cost tracking', async () => {
     const item = await fixture(); const registryRoot = path.join(item.root, 'dry-registry');
     const result = await executeWorkflowPlan({ plan: item.plan, projectRoot: item.root, policyPath: item.policyPath,
