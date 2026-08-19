@@ -129,15 +129,18 @@ steps:
     expect(dispatches).toBe(1); expect(resumes).toBe(1); expect(recovered).toMatchObject({ recovered: true });
   });
 
-  it('persists and enforces the recovery attempt limit across process restarts', async () => {
-    const item = await fixture({ policy: policy('retry_safe') }); const shared = options(item); let resumes = 0;
+  it('persists, reports, and enforces recovery attempts across process restarts', async () => {
+    const basePolicy = policy('retry_safe'); const recoveryPolicy = { ...basePolicy, recovery: { ...basePolicy.recovery, max_recovery_attempts: 2 } };
+    const item = await fixture({ policy: recoveryPolicy }); const shared = options(item); let resumes = 0;
     await expect(executeWorkflowPlan({ ...shared, dispatcher: dispatcher({ dispatch: async () => { throw new Error('process loss'); } }) }))
       .rejects.toThrow(/process loss/u);
-    const resumable = dispatcher({ reconcile: async () => ({ state: 'proven_not_dispatched' }),
-      resume: async () => { resumes += 1; throw new Error('resume loss'); } });
-    await expect(executeWorkflowPlan({ ...shared, dispatcher: resumable })).rejects.toThrow(/resume loss/u);
-    await expect(executeWorkflowPlan({ ...shared, dispatcher: resumable })).rejects.toThrow(/exhausted recovery attempts/u);
-    expect(resumes).toBe(1);
+    await expect(executeWorkflowPlan({ ...shared, dispatcher: dispatcher({ reconcile: async () => ({ state: 'proven_not_dispatched' }),
+      resume: async () => { resumes += 1; throw new Error('resume loss'); } }) })).rejects.toThrow(/resume loss/u);
+    const recovered = await executeWorkflowPlan({ ...shared, dispatcher: dispatcher({ reconcile: async () => ({ state: 'proven_not_dispatched' }),
+      resume: async (input) => { resumes += 1; return terminal(input); } }) });
+    expect(recovered).toMatchObject({ recovered: true }); expect(resumes).toBe(2);
+    const receipts = await readWorkflowEvidenceReceipts(shared.registry, `workflow-${item.plan.plan_id.slice(7)}`);
+    expect(receipts[0]!.dispatch_recovery).toMatchObject({ recovered: true, recovery_count: 2 });
   });
 
   it('keeps dry-run read-only and reports best-effort cost tracking', async () => {

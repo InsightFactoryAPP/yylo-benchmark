@@ -244,6 +244,7 @@ export async function executeWorkflowPlan(options: WorkflowRuntimeOptions): Prom
           }
           await dispatcher.preflight(input); // Credentials remain behind the reviewed boundary; cost is observational.
           let result: WorkflowRuntimeTerminalResult; let wasRecovered = false;
+          let recoveryCount = current.recoveryAttempts.get(input.dispatch_id) ?? 0;
           const prior = current.intents.get(input.dispatch_id);
           if (prior === undefined) {
             const intent: DispatchIntent = { schema_version: WORKFLOW_DISPATCH_INTENT_SCHEMA_VERSION, dispatch_id: input.dispatch_id, invocation_hash: input.invocation_hash,
@@ -259,12 +260,13 @@ export async function executeWorkflowPlan(options: WorkflowRuntimeOptions): Prom
             else {
               const policy = plan.policy.steps.find((item) => item.step_id === input.step_id)!;
               if (policy.recovery !== 'retry_safe') throw new Error(`manual recovery required: ${input.step_id} is not safely resumable`);
-              const recoveryAttempt = (current.recoveryAttempts.get(input.dispatch_id) ?? 0) + 1;
+              const recoveryAttempt = recoveryCount + 1;
               if (recoveryAttempt > plan.policy.recovery.max_recovery_attempts) throw new Error(`manual recovery required: ${input.step_id} exhausted recovery attempts`);
               await appendJson(options.registry, experiment, 'workflow-recovery-intent', {
                 schema_version: WORKFLOW_RECOVERY_INTENT_SCHEMA_VERSION, dispatch_id: input.dispatch_id,
                 invocation_hash: input.invocation_hash, plan_id: plan.plan_id, recovery_attempt: recoveryAttempt,
               });
+              recoveryCount = recoveryAttempt;
               result = validateResult(await dispatcher.resume(input), input);
             }
           }
@@ -273,7 +275,7 @@ export async function executeWorkflowPlan(options: WorkflowRuntimeOptions): Prom
             await retainAndGradeWorkflowStep({ registry: options.registry, experimentId: experiment, plan, dispatchId: input.dispatch_id,
               invocationHash: input.invocation_hash, model: input.model, provider: input.provider, attempt: input.attempt, stepId: input.step_id,
               observedProvider: result.observed_provider, observedModel: result.observed_model, runnerRunId: result.runner_run_id,
-              effect: result.effect, recovered: wasRecovered, evidence: result.evidence as WorkflowCandidateEvidence, judge,
+              effect: result.effect, recoveryCount, evidence: result.evidence as WorkflowCandidateEvidence, judge,
               beforeJudgeDispatch: async () => appendJson(options.registry, experiment, 'workflow-judge-intent', judgeIntent) });
           }
           const terminal: WorkflowStepTerminal = { schema_version: WORKFLOW_STEP_TERMINAL_SCHEMA_VERSION, dispatch_id: input.dispatch_id, invocation_hash: input.invocation_hash,
