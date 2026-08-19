@@ -143,6 +143,23 @@ steps:
     expect(receipts[0]!.dispatch_recovery).toMatchObject({ recovered: true, recovery_count: 2 });
   });
 
+  it('rejects recovery exhaustion before a new recovery intent or resume', async () => {
+    const item = await fixture({ policy: policy('retry_safe') }); const shared = options(item); let resumes = 0;
+    const experimentId = `workflow-${item.plan.plan_id.slice(7)}`;
+    const recoveryIntents = async () => (await shared.registry.verifyExperiment(experimentId))
+      .filter((entry) => entry.role === 'workflow-recovery-intent').length;
+    await expect(executeWorkflowPlan({ ...shared, dispatcher: dispatcher({ dispatch: async () => { throw new Error('process loss'); } }) }))
+      .rejects.toThrow(/process loss/u);
+    await expect(await recoveryIntents()).toBe(0);
+    await expect(executeWorkflowPlan({ ...shared, dispatcher: dispatcher({ reconcile: async () => ({ state: 'proven_not_dispatched' }),
+      resume: async () => { resumes += 1; throw new Error('resume loss'); } }) })).rejects.toThrow(/resume loss/u);
+    expect(resumes).toBe(1); expect(await recoveryIntents()).toBe(1);
+    await expect(executeWorkflowPlan({ ...shared, dispatcher: dispatcher({ reconcile: async () => ({ state: 'proven_not_dispatched' }),
+      resume: async (input) => { resumes += 1; return terminal(input); } }) }))
+      .rejects.toThrow(/exhausted recovery attempts/u);
+    expect(resumes).toBe(1); expect(await recoveryIntents()).toBe(1);
+  });
+
   it('marks terminal reconciliation recovered without consuming resume attempts', async () => {
     const item = await fixture({ policy: policy('retry_safe') }); const shared = options(item); let reconciles = 0; let resumes = 0;
     await expect(executeWorkflowPlan({ ...shared, dispatcher: dispatcher({ dispatch: async () => { throw new Error('process loss'); } }) }))

@@ -66,8 +66,7 @@ try {
   same(plan.selected_step_ids, expected.selected_step_ids, 'historical stable step selection');
   same(plan.models, expected.models, 'exact model identities');
   same(plan.model_dispatch_step_ids, expected.injection_step_ids, 'canonical model-dispatch classification');
-  same(plan.spend_limits, { currency: 'USD', aggregate_max_usd: 20,
-    per_step_max_usd: Object.fromEntries(expected.injection_step_ids.map((stepId) => [stepId, 10])), judge_max_usd: 2.6 }, 'immutable spend limits');
+  if (plan.spend_limits !== undefined) throw new Error('workflow plan must not carry spend limits; cost is observational evidence only');
   same(plan.policy.judge, expected.judge, 'governed judge');
   if (plan.normalized_workflow.steps.length !== expected.current_step_count) throw new Error('historical 13-of-17 distinction is invalid');
   for (const compiled of plan.compiled_workflows) same(compiled.injected_step_ids, expected.injection_step_ids, `injection points for ${compiled.model}`);
@@ -91,15 +90,13 @@ try {
 
   const dryRun = json(standalone[0]);
   if (dryRun.dispatch_count !== expected.dispatch_expected || dryRun.production_models_sequential !== true) throw new Error('installed dry-run dispatch/sequential contract failed');
+  if ('authorization' in dryRun) throw new Error('dry-run must not report spend authorization; grants were removed in favor of observational cost');
+  same(dryRun.cost_tracking, { mode: 'best_effort', unavailable_is_valid: true }, 'observational cost tracking');
   same(dryRun.models, expected.models, 'dry-run models');
   same(dryRun.selected_step_ids, expected.selected_step_ids, 'dry-run selected steps');
   same(dryRun.judge, expected.judge, 'dry-run judge');
   same(dryRun.required_resources.map((item) => `${item.type}:${item.id}`).sort(), [...expected.resources].sort(), 'typed resources');
   same(dryRun.estimated_totals, { usd: expected.estimated_total_usd, runtime_ms: expected.estimated_total_runtime_ms }, 'estimates');
-  if (dryRun.authorization.execution_grant_provided !== false || dryRun.authorization.production_required !== true || dryRun.authorization.spend_required !== true) throw new Error('dry-run authorization boundary is misleading');
-  same(dryRun.authorization, { production_required: true, spend_required: true, execution_grant_provided: false,
-    currency: 'USD', aggregate_max_usd: 20,
-    per_step_max_usd: Object.fromEntries(expected.injection_step_ids.map((stepId) => [stepId, 10])), judge_max_usd: 2.6 }, 'dry-run spend authorization');
   same(dryRun.immutable_hashes, { plan: plan.plan_id, workflow_raw: expected.workflow_raw_sha256,
     workflow_semantics: expected.workflow_semantics_sha256, policy_raw: plan.policy_raw_sha256,
     policy_semantics: plan.policy_semantics_sha256, variables: plan.variables_hash }, 'immutable hashes');
