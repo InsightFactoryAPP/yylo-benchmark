@@ -7,7 +7,8 @@ import { authenticatedLauncherOptionsFromEnvironment, createAuthenticatedJunoRun
 import type { AttemptV1 } from '../../src/contracts/schemas.js';
 import { reconcileJunoTelemetry } from '../../src/telemetry/index.js';
 import { canonicalHash } from '../../src/contracts/canonical.js';
-import { contentionBudgetMs } from '../support/contention.js';
+import * as net from 'node:net';
+import { contentionBudgetMs, hermeticNetworkGuardActive } from '../support/contention.js';
 
 // Each case spawns real node launcher processes; the file-level budget keeps
 // multi-spawn cases deterministic on a loaded shared host.
@@ -372,3 +373,25 @@ describe('authenticated launcher boundary', () => {
     } finally { vi.unstubAllEnvs(); }
   });
 });
+describe('admission hermeticity guard', () => {
+  it('is active and refuses new network connections with an actionable message', () => {
+    expect(process.env.JUNO_TEST_ALLOW_NETWORK).toBeUndefined();
+    expect(hermeticNetworkGuardActive).toBe(true);
+    expect(() => net.createConnection({ host: 'registry.npmjs.invalid', port: 443 }))
+      .toThrow(/admission tests must not use the network: net\.Socket\.connect/);
+    const socket = new net.Socket();
+    socket.on('error', () => undefined);
+    expect(() => socket.connect({ host: 'example.invalid', port: 80 }))
+      .toThrow(/admission tests must not use the network: net\.Socket\.connect/);
+    socket.destroy();
+  });
+
+  it('keeps unix domain socket connects available for local fixtures', () => {
+    const socket = new net.Socket();
+    socket.on('error', () => undefined);
+    expect(() => socket.connect({ path: '/nonexistent-juno-benchmark-hermeticity.sock' }))
+      .not.toThrow(/admission tests must not use the network/);
+    socket.destroy();
+  });
+});
+

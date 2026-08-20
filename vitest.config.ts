@@ -14,6 +14,6 @@ export default defineConfig({
     minWorkers: 1,
     // This lane is a merge-queue admission lane: refuse network sockets so
     // registry/API latency can never become candidate evidence.
-    setupFiles: ['./test/support/hermetic-network-guard.ts'],
+    setupFiles: ['./test/support/contention.ts'],
   },
 });
