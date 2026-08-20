@@ -128,7 +128,6 @@ async function waitForPinnedDirectory(excluded: ReadonlySet<string>): Promise<st
 }
 
 function invocation(repository: string, selectedAttempt: AttemptV1 = attempt) {
-function invocation(repository: string, selectedAttempt: AttemptV1 = attempt) {
   const grant = { schema_version: 'juno_benchmark_task_authorization.v1' as const, plan_id: selectedAttempt.experiment_id as `sha256:${string}`,
     authorization_id: 'fixture', models: [selectedAttempt.model], expires_at: '2099-01-01T00:00:00.000Z', currency: 'USD' as const,
     aggregate_max_usd: 20, per_attempt_max_usd: 20 };
