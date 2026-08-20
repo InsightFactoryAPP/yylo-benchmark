@@ -60,6 +60,14 @@ function refuseNetwork(kind: string, target: string): never {
     + 'Explicit override (never in admission lanes): JUNO_TEST_ALLOW_NETWORK=1.');
 }
 
+function isLoopbackTarget(options: unknown): boolean {
+  if (typeof options !== 'object' || options === null) return false;
+  const record = options as Record<string, unknown>;
+  if (record.path !== undefined) return false; // unix domain socket: always local
+  const host = typeof record.host === 'string' ? record.host : null;
+  return host === '127.0.0.1' || host === '::1' || host === 'localhost';
+}
+
 if (!allowNetwork) {
   // Patching the prototype method covers net.createConnection, net.connect,
   // and every higher-level client because they all funnel new outbound
@@ -76,7 +84,9 @@ if (!allowNetwork) {
     const isUnix = typeof options === 'object'
       && options !== null
       && typeof (options as Record<string, unknown>).path === 'string';
-    if (!isUnix) refuseNetwork('net.Socket.connect', describeGuardTarget(options));
+    if (!isUnix && !isLoopbackTarget(options)) {
+      refuseNetwork('net.Socket.connect', describeGuardTarget(options));
+    }
     return originalSocketConnect.apply(this, args);
   };
 }
