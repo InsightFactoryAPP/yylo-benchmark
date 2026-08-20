@@ -2,10 +2,16 @@ import { access, chmod, copyFile, mkdtemp, mkdir, readFile, readdir, realpath, r
 import { createHash, randomBytes } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { authenticatedLauncherOptionsFromEnvironment, createAuthenticatedJunoRunner } from '../../src/auth/index.js';
 import type { AttemptV1 } from '../../src/contracts/schemas.js';
 import { reconcileJunoTelemetry } from '../../src/telemetry/index.js';
+import { contentionBudgetMs } from '../support/contention.js';
+
+// Each case spawns real node launcher processes; the file-level budget keeps
+// multi-spawn cases deterministic on a loaded shared host.
+vi.setConfig({ testTimeout: contentionBudgetMs(60_000), hookTimeout: contentionBudgetMs(30_000) });
+afterAll(() => vi.resetConfig());
 
 const digest = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
 const h = `sha256:${'1'.repeat(64)}` as const;
@@ -39,7 +45,7 @@ const provider=argument('--provider'); const requestedModel=argument('--model');
 if(!provider||!requestedModel?.startsWith(provider+'/')||requestedModel.length<=provider.length+1){console.error('fixture identity mismatch');process.exit(64)}
 if(operation==='probe'){
   const gate=${JSON.stringify(options.probeGate)};
-  if(gate){fs.writeFileSync(gate.entered,'entered',{mode:0o600});const until=Date.now()+3000;while(!fs.existsSync(gate.release)&&Date.now()<until)Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10)}
+  if(gate){fs.writeFileSync(gate.entered,'entered',{mode:0o600});const until=Date.now()+${JSON.stringify(contentionBudgetMs(15_000))};while(!fs.existsSync(gate.release)&&Date.now()<until)Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10)}
   console.log(version); process.exit(0);
 }
 const secret=fs.readFileSync(3,'utf8'); fs.closeSync(3);
@@ -64,9 +70,42 @@ async function replaceWithCredentialThief(executable: string, capture: string): 
 }
 
 async function waitForFile(file: string): Promise<void> {
-  const deadline = Date.now() + 3_000;
-  while (Date.now() < deadline) { try { await access(file); return; } catch { await new Promise((resolve) => setTimeout(resolve, 10)); } }
-  throw new Error(`timed out waiting for ${file}`);
+  // Event-first wait: the watcher fires on creation; the bounded poll is only
+  // a missed-event fallback. The deadline is contention-aware so a starved
+  // parent still observes the launcher's file.
+  const deadline = Date.now() + contentionBudgetMs(15_000);
+  try {
+    await access(file);
+    return;
+  } catch {
+    /* fall through to the watched wait */
+  }
+  await new Promise<void>((resolve, reject) => {
+    let watcher: import('node:fs').FSWatcher | undefined;
+    const poll = setInterval(async () => {
+      try { await access(file); done(); } catch { /* keep waiting */ }
+    }, 10);
+    const expire = setTimeout(() => done(new Error(`timed out waiting for ${file}`)),
+      Math.max(1, deadline - Date.now()));
+    const failure = (error: Error) => done(error);
+    let settled = false;
+    function done(error?: Error): void {
+      if (settled) return;
+      settled = true;
+      clearInterval(poll); clearTimeout(expire);
+      watcher?.close();
+      error ? reject(error) : resolve();
+    }
+    void import('node:fs').then((fs) => {
+      watcher = fs.watch(path.dirname(file), (event, filename) => {
+        const name = typeof filename === 'string' ? filename : undefined;
+        if (event === 'rename' && (name === undefined || name === path.basename(file))) {
+          void access(file).then(() => done(), () => undefined);
+        }
+      });
+      watcher.on('error', failure);
+    });
+  });
 }
 
 async function pinnedDirectories(): Promise<Set<string>> {
@@ -76,7 +115,7 @@ async function pinnedDirectories(): Promise<Set<string>> {
 }
 
 async function waitForPinnedDirectory(excluded: ReadonlySet<string>): Promise<string> {
-  const deadline = Date.now() + 3_000;
+  const deadline = Date.now() + contentionBudgetMs(15_000);
   while (Date.now() < deadline) {
     const additions = [...await pinnedDirectories()].filter((directory) => !excluded.has(directory));
     if (additions.length === 1) return additions[0]!;
@@ -87,7 +126,7 @@ async function waitForPinnedDirectory(excluded: ReadonlySet<string>): Promise<st
 }
 
 function invocation(repository: string, selectedAttempt: AttemptV1 = attempt) {
-  return { attempt: selectedAttempt, repository, prompt: 'synthetic prompt', environment: { HOME: path.join(repository, '.home'), XDG_CONFIG_HOME: path.join(repository, '.xdg'), PATH: process.env.PATH }, timeoutMs: 5_000 };
+  return { attempt: selectedAttempt, repository, prompt: 'synthetic prompt', environment: { HOME: path.join(repository, '.home'), XDG_CONFIG_HOME: path.join(repository, '.xdg'), PATH: process.env.PATH }, timeoutMs: contentionBudgetMs(30_000) };
 }
 
 async function fixture(prefix: string) {
