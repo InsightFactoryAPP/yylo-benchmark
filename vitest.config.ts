@@ -9,5 +9,8 @@ export default defineConfig({
     // base on a quiet machine, bounded growth when oversubscribed.
     testTimeout: contentionBudgetMs(30_000),
     hookTimeout: contentionBudgetMs(30_000),
+    // This lane is a merge-queue admission lane: refuse network sockets so
+    // registry/API latency can never become candidate evidence.
+    setupFiles: ['./test/support/hermetic-network-guard.ts'],
   },
 });
