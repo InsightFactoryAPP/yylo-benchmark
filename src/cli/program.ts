@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import { registerBuiltinCommands } from './builtins.js';
 import { CommandRegistry, type BenchmarkPlugin, type CommandContext } from './registry.js';
 
-export const PACKAGE_VERSION = '0.1.0';
+export const PACKAGE_VERSION = '0.1.1';
 
 export interface ProgramOptions {
   readonly cwd?: string;
@@ -22,7 +22,8 @@ export function createProgram(options: ProgramOptions = {}): Command {
   const root = new Command();
   root
     .name('juno-benchmark')
-    .description('Kanban-SOT longitudinal engineering-task evaluation')
+    .description('Immutable task-case and project-owned workflow evaluation')
+    .showHelpAfterError('Run juno-benchmark --help for supported commands.')
     .version(PACKAGE_VERSION)
     .option('--config <path>', 'Use an explicit juno-benchmark.config.json');
 
@@ -59,5 +60,14 @@ export function createProgram(options: ProgramOptions = {}): Command {
 }
 
 export async function runCli(argv: readonly string[], options: ProgramOptions = {}): Promise<void> {
+  const registry = createCommandRegistry(options.plugins); const supported = new Set(registry.definitions().map((item) => item.path[0]));
+  let command: string | undefined;
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index]!;
+    if (token === '--config') { index += 1; continue; }
+    if (token.startsWith('--config=') || token === '--help' || token === '-h' || token === '--version' || token === '-V') continue;
+    if (!token.startsWith('-')) { command = token; break; }
+  }
+  if (command !== undefined && !supported.has(command)) throw new Error(`unknown command '${command}'; run juno-benchmark --help for plan, run, recover, and rejudge`);
   await createProgram(options).parseAsync([...argv], { from: 'user' });
 }

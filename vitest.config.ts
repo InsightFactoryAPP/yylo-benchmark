@@ -9,6 +9,9 @@ export default defineConfig({
     // base on a quiet machine, bounded growth when oversubscribed.
     testTimeout: contentionBudgetMs(30_000),
     hookTimeout: contentionBudgetMs(30_000),
+    // Bound intra-suite self-load: several repositories are created at once.
+    maxWorkers: 2,
+    minWorkers: 1,
     // This lane is a merge-queue admission lane: refuse network sockets so
     // registry/API latency can never become candidate evidence.
     setupFiles: ['./test/support/hermetic-network-guard.ts'],

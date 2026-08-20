@@ -22,6 +22,90 @@ JUNO_BENCHMARK_REGISTRY=/private/path node dist/bin.js report --task TASK_ID
 `yy benchmark ...` is a transparent delegate to an independently installed compatible
 `juno-benchmark` executable. The standalone CLI remains canonical.
 
+Legacy task-case plans also bind a USD 20 aggregate ceiling by default. `--max-usd` may
+select another positive ceiling; planning divides it deterministically across the exact
+model/attempt matrix. Live `run` requires a `juno_benchmark_task_authorization.v1` grant
+whose plan, models, currency, expiry, aggregate ceiling, and per-attempt ceiling exactly
+match the immutable plan. The grant is carried to both direct and authenticated Juno
+launchers, and its worst-case reservation is retained before provider dispatch.
+
+## Project-owned workflow lifecycle
+
+Workflow benchmarking uses the same generic command family; there is no consumer-specific
+command. The project keeps one tracked Workflow Runner YAML as the prompt and deterministic
+command source. A mandatory policy sidecar supplies stable scoring IDs, typed resources,
+limits, redaction, recovery classification, a governed judge, and estimate metadata:
+
+```bash
+juno-benchmark plan \
+  --workflow .juno_task/workflows/example.yaml \
+  --steps-file benchmark-policy.yaml \
+  --steps collect,analyze,publish \
+  --models :sol,:mini,zai/glm-5.2 \
+  --var run_date=2026-08-12 --attempts 1 \
+  --output workflow-plan.json --dry-run
+juno-benchmark run --plan workflow-plan.json --steps-file benchmark-policy.yaml --dry-run
+juno-benchmark recover --plan workflow-plan.json --steps-file benchmark-policy.yaml --dry-run
+juno-benchmark rejudge --plan workflow-plan.json --steps-file benchmark-policy.yaml --judge :sol --dry-run
+```
+
+Live execution uses one separately reviewed, hash-pinned JavaScript boundary module. The
+module owns Workflow Runner/Juno credentials and external reconciliation. Candidate
+operations receive only the immutable invocation. Judge operations receive only the blinded
+request; they never receive candidate credentials or unblinded identity. Cost returned by the
+runner is retained as best-effort evidence and never acts as dispatch authorization:
+
+```bash
+export JUNO_BENCHMARK_WORKFLOW_BOUNDARY=/absolute/path/reviewed-workflow-boundary.mjs
+export JUNO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256=<lowercase-sha256-of-exact-module-bytes>
+export JUNO_BENCHMARK_REGISTRY=/private/path
+juno-benchmark run --plan workflow-plan.json --steps-file benchmark-policy.yaml
+juno-benchmark recover --plan workflow-plan.json --steps-file benchmark-policy.yaml
+juno-benchmark rejudge --plan workflow-plan.json --steps-file benchmark-policy.yaml --judge :sol
+```
+
+`yy benchmark` accepts the identical argument tail and preserves stdout, stderr, cwd, exit
+status, and signals. Planning binds the tracked YAML's raw bytes, normalized semantics,
+Git ref/commit/tree, stable selected IDs, variables, exact selector resolutions, policy
+bytes/semantics, model allowlist, compiler version, per-model compiled bytes, and strict
+model/attempt/step order. The overlay compiler modifies only canonical `yy pi` argument
+arrays. It never rewrites prompt text or deterministic commands, and rejects hidden,
+ambiguous, or conflicting selectors. Workflow commands must be explicit argument arrays:
+canonical `[yy, pi, ...]` arrays are model steps, while the deliberately minimal ordinary
+surface is limited to direct `echo` and `printf` argv. Scalar commands, shells, interpreters,
+wrappers, and every other executable are rejected instead of heuristically parsed.
+
+Planning and every `--dry-run` are read-only and report `dispatch_count: 0`. Every canonical
+`yy pi` command is classified as a model dispatch, but workflow plans contain no spend grant,
+ceiling, or reservation. Complete and partial USD values are retained when supplied;
+`unavailable` and `not_applicable` retain `usd: null` and remain valid evidence rather than
+being converted to zero or harness failure. Reports expose complete cost, all observed cost,
+and incomplete-cost counts. The CLI reads the boundary module through a non-symlinked
+owner-matched file handle, verifies its exact digest and stable inode, and runs the pinned
+bytes with the current Node executable. A protocol probe must advertise every provider before
+preflight or dispatch. Rejudge writes a durable identity-bound intent before the governed
+call, without financial authorization. The same module implements `preflight`,
+`dispatch`, `reconcile`, `resume`, and blinded `judge`; malformed, timed-out, oversized,
+identity-mismatched, or nonzero responses fail closed. Recovery reuses retained terminals or
+asks the boundary to reconcile durable intent before a policy-permitted resume. Rejudge reads
+the complete content-addressed receipt set, dispatches no candidate, and appends a new governed
+judgement generation plus report.
+The public runtime writes durable intent before dispatch, takes persistent typed locks,
+keeps production model experiments sequential, and makes ambiguous external effects
+manual. Recovery reconciles retained intent/terminal evidence before any safe resume.
+Rejudge uses retained blinded candidate truth and never accepts a candidate dispatcher.
+The CLI intentionally fails actionably instead of inventing an unreviewed launcher or judge.
+
+For historical suites, check out the exact source commit (a detached checkout is valid),
+select stable IDs rather than positions, and keep the policy and expected raw/semantic
+hashes beside the acceptance harness. `fixtures/convert-2026-08-12/expected.json` pins the
+real Convert commit `816fa627...`, its 17-step workflow identity, the intended named
+13-step selection, four exact models, injection points, resources, governed rubric,
+estimates, and no execution grant. It contains no product prompts; acceptance must read
+the pinned tracked YAML from the consumer Git object. `policy.yaml` describes requirements,
+not financial authority. Any source, ref, policy, model, allowlist, or variable drift fails
+closed before dispatch.
+
 A case must carry the `benchmark-case` tag and valid `fields.benchmark` metadata. Its
 task body is the candidate prompt. Planning is read-only and content-addressed. A
 canonical run creates one related experiment task; `--no-record` additionally requires

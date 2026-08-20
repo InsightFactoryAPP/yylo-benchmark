@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { PublicKanbanClient } from '../../src/kanban/client.js';
-import { acceptPlan, planExperiment, recordInvestigation, type PlanInputs } from '../../src/planning/index.js';
+import { acceptPlan, parseBenchmarkPlan, planExperiment, recordInvestigation, type PlanInputs } from '../../src/planning/index.js';
 import { ImmutableArtifactRegistry } from '../../src/registry/index.js';
 import { installFakeKanban, optedInTask, type FakeState } from '../kanban/fake-cli.js';
 
@@ -19,7 +19,8 @@ describe('revision-bound benchmark planning', () => {
   it('is deterministic, requires opt-in, and dry-run performs no mutation', async () => {
     const item = await fixture();
     const first = await planExperiment(item.client, { taskId: 'CASE1', ...inputs }); const second = await planExperiment(item.client, { taskId: 'CASE1', ...inputs });
-    expect(first).toEqual(second); expect(first.models).toEqual(['openai/gpt-mini', 'openai/gpt-sol']);
+    expect(first).toEqual(second); expect(parseBenchmarkPlan(JSON.parse(JSON.stringify(first)))).toEqual(first);
+    expect(first.models).toEqual(['openai/gpt-mini', 'openai/gpt-sol']);
     expect(first.model_selectors).toEqual({ 'openai/gpt-mini': ':mini', 'openai/gpt-sol': ':sol' }); expect(first.case.task_revision).toBe(item.revision);
     await expect(stat(path.join(item.root, 'private-registry'))).rejects.toMatchObject({ code: 'ENOENT' });
     const calls = await readFile(item.fake.callsPath, 'utf8'); expect(calls).not.toContain('"create"');

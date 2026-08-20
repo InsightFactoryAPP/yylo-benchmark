@@ -24,6 +24,33 @@ authorized run creates one related canonical experiment record.
 At run time, revalidate every frozen input. Drift fails closed and requires a new plan;
 it must not silently alter the accepted experiment.
 
+## Project-owned workflows
+
+Use generic `plan --workflow`, `run`, `recover`, and `rejudge` commands. The tracked
+Workflow Runner YAML stays the sole prompt source. A mandatory policy sidecar binds
+stable step/scoring IDs, typed resources, side effects, limits, redaction, recovery,
+governed judge, and estimates. Model overlays modify only canonical `yy pi` argument arrays.
+Workflow commands must be explicit argv: canonical `yy pi` is the model route, direct `echo`
+and `printf` are the complete ordinary route, and scalar, shell, interpreter, wrapper, or
+other executable forms are rejected rather than parsed.
+
+Workflow cost is observational, not authorization. Plans contain no spend grant, ceiling, or
+reservation. Candidate and judge operations receive immutable identity-bound requests through
+the hash-pinned module selected by `JUNO_BENCHMARK_WORKFLOW_BOUNDARY` and
+`JUNO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256`. That module owns credentials and implements the
+`juno_benchmark_workflow_process_boundary.v1` probe/preflight/dispatch/reconcile/resume/judge
+protocol. Complete and partial USD evidence is retained when available; unavailable and
+not-applicable cost remains explicit null evidence and does not invalidate an otherwise valid
+run. Dry-run never loads the module, reports zero dispatch, and verifies source/policy/model/config
+hashes. Recovery reconciles durable intent before resume; ambiguous effects are manual. Rejudge
+persists identity-bound intent before judge dispatch, consumes retained blinded candidate truth,
+and cannot rerun a candidate.
+
+Pin historical acceptance by exact Git commit, raw and semantic YAML hashes, and named
+step IDs rather than positions. A detached checkout is valid. Keep expected identities
+and policy metadata outside the product prompt source so current workflow growth cannot
+silently redefine the historical suite.
+
 ## Attempt expansion
 
 Each attempt receives the same declared case inputs and a fresh isolated source
