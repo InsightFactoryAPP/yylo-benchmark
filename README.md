@@ -1,6 +1,6 @@
 # Juno Benchmark
 
-Juno Benchmark is the longitudinal evaluation and immutable-evidence system for agent runs. It invokes [Juno Code](https://github.com/yylo-dev/yylo), the AI coding-agent orchestration CLI, and uses [Juno Ledger](https://github.com/yylo-dev/yylo-ledger), the Git-native task and workflow ledger, through its public JSON/receipt CLI contract.
+Juno Benchmark is the longitudinal evaluation and immutable-evidence system for agent runs. It invokes [Juno Code](https://github.com/yylo-dev/yylo), the AI coding-agent orchestration CLI, and uses [Juno Ledger](https://github.com/askbudi/juno-ledger), the Git-native task and workflow ledger, through its public JSON/receipt CLI contract.
 
 The private, independent package owns case validation, isolated snapshots, shadow
 boards, execution reconciliation, recovery, reports, and bounded investigations.
