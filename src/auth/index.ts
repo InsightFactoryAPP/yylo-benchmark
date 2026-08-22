@@ -102,7 +102,7 @@ async function immutableLauncher(options: AuthenticatedLauncherOptions, environm
 }
 
 async function materializeExecutable(bytes: Buffer, kind: 'launcher' | 'interpreter', retainPath = false): Promise<PinnedExecutable> {
-  const directory = await mkdtemp(path.join(os.tmpdir(), `juno-benchmark-${kind}-`)).catch(() => { throw safeError(`verified ${kind} cannot be materialized`); });
+  const directory = await mkdtemp(path.join(os.tmpdir(), `yylo-benchmark-${kind}-`)).catch(() => { throw safeError(`verified ${kind} cannot be materialized`); });
   const executable = path.join(directory, `verified-${kind}`);
   let writer: FileHandle | undefined; let probe: FileHandle | undefined; let launch: FileHandle | undefined;
   try {
@@ -215,7 +215,7 @@ function spawnLauncher(handle: FileHandle, interpreter: string, input: Candidate
   const launcherArgs = [operation, '--protocol', AUTH_LAUNCHER_PROTOCOL, '--provider', input.attempt.provider, '--model', input.attempt.model, '--juno-version', input.attempt.juno_version];
   const child = spawn(interpreter, ['--input-type=module', '-', ...launcherArgs], {
     cwd: input.repository,
-    env: { ...input.environment, JUNO_BENCHMARK_AUTH_PROTOCOL: AUTH_LAUNCHER_PROTOCOL },
+    env: { ...input.environment, YYLO_BENCHMARK_AUTH_PROTOCOL: AUTH_LAUNCHER_PROTOCOL },
     stdio: [handle.fd, 'pipe', 'pipe', operation === 'launch' ? 'pipe' : 'ignore', operation === 'launch' ? 'pipe' : 'ignore'], shell: false,
   });
   const stdout: Buffer[] = []; const stderr: Buffer[] = []; let bytes = 0; let outputOverflow = false;
@@ -267,8 +267,8 @@ export function createAuthenticatedJunoRunner(options: AuthenticatedLauncherOpti
       launchProcess = spawnLauncher(pinned.launcher.launch, interpreterPath, input, 'launch');
       const probe = await invokeLauncher(probeProcess, boundary, input, 'probe', options.versionTimeoutMs ?? 10_000);
       if (probe.timedOut || probe.code !== 0) throw safeError('version probe failed');
-      const version = probe.stdout.trim().replace(/^juno-code\s+v?/u, '').replace(/^v/u, '');
-      if (version !== input.attempt.juno_version) throw safeError('Juno Code version mismatch');
+      const version = probe.stdout.trim().replace(/^(?:yylo|juno-code)\s+v?/u, '').replace(/^v/u, '');
+      if (version !== input.attempt.juno_version) throw safeError('YYLO version mismatch');
       try { validateTaskAttemptSpendAuthorization(input); }
       catch { throw safeError('task dispatch spend authorization expired or drifted during version probe'); }
       const started = new Date(); const monotonic = process.hrtime.bigint();
@@ -294,10 +294,10 @@ export function createAuthenticatedJunoRunner(options: AuthenticatedLauncherOpti
 }
 
 export function authenticatedLauncherOptionsFromEnvironment(environment: NodeJS.ProcessEnv = process.env): AuthenticatedLauncherOptions | null {
-  const executable = environment['JUNO_BENCHMARK_AUTH_LAUNCHER']?.trim();
-  const digest = environment['JUNO_BENCHMARK_AUTH_LAUNCHER_SHA256']?.trim();
-  const provider = environment['JUNO_BENCHMARK_AUTH_PROVIDER']?.trim();
-  const envName = environment['JUNO_BENCHMARK_AUTH_ENV']?.trim(); const file = environment['JUNO_BENCHMARK_AUTH_FILE']?.trim();
+  const executable = environment['YYLO_BENCHMARK_AUTH_LAUNCHER']?.trim();
+  const digest = environment['YYLO_BENCHMARK_AUTH_LAUNCHER_SHA256']?.trim();
+  const provider = environment['YYLO_BENCHMARK_AUTH_PROVIDER']?.trim();
+  const envName = environment['YYLO_BENCHMARK_AUTH_ENV']?.trim(); const file = environment['YYLO_BENCHMARK_AUTH_FILE']?.trim();
   const any = [executable, digest, provider, envName, file].some((value) => value !== undefined && value !== '');
   if (!any) return null;
   if (!executable || !digest || !provider || (envName ? 1 : 0) + (file ? 1 : 0) !== 1) throw safeError('identity and exactly one credential source are required');

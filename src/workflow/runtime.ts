@@ -225,7 +225,7 @@ export async function executeWorkflowPlan(options: WorkflowRuntimeOptions): Prom
   const planLease = await options.locks.acquire([{ type: 'workflow_plan', id: plan.plan_id }]);
   try { for (const group of groups.values()) {
     const production = group.some((item) => plan.policy.steps.find((policy) => policy.step_id === item.step_id)!.side_effect === 'production');
-    const experimentResources: TypedResource[] = production ? [{ type: 'production', id: 'juno-benchmark-model-experiment' }] : [];
+    const experimentResources: TypedResource[] = production ? [{ type: 'production', id: 'yylo-benchmark-model-experiment' }] : [];
     await options.locks.withResources(experimentResources, async () => {
       for (const input of group) {
         await options.locks.withResources(resourcesFor(plan, input.step_id), async () => {
@@ -337,7 +337,7 @@ async function invokeReviewedBoundary(
   timeoutMs: number,
 ): Promise<unknown> {
   const child = spawn(process.execPath, ['--input-type=module', '-', operation, '--protocol', WORKFLOW_PROCESS_BOUNDARY_PROTOCOL], {
-    env: { ...process.env, JUNO_BENCHMARK_WORKFLOW_PROTOCOL: WORKFLOW_PROCESS_BOUNDARY_PROTOCOL }, stdio: ['pipe', 'pipe', 'pipe', 'pipe'], shell: false,
+    env: { ...process.env, YYLO_BENCHMARK_WORKFLOW_PROTOCOL: WORKFLOW_PROCESS_BOUNDARY_PROTOCOL }, stdio: ['pipe', 'pipe', 'pipe', 'pipe'], shell: false,
   });
   const stdout: Buffer[] = []; const stderr: Buffer[] = []; let captured = 0; let overflow = false;
   const collect = (target: Buffer[]) => (chunk: Buffer): void => {
@@ -362,9 +362,9 @@ async function invokeReviewedBoundary(
 }
 
 export function workflowBoundaryOptionsFromEnvironment(environment: NodeJS.ProcessEnv = process.env): ReviewedWorkflowBoundaryOptions | null {
-  const module = environment['JUNO_BENCHMARK_WORKFLOW_BOUNDARY']?.trim();
-  const sha256 = environment['JUNO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256']?.trim();
-  const timeoutText = environment['JUNO_BENCHMARK_WORKFLOW_BOUNDARY_TIMEOUT_MS']?.trim();
+  const module = environment['YYLO_BENCHMARK_WORKFLOW_BOUNDARY']?.trim();
+  const sha256 = environment['YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256']?.trim();
+  const timeoutText = environment['YYLO_BENCHMARK_WORKFLOW_BOUNDARY_TIMEOUT_MS']?.trim();
   if (module === undefined && sha256 === undefined && timeoutText === undefined) return null;
   if (module === undefined || module === '' || sha256 === undefined || sha256 === '') throw boundaryError('both module path and SHA-256 are required');
   let timeoutMs: number | undefined;

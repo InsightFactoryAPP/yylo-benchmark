@@ -9,7 +9,7 @@ import { ImmutableArtifactRegistry } from '../../src/registry/index.js';
 
 const h = `sha256:${'1'.repeat(64)}` as const;
 const attempt: AttemptV1 = { schema_version: 'juno_benchmark_attempt.v1', attempt_id: 'A1', experiment_id: 'E1', case_input_hash: h,
-  snapshot_hash: h, prompt_hash: h, agent: 'juno-code', provider: 'openai', model: 'openai/gpt-mini', tool_policy_hash: h,
+  snapshot_hash: h, prompt_hash: h, agent: 'yylo', provider: 'openai', model: 'openai/gpt-mini', tool_policy_hash: h,
   budget_hash: h, package_version: '1', juno_version: '2', session_topology: 'fresh' };
 const candidate: NormalizedResultV1 = { schema_version: 'juno_benchmark_normalized_result.v1', attempt_id: 'A1', resolved: false,
   terminal_class: 'model_failure', session_id: 'S1', started_at: '2026-01-01T00:00:00.000Z', ended_at: '2026-01-01T00:00:01.000Z',

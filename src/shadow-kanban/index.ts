@@ -13,7 +13,7 @@ const ROUTING_NAMES = new Set([
 ]);
 const SENSITIVE_NAME = /(?:^|_)(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY|CREDENTIAL|AUTHORIZATION|COOKIE)(?:$|_)/iu;
 const PROVIDER_NAME = /^(?:AWS_|AZURE_|GOOGLE_|GCP_|OPENAI_|ANTHROPIC_|GITHUB_|GITLAB_|NPM_|PYPI_|DOCKER_)/u;
-const BENCHMARK_CONTROL_NAME = /^JUNO_BENCHMARK_/u;
+const BENCHMARK_CONTROL_NAME = /^YYLO_BENCHMARK_/u;
 
 export interface ShadowTaskContext {
   readonly selectedTask: KanbanTask;
@@ -102,7 +102,7 @@ exec env \
   -u JUNO_TASK_ROOT -u JUNO_CONTROLLER_ROOT -u JUNO_CANONICAL_CONTROLLER \
   -u JUNO_KANBAN_ROOT -u JUNO_KANBAN_CONFIG -u JUNO_KANBAN_COMMAND \
   -u GIT_DIR -u GIT_COMMON_DIR -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES \
-  "\${JUNO_BENCHMARK_SHADOW_KANBAN_EXECUTABLE:-juno-kanban}" "\${global[@]}" "\${command[@]}"
+  "\${YYLO_BENCHMARK_SHADOW_KANBAN_EXECUTABLE:-yylo-ledger}" "\${global[@]}" "\${command[@]}"
 `;
 
 function taskHash(task: KanbanTask): `sha256:${string}` {

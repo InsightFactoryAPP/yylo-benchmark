@@ -25,7 +25,7 @@ async function fixture(): Promise<string> {
       redaction: { patterns: ['TOKEN'], retain_prompt: false } }],
   }));
   await writeFile(path.join(root, '.juno_task', 'config.json'), JSON.stringify({ workflowModels: [':sol'] }));
-  await writeFile(path.join(root, 'juno-benchmark.config.json'), JSON.stringify({ schema_version: 'juno_benchmark_config.v1', repository_id: 'cli-fixture', model_aliases: { ':sol': 'openai-codex/gpt-5.6-sol' } }));
+  await writeFile(path.join(root, 'yylo-benchmark.config.json'), JSON.stringify({ schema_version: 'juno_benchmark_config.v1', repository_id: 'cli-fixture', model_aliases: { ':sol': 'openai-codex/gpt-5.6-sol' } }));
   execFileSync('git', ['init', '-b', 'fixture'], { cwd: root, stdio: 'ignore' });
   execFileSync('git', ['config', 'user.email', 'fixture@example.test'], { cwd: root });
   execFileSync('git', ['config', 'user.name', 'Fixture'], { cwd: root });
@@ -95,10 +95,10 @@ describe('generic workflow CLI lifecycle', () => {
   it('runs, recovers, and rejudges through one hash-pinned reviewed CLI boundary', async () => {
     const root = await fixture(); const reviewed = await boundary(root);
     const plan = await capture(root, ['plan', '--workflow', 'workflow.yaml', '--steps-file', 'policy.yaml', '--models', ':sol', '--output', 'plan.json', '--dry-run']);
-    const priorModule = process.env['JUNO_BENCHMARK_WORKFLOW_BOUNDARY'];
-    const priorHash = process.env['JUNO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256'];
-    process.env['JUNO_BENCHMARK_WORKFLOW_BOUNDARY'] = reviewed.module;
-    process.env['JUNO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256'] = reviewed.sha256;
+    const priorModule = process.env['YYLO_BENCHMARK_WORKFLOW_BOUNDARY'];
+    const priorHash = process.env['YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256'];
+    process.env['YYLO_BENCHMARK_WORKFLOW_BOUNDARY'] = reviewed.module;
+    process.env['YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256'] = reviewed.sha256;
     try {
       const run = await capture(root, ['run', '--plan', 'plan.json', '--steps-file', 'policy.yaml']);
       expect(run).toMatchObject({ plan_id: plan.plan_id, recovered: false, terminals: [{ step_id: 'analyze', result: { status: 'success' } }] });
@@ -112,8 +112,8 @@ describe('generic workflow CLI lifecycle', () => {
       expect(secondRejudge).toMatchObject({ schema_version: 'juno_benchmark_workflow_rejudge.v1', plan_id: plan.plan_id,
         candidate_dispatch_count: 0, judge_dispatch_count: 1 });
     } finally {
-      if (priorModule === undefined) delete process.env['JUNO_BENCHMARK_WORKFLOW_BOUNDARY']; else process.env['JUNO_BENCHMARK_WORKFLOW_BOUNDARY'] = priorModule;
-      if (priorHash === undefined) delete process.env['JUNO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256']; else process.env['JUNO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256'] = priorHash;
+      if (priorModule === undefined) delete process.env['YYLO_BENCHMARK_WORKFLOW_BOUNDARY']; else process.env['YYLO_BENCHMARK_WORKFLOW_BOUNDARY'] = priorModule;
+      if (priorHash === undefined) delete process.env['YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256']; else process.env['YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256'] = priorHash;
     }
   });
 

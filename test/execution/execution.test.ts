@@ -26,13 +26,13 @@ async function fixture() {
 describe('recoverable immutable execution', () => {
   it('executes one candidate, binds patch/session/cost, and updates compact Kanban truth', async () => {
     const item = await fixture(); let calls = 0;
-    vi.stubEnv('JUNO_BENCHMARK_REGISTRY', '/private/registry');
-    vi.stubEnv('JUNO_BENCHMARK_WORK_ROOT', '/private/work');
+    vi.stubEnv('YYLO_BENCHMARK_REGISTRY', '/private/registry');
+    vi.stubEnv('YYLO_BENCHMARK_WORK_ROOT', '/private/work');
     let outcome: Awaited<ReturnType<typeof runExperiment>>;
     try {
       outcome = await runExperiment({ client: item.client, registry: item.registry, plan: item.plan,
         prepareAttempt: async () => ({ repository: item.repository, snapshotHash: item.plan.snapshot_hash, shadowHash: h('5'), baselineCommit: item.baselineCommit, baselineTree: item.baselineTree }),
-        runner: async (input) => { calls += 1; expect(input.environment).not.toHaveProperty('JUNO_BENCHMARK_REGISTRY'); expect(input.environment).not.toHaveProperty('JUNO_BENCHMARK_WORK_ROOT'); await writeFile(path.join(input.repository, 'file.txt'), 'after\n'); await writeFile(path.join(input.repository, 'new.txt'), 'new\n'); return { attemptId: input.attempt.attempt_id, expectedModel: 'openai/gpt-mini', expectedJunoVersion: '2.0.0', observedJunoVersion: '2.0.0', startedAt: '2026-08-12T00:00:00.000Z', endedAt: '2026-08-12T00:00:02.000Z', elapsedMs: 2000, exitCode: 0, signal: null, stdout: JSON.stringify({ schema_version: 'juno_execution_envelope.v1', status: 'success', session_id: 'SESSION1', model: 'gpt-mini', provider: 'openai', juno_version: '2.0.0', cost: { completeness: 'complete', usd: 0 } }), stderr: '', patchHash: null }; },
+        runner: async (input) => { calls += 1; expect(input.environment).not.toHaveProperty('YYLO_BENCHMARK_REGISTRY'); expect(input.environment).not.toHaveProperty('YYLO_BENCHMARK_WORK_ROOT'); await writeFile(path.join(input.repository, 'file.txt'), 'after\n'); await writeFile(path.join(input.repository, 'new.txt'), 'new\n'); return { attemptId: input.attempt.attempt_id, expectedModel: 'openai/gpt-mini', expectedJunoVersion: '2.0.0', observedJunoVersion: '2.0.0', startedAt: '2026-08-12T00:00:00.000Z', endedAt: '2026-08-12T00:00:02.000Z', elapsedMs: 2000, exitCode: 0, signal: null, stdout: JSON.stringify({ schema_version: 'juno_execution_envelope.v1', status: 'success', session_id: 'SESSION1', model: 'gpt-mini', provider: 'openai', juno_version: '2.0.0', cost: { completeness: 'complete', usd: 0 } }), stderr: '', patchHash: null }; },
         grader: async () => ({ graderId: 'fixture-grader', graderVersion: '1', passed: true, output: { passed: true } }) });
     } finally { vi.unstubAllEnvs(); }
     expect(calls).toBe(1); expect(outcome.attempts[0]?.result).toMatchObject({ terminal_class: 'resolved', session_id: 'SESSION1', cost: { completeness: 'complete', usd: 0 } });

@@ -4,7 +4,7 @@ wiki_contract:
   purpose: "Describe deterministic planning, authorized execution, recovery, and immutable experiment lifecycle."
   failure_mode_prevented: "Prevents surprise mutation, duplicate paid work, and rewriting completed attempt truth."
   runtime_contract_enforced: "A reviewed plan is revalidated before one canonical experiment expands into bounded immutable attempts."
-  validation_gate: "juno-benchmark lifecycle and recovery tests"
+  validation_gate: "yylo-benchmark lifecycle and recovery tests"
   owns:
     - "Experiment planning and lifecycle guidance"
   does_not_own:
@@ -36,8 +36,8 @@ other executable forms are rejected rather than parsed.
 
 Workflow cost is observational, not authorization. Plans contain no spend grant, ceiling, or
 reservation. Candidate and judge operations receive immutable identity-bound requests through
-the hash-pinned module selected by `JUNO_BENCHMARK_WORKFLOW_BOUNDARY` and
-`JUNO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256`. That module owns credentials and implements the
+the hash-pinned module selected by `YYLO_BENCHMARK_WORKFLOW_BOUNDARY` and
+`YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256`. That module owns credentials and implements the
 `juno_benchmark_workflow_process_boundary.v1` probe/preflight/dispatch/reconcile/resume/judge
 protocol. Complete and partial USD evidence is retained when available; unavailable and
 not-applicable cost remains explicit null evidence and does not invalidate an otherwise valid
@@ -54,7 +54,7 @@ silently redefine the historical suite.
 ## Attempt expansion
 
 Each attempt receives the same declared case inputs and a fresh isolated source
-repository. Candidate work records are shadow copies. Juno Code executes the declared
+repository. Candidate work records are shadow copies. YYLO executes the declared
 agent and model while the benchmark layer retains exact terminal evidence and applies
 grading. Offline attempts may use bounded concurrency; declared shared or sensitive
 resources require serialization and separate authorization.

@@ -1,7 +1,7 @@
 {
-  "name": "@juno-ai/juno-benchmark",
-  "version": "0.1.1",
-  "description": "Immutable task-case and project-owned workflow evaluation contracts and CLI",
+  "name": "@yylo/benchmark",
+  "version": "0.1.0-rc.1",
+  "description": "YYLO Benchmark: immutable task-case and workflow evaluation contracts and CLI",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -12,7 +12,7 @@
     }
   },
   "bin": {
-    "juno-benchmark": "./dist/bin.js"
+    "yylo-benchmark": "./dist/bin.js"
   },
   "files": [
     "dist",
@@ -21,7 +21,8 @@
     "scripts/verify-convert-installed-acceptance.mjs",
     "fixtures/convert-2026-08-12/expected.json",
     "fixtures/convert-2026-08-12/policy.yaml",
-    "fixtures/convert-2026-08-12/rubric.md"
+    "fixtures/convert-2026-08-12/rubric.md",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsup",
@@ -34,14 +35,6 @@
   "engines": {
     "node": ">=20.10.0"
   },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/yylo-dev/yylo-benchmark.git"
-  },
-  "bugs": {
-    "url": "https://github.com/yylo-dev/yylo-benchmark/issues"
-  },
-  "homepage": "https://github.com/yylo-dev/yylo-benchmark#readme",
   "dependencies": {
     "commander": "^11.1.0",
     "yaml": "^2.9.0",
@@ -53,5 +46,21 @@
     "tsup": "^8.5.1",
     "typescript": "^5.3.3",
     "vitest": "^1.0.4"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yylo-dev/yylo-benchmark.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yylo-dev/yylo-benchmark/issues"
+  },
+  "homepage": "https://yylo.dev",
+  "author": {
+    "name": "JUNO AI INC.",
+    "email": "support@yylo.dev"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
   }
 }

@@ -11,7 +11,7 @@ describe('configuration', () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'juno-benchmark-config-'));
     const child = path.join(root, 'nested');
     await mkdir(child);
-    await writeFile(path.join(root, 'juno-benchmark.config.json'), JSON.stringify({
+    await writeFile(path.join(root, 'yylo-benchmark.config.json'), JSON.stringify({
       schema_version: 'juno_benchmark_config.v1', repository_id: 'fixture', kanban: { arguments: [] },
       model_aliases: { ':mini': 'openai/gpt-mini' },
     }));
@@ -19,6 +19,16 @@ describe('configuration', () => {
     expect(loaded.projectRoot).toBe(root);
     expect(loaded.config.repository_id).toBe('fixture');
     expect(loaded.config.model_aliases).toEqual({ ':mini': 'openai/gpt-mini' });
+  });
+
+  it('reads the legacy config filename only as a bounded migration input', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'yylo-benchmark-legacy-config-'));
+    await writeFile(path.join(root, 'juno-benchmark.config.json'), JSON.stringify({
+      schema_version: 'juno_benchmark_config.v1', repository_id: 'legacy',
+    }));
+    const loaded = await loadConfig({ cwd: root });
+    expect(loaded.config.repository_id).toBe('legacy');
+    expect(loaded.configPath).toBe(path.join(root, 'juno-benchmark.config.json'));
   });
 
   it('discovers the project-local public Kanban wrapper without a config', async () => {
@@ -65,7 +75,7 @@ printf '%s\\n' '[{"id":"CASE1","status":"done","body":"Fix it.","last_modified":
 
   it('rejects aliases that do not bind an exact provider/model identity', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'juno-benchmark-config-alias-'));
-    await writeFile(path.join(root, 'juno-benchmark.config.json'), JSON.stringify({
+    await writeFile(path.join(root, 'yylo-benchmark.config.json'), JSON.stringify({
       schema_version: 'juno_benchmark_config.v1', repository_id: 'root', model_aliases: { ':mini': ':other' },
     }));
     await expect(loadConfig({ cwd: root })).rejects.toThrow(/exact provider\/model/u);
@@ -73,7 +83,7 @@ printf '%s\\n' '[{"id":"CASE1","status":"done","body":"Fix it.","last_modified":
 
   it('rejects unknown policy keys', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'juno-benchmark-config-bad-'));
-    await writeFile(path.join(root, 'juno-benchmark.config.json'), JSON.stringify({
+    await writeFile(path.join(root, 'yylo-benchmark.config.json'), JSON.stringify({
       schema_version: 'juno_benchmark_config.v1', repository_id: 'root', kanban: { arguments: [] }, surprise: true,
     }));
     await expect(loadConfig({ cwd: root })).rejects.toThrow();

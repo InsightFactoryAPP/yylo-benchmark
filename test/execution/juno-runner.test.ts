@@ -18,7 +18,7 @@ const exec = promisify(execFile);
 function attempt(version: string): AttemptV1 {
   return {
     schema_version: 'juno_benchmark_attempt.v1', attempt_id: 'A1', experiment_id: hash,
-    case_input_hash: hash, snapshot_hash: hash, prompt_hash: hash, agent: 'juno-code',
+    case_input_hash: hash, snapshot_hash: hash, prompt_hash: hash, agent: 'yylo',
     provider: 'openai', model: 'openai/gpt-mini', tool_policy_hash: hash, budget_hash: hash,
     package_version: '0.1.0', juno_version: version, session_topology: 'fresh',
   };

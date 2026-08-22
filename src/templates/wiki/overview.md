@@ -1,10 +1,10 @@
 ---
 wiki_contract:
   line_limit: 180
-  purpose: "Explain the stable Juno Benchmark operating boundary and evidence model."
+  purpose: "Explain the stable YYLO Benchmark operating boundary and evidence model."
   failure_mode_prevented: "Prevents evaluation work from becoming bespoke, mutable, or detached from canonical authorization."
   runtime_contract_enforced: "One opted-in engineering case expands into hash-bound attempts and immutable evidence."
-  validation_gate: "juno-benchmark package test, typecheck, and build"
+  validation_gate: "yylo-benchmark package test, typecheck, and build"
   owns:
     - "Benchmark concepts, boundaries, and operator sequence"
   does_not_own:
@@ -12,9 +12,9 @@ wiki_contract:
     - "Agent execution or canonical work records"
 ---
 
-# Juno Benchmark overview
+# YYLO Benchmark overview
 
-Juno Benchmark answers a narrow question: which model or agent system is the least
+YYLO Benchmark answers a narrow question: which model or agent system is the least
 expensive option that resolves a category of real engineering work reliably enough?
 Resolution is primary. Runtime, paid cost, invalid-run rate, and consistency remain
 separate evidence; unavailable cost is never represented as zero.
@@ -22,8 +22,8 @@ separate evidence; unavailable cost is never represented as zero.
 ## Boundaries
 
 - Canonical work records authorize eligible cases and experiment lifecycle changes.
-- Juno Code owns provider execution, sessions, process behavior, and raw usage evidence.
-- Juno Benchmark owns case identity, isolated snapshots, attempts, grading, retained
+- YYLO owns provider execution, sessions, process behavior, and raw usage evidence.
+- YYLO Benchmark owns case identity, isolated snapshots, attempts, grading, retained
   evidence, comparisons, and recommendation-only reports.
 - Package pages provide stable guidance. Pages below `project/` are unlimited,
   project-owned knowledge and are never replaced by package updates.

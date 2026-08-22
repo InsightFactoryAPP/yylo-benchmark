@@ -40,7 +40,7 @@ async function fixture(workflow = workflowText, sidecar: WorkflowPolicy = policy
   await writeFile(path.join(root, 'workflow.yaml'), workflow);
   await writeFile(path.join(root, 'policy.yaml'), JSON.stringify(sidecar));
   await writeFile(path.join(root, '.juno_task', 'config.json'), JSON.stringify({ workflowModels: [':sol', 'zai/glm-5.2', ':mini'] }));
-  await writeFile(path.join(root, 'juno-benchmark.config.json'), JSON.stringify({ schema_version: 'juno_benchmark_config.v1', repository_id: 'fixture', model_aliases: { ':sol': 'openai-codex/gpt-5.6-sol', ':mini': 'openai-codex/gpt-5.6-terra' } }));
+  await writeFile(path.join(root, 'yylo-benchmark.config.json'), JSON.stringify({ schema_version: 'juno_benchmark_config.v1', repository_id: 'fixture', model_aliases: { ':sol': 'openai-codex/gpt-5.6-sol', ':mini': 'openai-codex/gpt-5.6-terra' } }));
   execFileSync('git', ['init', '-b', 'fixture'], { cwd: root, stdio: 'ignore' });
   execFileSync('git', ['config', 'user.email', 'fixture@example.test'], { cwd: root });
   execFileSync('git', ['config', 'user.name', 'Fixture'], { cwd: root });

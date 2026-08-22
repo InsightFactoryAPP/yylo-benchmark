@@ -26,7 +26,7 @@ export interface ProcessEvidence {
 export interface ReconciledTelemetry {
   readonly result: NormalizedResultV1;
   readonly evidence: Readonly<Record<string, unknown>>;
-  readonly agent: 'juno-code';
+  readonly agent: 'yylo';
   readonly provider: string;
   readonly model: string;
   readonly junoVersion: string;
@@ -88,5 +88,5 @@ export function reconcileJunoTelemetry(input: ProcessEvidence): ReconciledTeleme
     cost: envelope?.cost ?? { completeness: 'unavailable', usd: null }, patch_hash: input.patchHash,
     terminal_evidence_hash: canonicalHash(terminalEvidence),
   });
-  return { result, evidence: terminalEvidence, agent: 'juno-code', provider, model, junoVersion, sessionId, candidateSucceeded };
+  return { result, evidence: terminalEvidence, agent: 'yylo', provider, model, junoVersion, sessionId, candidateSucceeded };
 }

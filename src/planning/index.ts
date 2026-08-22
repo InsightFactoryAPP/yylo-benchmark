@@ -26,7 +26,7 @@ export interface ExecutionPlan {
   readonly schema_version: typeof PLAN_SCHEMA_VERSION;
   readonly plan_id: `sha256:${string}`;
   readonly case: EvalCaseV1;
-  /** Exact provider/model identities dispatched to Juno Code. */
+  /** Exact provider/model identities dispatched to YYLO. */
   readonly models: readonly string[];
   /** Exact model identity -> user selector, retained in the immutable plan. */
   readonly model_selectors: Readonly<Record<string, string>>;

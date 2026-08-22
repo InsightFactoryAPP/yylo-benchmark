@@ -147,7 +147,7 @@ export async function investigateRetainedEvidence(options: {
 
 export function createJunoInvestigationAgent(options: { readonly executable?: string; readonly leadingArguments?: readonly string[] } = {}): InvestigationAgent {
   return async (input) => {
-    const executable = options.executable ?? process.env['JUNO_BENCHMARK_JUNO_EXECUTABLE'] ?? 'yy';
+    const executable = options.executable ?? process.env['YYLO_BENCHMARK_JUNO_EXECUTABLE'] ?? 'yy';
     const prompt = `Answer the bounded benchmark investigation question using only the privacy-scanned packet. Do not request or infer full transcripts.\nQuestion: ${input.question}\nPacket: ${canonicalJson(input.packet)}`;
     const started = process.hrtime.bigint();
     const child = spawn(executable, [...(options.leadingArguments ?? []), 'pi', prompt], { stdio: ['ignore', 'pipe', 'pipe'], shell: false });
@@ -161,7 +161,7 @@ export function createJunoInvestigationAgent(options: { readonly executable?: st
     if (overflow) throw new Error('Juno investigation output exceeded 524288 bytes');
     if (timedOut) throw new Error(`Juno investigation timed out after ${input.timeoutMs}ms`);
     if (closed.code !== 0) throw new Error(`Juno investigation failed (${closed.code ?? closed.signal ?? 'unknown'}): ${Buffer.concat(stderr).toString('utf8').trim() || 'no stderr'}`);
-    return { analysis: Buffer.concat(stdout).toString('utf8').trim(), agent: 'juno-code', provider: 'configured', model: 'configured', session_id: null,
+    return { analysis: Buffer.concat(stdout).toString('utf8').trim(), agent: 'yylo', provider: 'configured', model: 'configured', session_id: null,
       elapsed_ms: Number((process.hrtime.bigint() - started) / 1_000_000n), cost: { completeness: 'unavailable', usd: null } };
   };
 }

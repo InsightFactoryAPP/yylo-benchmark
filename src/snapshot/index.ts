@@ -194,18 +194,18 @@ export async function buildSnapshot(options: BuildSnapshotOptions): Promise<Snap
     entries.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
     await run('git', ['init', '--quiet', '--template=', '--object-format=sha1', '--initial-branch', SNAPSHOT_BRANCH, destination], { env: gitEnvironment() });
     await git(destination, ['config', 'core.logAllRefUpdates', 'false']);
-    await git(destination, ['config', 'user.name', 'Juno Benchmark']);
+    await git(destination, ['config', 'user.name', 'YYLO Benchmark']);
     await git(destination, ['config', 'user.email', 'benchmark.invalid@example.invalid']);
     await git(destination, ['add', '--all', '--', '.']);
     const commitEnvironment = {
-      GIT_AUTHOR_NAME: 'Juno Benchmark',
+      GIT_AUTHOR_NAME: 'YYLO Benchmark',
       GIT_AUTHOR_EMAIL: 'benchmark.invalid@example.invalid',
-      GIT_COMMITTER_NAME: 'Juno Benchmark',
+      GIT_COMMITTER_NAME: 'YYLO Benchmark',
       GIT_COMMITTER_EMAIL: 'benchmark.invalid@example.invalid',
       GIT_AUTHOR_DATE: '2000-01-01T00:00:00Z',
       GIT_COMMITTER_DATE: '2000-01-01T00:00:00Z',
     };
-    await git(destination, ['commit', '--quiet', '--no-gpg-sign', '-m', 'Juno Benchmark synthetic baseline'], commitEnvironment);
+    await git(destination, ['commit', '--quiet', '--no-gpg-sign', '-m', 'YYLO Benchmark synthetic baseline'], commitEnvironment);
     const syntheticCommit = (await git(destination, ['rev-parse', 'HEAD'])).toString('utf8').trim();
     const syntheticTree = (await git(destination, ['rev-parse', 'HEAD^{tree}'])).toString('utf8').trim();
     const identityInput = { schema_version: SNAPSHOT_SCHEMA_VERSION, source_commit: sourceCommit, source_tree: sourceTree, excluded_paths: exclusions, entries } as const;
@@ -253,7 +253,7 @@ const CREDENTIAL_PATTERNS = [
   /https?:\/\/[^\s/:]+:[^\s/@]+@/u,
   /(?:api[_-]?key|access[_-]?token|client[_-]?secret|password)\s*[:=]\s*['"]?[A-Za-z0-9_\-/.+=]{12,}/iu,
 ];
-const ROUTING_ENV = /^(?:JUNO_BENCHMARK_.*|JUNO_TASK_ROOT|JUNO_CONTROLLER_ROOT|JUNO_CANONICAL_CONTROLLER|JUNO_KANBAN_(?:ROOT|CONFIG|COMMAND)|GIT_(?:DIR|COMMON_DIR|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES))$/u;
+const ROUTING_ENV = /^(?:(?:YYLO_BENCHMARK_|JUNO_BENCHMARK_).*|JUNO_TASK_ROOT|JUNO_CONTROLLER_ROOT|JUNO_CANONICAL_CONTROLLER|(?:YYLO_LEDGER_|JUNO_KANBAN_)(?:ROOT|CONFIG|COMMAND)|GIT_(?:DIR|COMMON_DIR|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES))$/u;
 const CREDENTIAL_ENV = /(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY|CREDENTIAL|AUTHORIZATION|COOKIE)$/iu;
 
 async function resolvedGitPath(repository: string, query: '--git-common-dir' | '--git-dir'): Promise<string> {

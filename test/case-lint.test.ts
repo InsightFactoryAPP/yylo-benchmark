@@ -39,7 +39,7 @@ describe('benchmark case lint', () => {
     const fixture = path.join(root, 'kanban-fixture.mjs');
     await writeFile(fixture, `if (process.argv.slice(2).join(' ') !== '-f json get CASE1') process.exit(9);\nprocess.stdout.write(JSON.stringify([${JSON.stringify(task())}]));\n`, 'utf8');
     await chmod(fixture, 0o700);
-    await writeFile(path.join(root, 'juno-benchmark.config.json'), JSON.stringify({
+    await writeFile(path.join(root, 'yylo-benchmark.config.json'), JSON.stringify({
       schema_version: 'juno_benchmark_config.v1', repository_id: 'root',
       kanban: { executable: process.execPath, arguments: [fixture] },
     }), 'utf8');

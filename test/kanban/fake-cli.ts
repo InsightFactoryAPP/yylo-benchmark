@@ -14,7 +14,7 @@ const rawArgs=process.argv.slice(2); fs.appendFileSync(callsPath, JSON.stringify
 const args=rawArgs[0]==='-f'&&rawArgs[1]==='json'?rawArgs.slice(2):rawArgs;
 const state=JSON.parse(fs.readFileSync(statePath,'utf8')); const save=()=>fs.writeFileSync(statePath,JSON.stringify(state));
 const value=(flag)=>{const i=args.indexOf(flag); return i<0?undefined:args[i+1]};
-if(args[0]==='--version'){console.log('juno-kanban 2.0.5');process.exit(0)}
+if(args[0]==='--version'){console.log('yylo-ledger 0.1.0rc1');process.exit(0)}
 const command=args[0];
 if(command==='get') { const id=args[1]; const task=state.tasks[id]; if(!task)process.exit(4); console.log(JSON.stringify([task])); process.exit(0); }
 if(command==='history') { const id=args[1]; state.historyCalls=(state.historyCalls||0)+1; if(state.mutateDuringRead&&state.historyCalls>=2){state.revisions[id]='f'.repeat(64);state.mutateDuringRead=false} save(); console.log(JSON.stringify([{task_id:id,operation:'update',after_sha256:state.revisions[id],event_id:'evt'}]));process.exit(0); }

@@ -90,7 +90,7 @@ function contract(plan: ExecutionPlan, model: string, ordinal: number): AttemptV
   return AttemptV1Schema.parse({
     schema_version: 'juno_benchmark_attempt.v1', attempt_id: attemptId(plan, model, ordinal), experiment_id: plan.plan_id,
     case_input_hash: plan.case.input_hash, snapshot_hash: plan.snapshot_hash, prompt_hash: plan.case.prompt_hash,
-    agent: 'juno-code', provider: model.includes('/') ? model.split('/')[0] : 'configured', model,
+    agent: 'yylo', provider: model.includes('/') ? model.split('/')[0] : 'configured', model,
     tool_policy_hash: plan.tool_policy_hash, budget_hash: plan.budget_hash,
     package_version: plan.package_version, juno_version: plan.juno_version, session_topology: 'fresh',
   });
@@ -186,7 +186,7 @@ async function gitPatch(repository: string, baselineCommit: string, baselineTree
 
   // Never trust the candidate's index, attributes, ignore metadata, or clean
   // filters. Hash exact filesystem bytes into a private index without --path.
-  const temporary = await mkdtemp(path.join(os.tmpdir(), 'juno-benchmark-patch-'));
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'yylo-benchmark-patch-'));
   const capturedIndex = path.join(temporary, 'captured.index');
   const verifiedIndex = path.join(temporary, 'verified.index');
   try {
@@ -379,22 +379,22 @@ async function probeJunoVersion(executable: string, leadingArguments: readonly s
   const timeout = setTimeout(() => { timedOut = true; child.kill('SIGTERM'); force = setTimeout(() => child.kill('SIGKILL'), 1_000); }, timeoutMs);
   const closed = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => { child.once('error', reject); child.once('close', (code, signal) => resolve({ code, signal })); })
     .finally(() => { clearTimeout(timeout); if (force !== undefined) clearTimeout(force); });
-  if (overflow) throw new Error('Juno Code version output exceeded 65536 bytes');
-  if (timedOut) throw new Error(`Juno Code version probe timed out after ${timeoutMs}ms`);
+  if (overflow) throw new Error('YYLO version output exceeded 65536 bytes');
+  if (timedOut) throw new Error(`YYLO version probe timed out after ${timeoutMs}ms`);
   const output = Buffer.concat(stdout).toString('utf8').trim();
-  if (closed.code !== 0) throw new Error(`Juno Code version probe failed (${closed.code ?? closed.signal ?? 'unknown'}): ${Buffer.concat(stderr).toString('utf8').trim() || 'no stderr'}`);
-  const match = /^(?:juno-code\s+)?v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$/u.exec(output);
-  if (match?.[1] === undefined) throw new Error(`Juno Code returned an invalid version: ${output || 'empty output'}`);
+  if (closed.code !== 0) throw new Error(`YYLO version probe failed (${closed.code ?? closed.signal ?? 'unknown'}): ${Buffer.concat(stderr).toString('utf8').trim() || 'no stderr'}`);
+  const match = /^(?:(?:yylo|juno-code)\s+)?v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$/u.exec(output);
+  if (match?.[1] === undefined) throw new Error(`YYLO returned an invalid version: ${output || 'empty output'}`);
   return match[1];
 }
 
 export function createJunoRunner(options: SpawnJunoOptions = {}): CandidateRunner {
   const runner = async (input: CandidateInvocation) => {
     validateTaskAttemptSpendAuthorization(input);
-    const executable = options.executable ?? process.env['JUNO_BENCHMARK_JUNO_EXECUTABLE'] ?? 'yy';
+    const executable = options.executable ?? process.env['YYLO_BENCHMARK_JUNO_EXECUTABLE'] ?? 'yy';
     const leadingArguments = options.leadingArguments ?? [];
     const observedJunoVersion = await probeJunoVersion(executable, leadingArguments, input.environment, input.repository, options.versionTimeoutMs ?? 10_000);
-    if (observedJunoVersion !== input.attempt.juno_version) throw new Error(`Juno Code version mismatch: plan requires ${input.attempt.juno_version}, executable reports ${observedJunoVersion}`);
+    if (observedJunoVersion !== input.attempt.juno_version) throw new Error(`YYLO version mismatch: plan requires ${input.attempt.juno_version}, executable reports ${observedJunoVersion}`);
     validateTaskAttemptSpendAuthorization(input);
     const args = [...leadingArguments, 'pi', '--execution-envelope', '--model', input.attempt.model, input.prompt];
     const started = new Date(); const monotonic = process.hrtime.bigint();
@@ -410,7 +410,7 @@ export function createJunoRunner(options: SpawnJunoOptions = {}): CandidateRunne
     const closed = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => { child.once('error', reject); child.once('close', (code, signal) => resolve({ code, signal })); })
       .finally(() => { clearTimeout(timeout); if (force !== undefined) clearTimeout(force); });
     const ended = new Date(); const elapsedMs = Number((process.hrtime.bigint() - monotonic) / 1_000_000n);
-    if (overflow) throw new Error('Juno Code output exceeded 8388608 bytes');
+    if (overflow) throw new Error('YYLO output exceeded 8388608 bytes');
     return { attemptId: input.attempt.attempt_id, expectedModel: input.attempt.model, expectedJunoVersion: input.attempt.juno_version, observedJunoVersion,
       startedAt: started.toISOString(), endedAt: ended.toISOString(), elapsedMs, exitCode: closed.code, signal: closed.signal,
       timedOut, stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8'), patchHash: null };

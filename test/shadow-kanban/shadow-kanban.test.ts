@@ -63,7 +63,7 @@ printf '%s\\n' "$*" > "$PWD/.juno_task/write-receipt.txt"
     const wrapper = path.join(root, '.juno_task', 'scripts', 'kanban.sh');
     await exec(wrapper, ['mark', 'done', '--id', 'CASE01'], {
       cwd: root,
-      env: { ...process.env, JUNO_TASK_ROOT: path.dirname(canonical), JUNO_KANBAN_COMMAND: '/canonical/wrapper', JUNO_BENCHMARK_SHADOW_KANBAN_EXECUTABLE: fake },
+      env: { ...process.env, JUNO_TASK_ROOT: path.dirname(canonical), JUNO_KANBAN_COMMAND: '/canonical/wrapper', YYLO_BENCHMARK_SHADOW_KANBAN_EXECUTABLE: fake },
     });
     expect(await readFile(canonical, 'utf8')).toBe('canonical unchanged\n');
     expect(await readFile(path.join(root, '.juno_task', 'tasks', 'ca', 'CASE01.md'), 'utf8')).toContain('local candidate write');
@@ -84,16 +84,16 @@ printf '%s\\n' "$*" > "$PWD/.juno_task/write-receipt.txt"
   it('sanitizes controller, Git-routing, provider and credential environment', () => {
     const clean = sanitizeCandidateEnvironment({
       PATH: '/bin', SAFE_FLAG: 'yes', JUNO_TASK_ROOT: '/canonical',
-      JUNO_BENCHMARK_REGISTRY: '/private/registry', JUNO_BENCHMARK_WORK_ROOT: '/private/work',
-      JUNO_BENCHMARK_SHADOW_KANBAN_EXECUTABLE: '/private/tool',
+      YYLO_BENCHMARK_REGISTRY: '/private/registry', YYLO_BENCHMARK_WORK_ROOT: '/private/work',
+      YYLO_BENCHMARK_SHADOW_KANBAN_EXECUTABLE: '/private/tool',
       GIT_ALTERNATE_OBJECT_DIRECTORIES: '/source/.git/objects',
       OPENAI_API_KEY: 'secret', GITHUB_TOKEN: 'secret', SSH_AUTH_SOCK: '/agent.sock',
     }, '/candidate');
     expect(clean).toMatchObject({ PATH: '/bin', SAFE_FLAG: 'yes', HOME: '/candidate/.juno_task/home', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' });
     expect(clean).not.toHaveProperty('JUNO_TASK_ROOT');
-    expect(clean).not.toHaveProperty('JUNO_BENCHMARK_REGISTRY');
-    expect(clean).not.toHaveProperty('JUNO_BENCHMARK_WORK_ROOT');
-    expect(clean).not.toHaveProperty('JUNO_BENCHMARK_SHADOW_KANBAN_EXECUTABLE');
+    expect(clean).not.toHaveProperty('YYLO_BENCHMARK_REGISTRY');
+    expect(clean).not.toHaveProperty('YYLO_BENCHMARK_WORK_ROOT');
+    expect(clean).not.toHaveProperty('YYLO_BENCHMARK_SHADOW_KANBAN_EXECUTABLE');
     expect(clean).not.toHaveProperty('GIT_ALTERNATE_OBJECT_DIRECTORIES');
     expect(clean).not.toHaveProperty('OPENAI_API_KEY');
     expect(clean).not.toHaveProperty('GITHUB_TOKEN');

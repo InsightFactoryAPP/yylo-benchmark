@@ -127,7 +127,7 @@ const leakage = z.object({ checked: z.tuple([
 
 export const RELEASE_VERIFICATION_COMMANDS = Object.freeze({
   coverage: Object.freeze({ executable: 'npm', arguments: Object.freeze(['exec', '--', 'vitest', 'run', '--coverage', '--coverage.reporter=json-summary', '--coverage.reporter=text']), cwd: 'juno-benchmark', timeout_ms: 120_000, stdin: 'closed' }),
-  leakage: Object.freeze({ executable: 'node', arguments: Object.freeze(['../juno-code/scripts/scan-benchmark-release-artifacts.mjs', 'dist', '../juno-code/dist', '.release-evidence/juno-benchmark.tgz', '.release-evidence/juno-code.tgz']), cwd: 'juno-benchmark', timeout_ms: 30_000, stdin: 'closed' }),
+  leakage: Object.freeze({ executable: 'node', arguments: Object.freeze(['../juno-code/scripts/scan-benchmark-release-artifacts.mjs', 'dist', '../juno-code/dist', '.release-evidence/yylo-benchmark.tgz', '.release-evidence/yylo-cli.tgz']), cwd: 'juno-benchmark', timeout_ms: 30_000, stdin: 'closed' }),
 } as const);
 const command = z.object({ executable: z.string().min(1), arguments: z.array(z.string()), cwd: z.literal('juno-benchmark'), timeout_ms: z.number().int().min(1).max(120_000), stdin: z.literal('closed') }).strict();
 const execution = z.object({ exit_code: z.literal(0), signal: z.null(), timed_out: z.literal(false) }).strict();
@@ -155,7 +155,7 @@ const verificationEvidence = z.discriminatedUnion('kind', [
 
 export const ReleaseReadinessInputSchema = z.object({
   source: z.object({ commit: objectId, tree: objectId, clean: z.literal(true), packages: z.array(identity).length(2) }).strict(),
-  artifacts: z.array(z.object({ package: z.enum(['@juno-ai/juno-benchmark', 'juno-code']), kind: z.enum(['source', 'dist', 'npm_tarball']), version: z.string().min(1), sha256: digest }).strict()).length(6),
+  artifacts: z.array(z.object({ package: z.enum(['@yylo/benchmark', '@yylo/cli']), kind: z.enum(['source', 'dist', 'npm_tarball']), version: z.string().min(1), sha256: digest }).strict()).length(6),
   cli_identities: z.array(z.object({ installation: z.enum(['built', 'installed']), surface: z.enum(['standalone', 'delegate']), benchmark_version: z.string().min(1), juno_code_version: z.string().min(1).nullable() }).strict()).length(4),
   verification_evidence: z.array(verificationEvidence).length(2),
 }).strict();
@@ -174,8 +174,8 @@ export const ReleaseReadinessReceiptSchema = ReleaseReadinessInputSchema.extend(
 }).strict();
 
 const REQUIRED_ARTIFACTS = new Set([
-  '@juno-ai/juno-benchmark:source', '@juno-ai/juno-benchmark:dist', '@juno-ai/juno-benchmark:npm_tarball',
-  'juno-code:source', 'juno-code:dist', 'juno-code:npm_tarball',
+  '@yylo/benchmark:source', '@yylo/benchmark:dist', '@yylo/benchmark:npm_tarball',
+  '@yylo/cli:source', '@yylo/cli:dist', '@yylo/cli:npm_tarball',
 ]);
 const REQUIRED_CLIS = new Set(['built:standalone', 'built:delegate', 'installed:standalone', 'installed:delegate']);
 
@@ -216,10 +216,10 @@ export function generateReleaseReadinessReceipt(raw: unknown, options: { readonl
   }
   const versions = new Map(input.source.packages.map((item) => [item.name, item.version]));
   for (const artifact of input.artifacts) if (versions.get(artifact.package) !== artifact.version) throw new Error(`artifact version drift for ${artifact.package}`);
-  const benchmarkVersion = versions.get('@juno-ai/juno-benchmark'); const junoVersion = versions.get('juno-code');
+  const benchmarkVersion = versions.get('@yylo/benchmark'); const junoVersion = versions.get('@yylo/cli');
   for (const cli of input.cli_identities) {
     if (cli.benchmark_version !== benchmarkVersion) throw new Error('benchmark CLI identity drift');
-    if (cli.surface === 'delegate' && cli.juno_code_version !== junoVersion) throw new Error('delegate Juno Code identity drift');
+    if (cli.surface === 'delegate' && cli.juno_code_version !== junoVersion) throw new Error('delegate YYLO identity drift');
     if (cli.surface === 'standalone' && cli.juno_code_version !== null) throw new Error('standalone identity must not claim a delegate');
   }
   const coverageEvidence = input.verification_evidence.find((item) => item.kind === 'coverage')!;

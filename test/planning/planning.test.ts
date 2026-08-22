@@ -8,7 +8,7 @@ import { ImmutableArtifactRegistry } from '../../src/registry/index.js';
 import { installFakeKanban, optedInTask, type FakeState } from '../kanban/fake-cli.js';
 
 const h = (digit: string) => `sha256:${digit.repeat(64)}` as `sha256:${string}`;
-const inputs: Omit<PlanInputs, 'taskId'> = { models: ['openai/gpt-sol', 'openai/gpt-mini'], modelSelectors: { 'openai/gpt-sol': ':sol', 'openai/gpt-mini': ':mini' }, attempts: 3, snapshotHash: h('2'), wikiHashes: { 'juno-benchmark/project/backend.md': h('3') }, toolPolicyHash: h('4'), budgetHash: h('5'), packageVersion: '0.1.0', junoVersion: '2.0.0' };
+const inputs: Omit<PlanInputs, 'taskId'> = { models: ['openai/gpt-sol', 'openai/gpt-mini'], modelSelectors: { 'openai/gpt-sol': ':sol', 'openai/gpt-mini': ':mini' }, attempts: 3, snapshotHash: h('2'), wikiHashes: { 'yylo-benchmark/project/backend.md': h('3') }, toolPolicyHash: h('4'), budgetHash: h('5'), packageVersion: '0.1.0', junoVersion: '2.0.0' };
 async function fixture(task = optedInTask()) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'benchmark-plan-')); const revision = '1'.repeat(64);
   const fake = await installFakeKanban(root, { tasks: { CASE1: task }, revisions: { CASE1: revision } });

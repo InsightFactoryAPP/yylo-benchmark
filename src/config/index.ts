@@ -6,7 +6,9 @@ import { promisify } from 'node:util';
 import { z } from 'zod';
 
 export const CONFIG_SCHEMA_VERSION = 'juno_benchmark_config.v1' as const;
-export const CONFIG_FILENAME = 'juno-benchmark.config.json';
+export const CONFIG_FILENAME = 'yylo-benchmark.config.json';
+/** Bounded read-only migration input; new configuration always uses CONFIG_FILENAME. */
+export const LEGACY_CONFIG_FILENAME = 'juno-benchmark.config.json';
 
 export const BenchmarkConfigSchema = z.object({
   schema_version: z.literal(CONFIG_SCHEMA_VERSION),
@@ -109,7 +111,8 @@ async function findUp(start: string, name: string): Promise<string | null> {
 export async function loadConfig(options: { cwd?: string; configPath?: string } = {}): Promise<LoadedConfig> {
   const cwd = path.resolve(options.cwd ?? process.cwd());
   const explicitPath = options.configPath === undefined ? undefined : path.resolve(cwd, options.configPath);
-  const configPath = explicitPath ?? await findUp(cwd, CONFIG_FILENAME);
+  const canonicalPath = explicitPath ?? await findUp(cwd, CONFIG_FILENAME);
+  const configPath = canonicalPath ?? (explicitPath === undefined ? await findUp(cwd, LEGACY_CONFIG_FILENAME) : null);
   if (explicitPath !== undefined && !(await exists(explicitPath))) {
     throw new Error(`benchmark config does not exist: ${explicitPath}`);
   }
@@ -138,7 +141,7 @@ export async function loadConfig(options: { cwd?: string; configPath?: string } 
 }
 
 export async function resolveKanbanCommand(loaded: LoadedConfig): Promise<ResolvedKanbanCommand> {
-  const environment = process.env['JUNO_BENCHMARK_KANBAN_COMMAND']?.trim();
+  const environment = process.env['YYLO_BENCHMARK_KANBAN_COMMAND']?.trim();
   if (environment !== undefined && environment !== '') {
     return { executable: environment, arguments: [], cwd: loaded.projectRoot };
   }
@@ -149,5 +152,5 @@ export async function resolveKanbanCommand(loaded: LoadedConfig): Promise<Resolv
   if (registered !== null) return registered;
   const localWrapper = path.join(loaded.projectRoot, '.juno_task', 'scripts', 'kanban.sh');
   if (await exists(localWrapper)) return { executable: localWrapper, arguments: [], cwd: loaded.projectRoot };
-  return { executable: 'juno-kanban', arguments: [], cwd: loaded.projectRoot };
+  return { executable: 'yylo-ledger', arguments: [], cwd: loaded.projectRoot };
 }

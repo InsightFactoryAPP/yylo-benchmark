@@ -106,8 +106,8 @@ describe('exact-tree snapshot with a real Git repository', () => {
     const clean = await destination('routing');
     const cleanManifest = await buildSnapshot({ sourceRepository: source.root, baseCommit: source.commit, destination: clean, excludedPaths: ['.juno_task', 'hidden-reference'] });
     await expect(doctorSnapshot({ repository: clean, manifest: cleanManifest, candidateEnvironment: { JUNO_TASK_ROOT: '/canonical' } })).rejects.toThrow(/routing environment/u);
-    await expect(doctorSnapshot({ repository: clean, manifest: cleanManifest, candidateEnvironment: { JUNO_BENCHMARK_REGISTRY: '/private/registry' } })).rejects.toThrow(/routing environment/u);
-    await expect(doctorSnapshot({ repository: clean, manifest: cleanManifest, candidateEnvironment: { JUNO_BENCHMARK_WORK_ROOT: '/private/work' } })).rejects.toThrow(/routing environment/u);
+    await expect(doctorSnapshot({ repository: clean, manifest: cleanManifest, candidateEnvironment: { YYLO_BENCHMARK_REGISTRY: '/private/registry' } })).rejects.toThrow(/routing environment/u);
+    await expect(doctorSnapshot({ repository: clean, manifest: cleanManifest, candidateEnvironment: { YYLO_BENCHMARK_WORK_ROOT: '/private/work' } })).rejects.toThrow(/routing environment/u);
     await expect(doctorSnapshot({ repository: clean, manifest: cleanManifest, canonicalControllerPaths: [source.root], candidateEnvironment: { SAFE_VALUE: source.root } })).rejects.toThrow(/controller reference/u);
     await writeFile(path.join(clean, 'candidate-change.txt'), 'dirty');
     await expect(doctorSnapshot({ repository: clean, manifest: cleanManifest })).rejects.toThrow(/worktree differs/u);

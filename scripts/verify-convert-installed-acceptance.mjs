@@ -14,19 +14,19 @@ const repository = args.get('--repository');
 const benchmark = args.get('--benchmark');
 const delegate = args.get('--delegate');
 if (!repository || !benchmark) {
-  process.stderr.write('usage: node verify-convert-installed-acceptance.mjs --repository <Convert git checkout> --benchmark <installed juno-benchmark> [--delegate <installed yy>]\n');
+  process.stderr.write('usage: node verify-convert-installed-acceptance.mjs --repository <Convert git checkout> --benchmark <installed yylo-benchmark> [--delegate <installed yy>]\n');
   process.exit(2);
 }
 
 const fixtureRoot = path.join(packageRoot, 'fixtures', 'convert-2026-08-12');
 const expected = JSON.parse(await readFile(path.join(fixtureRoot, 'expected.json'), 'utf8'));
-const temporary = await mkdtemp(path.join(tmpdir(), 'juno-benchmark-convert-acceptance-'));
+const temporary = await mkdtemp(path.join(tmpdir(), 'yylo-benchmark-convert-acceptance-'));
 const project = path.join(temporary, 'project');
 const planPath = path.join(project, 'historical-plan.json');
 
 function execute(executable, commandArgs, cwd = project) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
-    !/^JUNO_BENCHMARK_(?:AUTH|REGISTRY|WORK_ROOT)/u.test(key) && !/(?:API_KEY|TOKEN|SECRET|PASSWORD)$/u.test(key)));
+    !/^YYLO_BENCHMARK_(?:AUTH|REGISTRY|WORK_ROOT)/u.test(key) && !/(?:API_KEY|TOKEN|SECRET|PASSWORD)$/u.test(key)));
   env.PATH = `${path.dirname(path.resolve(benchmark))}${path.delimiter}${env.PATH ?? ''}`;
   const result = spawnSync(executable, commandArgs, { cwd, env, encoding: 'utf8', input: '', timeout: 120_000, maxBuffer: 32 * 1024 * 1024 });
   if (result.error || result.status !== 0 || result.signal !== null) {
@@ -46,7 +46,7 @@ try {
   execute('git', ['checkout', '--detach', expected.historical_source_commit]);
   await mkdir(path.join(project, '.juno_task'), { recursive: true });
   await writeFile(path.join(project, '.juno_task', 'config.json'), JSON.stringify({ workflowModels: [':sol', ':mini', ':luna', 'zai/glm-5.2'] }));
-  await writeFile(path.join(project, 'juno-benchmark.config.json'), JSON.stringify({
+  await writeFile(path.join(project, 'yylo-benchmark.config.json'), JSON.stringify({
     schema_version: 'juno_benchmark_config.v1', repository_id: 'convert_IF_chat',
     model_aliases: { ':sol': 'openai-codex/gpt-5.6-sol', ':mini': 'openai-codex/gpt-5.6-terra', ':luna': 'openai-codex/gpt-5.6-luna' },
   }));

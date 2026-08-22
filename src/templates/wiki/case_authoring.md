@@ -4,7 +4,7 @@ wiki_contract:
   purpose: "Define how to author reproducible, leak-resistant benchmark cases."
   failure_mode_prevented: "Prevents ambiguous prompts, future-solution leakage, and identity drift between attempts."
   runtime_contract_enforced: "Every case binds canonical work meaning, exact source, selected knowledge, grading, and policy inputs."
-  validation_gate: "juno-benchmark case lint plus package tests"
+  validation_gate: "yylo-benchmark case lint plus package tests"
   owns:
     - "Case eligibility and authoring guidance"
   does_not_own:
@@ -30,11 +30,11 @@ project wiki paths. Increment the case version when intended meaning changes.
 Project guidance belongs under:
 
 ```text
-.juno_task/wiki/juno-benchmark/project/
+.juno_task/wiki/yylo-benchmark/project/
 ```
 
 Select only pages relevant to the case. Paths must be normalized relative to
-`.juno_task/wiki`, remain beneath `juno-benchmark/project/`, name regular Markdown
+`.juno_task/wiki`, remain beneath `yylo-benchmark/project/`, name regular Markdown
 files, and contain no symbolic-link traversal. Each selected page passes the installed
 Juno wiki linter. Exact SHA-256 values become case inputs, so edited knowledge creates
 a different identity.

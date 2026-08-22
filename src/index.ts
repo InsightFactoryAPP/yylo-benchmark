@@ -12,6 +12,7 @@ export * from './execution/prepare.js';
 export * from './execution/resource-lock.js';
 export * from './grading/index.js';
 export * from './investigation/index.js';
+export * from './identity.js';
 export * from './kanban/client.js';
 export * from './planning/index.js';
 export * from './recovery/index.js';

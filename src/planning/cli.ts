@@ -25,7 +25,7 @@ export async function createPlanFromProject(input: { cwd: string; configPath?: s
   const benchmark = source.fields['benchmark'] as { base_commit?: unknown; wiki_paths?: unknown } | undefined;
   if (typeof benchmark?.base_commit !== 'string') throw new Error('benchmark case has no full base commit');
   const wikis = await hashProjectWikis(Array.isArray(benchmark.wiki_paths) ? benchmark.wiki_paths.filter((item): item is string => typeof item === 'string') : [], { projectRoot: loaded.projectRoot });
-  const temporary = await mkdtemp(path.join(os.tmpdir(), 'juno-benchmark-plan-'));
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'yylo-benchmark-plan-'));
   try {
     const repository = path.join(temporary, 'snapshot');
     const snapshot = await buildSnapshot({ sourceRepository: loaded.projectRoot, baseCommit: benchmark.base_commit, destination: repository,
@@ -54,7 +54,7 @@ export async function discoverJunoVersion(projectRoot: string): Promise<string> 
   const packagePath = path.join(projectRoot, 'juno-code', 'package.json');
   try { const value = JSON.parse(await readFile(packagePath, 'utf8')) as { version?: unknown }; if (typeof value.version === 'string') return value.version; }
   catch { /* installed CLI-only project */ }
-  const explicit = process.env['JUNO_BENCHMARK_JUNO_VERSION'];
-  if (explicit === undefined || explicit.trim() === '') throw new Error('cannot determine Juno Code version; set JUNO_BENCHMARK_JUNO_VERSION');
+  const explicit = process.env['YYLO_BENCHMARK_JUNO_VERSION'];
+  if (explicit === undefined || explicit.trim() === '') throw new Error('cannot determine YYLO version; set YYLO_BENCHMARK_JUNO_VERSION');
   return explicit.trim();
 }

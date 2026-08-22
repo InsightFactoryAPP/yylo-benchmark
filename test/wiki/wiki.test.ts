@@ -40,7 +40,7 @@ afterEach(async () => {
 describe('managed benchmark wikis', () => {
   it('installs all package pages and leaves project pages untouched', async () => {
     const projectRoot = await temporaryRoot();
-    const projectPage = path.join(projectRoot, '.juno_task/wiki/juno-benchmark/project/backend.md');
+    const projectPage = path.join(projectRoot, '.juno_task/wiki/yylo-benchmark/project/backend.md');
     await mkdir(path.dirname(projectPage), { recursive: true });
     await writeFile(projectPage, 'project knowledge\n');
 
@@ -50,7 +50,7 @@ describe('managed benchmark wikis', () => {
     expect(result.conflicts).toEqual([]);
     expect(await readFile(projectPage, 'utf8')).toBe('project knowledge\n');
     for (const page of BENCHMARK_WIKI_PAGES) {
-      const installed = await readFile(path.join(projectRoot, '.juno_task/wiki/juno-benchmark', page), 'utf8');
+      const installed = await readFile(path.join(projectRoot, '.juno_task/wiki/yylo-benchmark', page), 'utf8');
       expect(installed).toContain('wiki_contract:');
     }
   });
@@ -59,13 +59,13 @@ describe('managed benchmark wikis', () => {
     const projectRoot = await temporaryRoot();
     const templates = await templateCopy();
     await installBenchmarkWikis({ projectRoot, templatesDirectory: templates });
-    const destination = path.join(projectRoot, '.juno_task/wiki/juno-benchmark/overview.md');
+    const destination = path.join(projectRoot, '.juno_task/wiki/yylo-benchmark/overview.md');
     const oldBytes = await readFile(destination, 'utf8');
     await writeFile(path.join(templates, 'overview.md'), `${oldBytes}\nNew package guidance.\n`);
 
     const result = await installBenchmarkWikis({ projectRoot, templatesDirectory: templates });
 
-    expect(result.updated).toContain('.juno_task/wiki/juno-benchmark/overview.md');
+    expect(result.updated).toContain('.juno_task/wiki/yylo-benchmark/overview.md');
     const backup = result.backups.find((item) => item.destination.endsWith('/overview.md'));
     expect(backup).toBeDefined();
     expect(await readFile(path.join(projectRoot, backup!.backup), 'utf8')).toBe(oldBytes);
@@ -76,7 +76,7 @@ describe('managed benchmark wikis', () => {
     const projectRoot = await temporaryRoot();
     const templates = await templateCopy();
     await installBenchmarkWikis({ projectRoot, templatesDirectory: templates });
-    const destination = path.join(projectRoot, '.juno_task/wiki/juno-benchmark/case_authoring.md');
+    const destination = path.join(projectRoot, '.juno_task/wiki/yylo-benchmark/case_authoring.md');
     await writeFile(destination, 'customized guidance\n');
     await writeFile(path.join(templates, 'case_authoring.md'), 'new package candidate\n');
 
@@ -90,7 +90,7 @@ describe('managed benchmark wikis', () => {
 
   it('does not adopt an untracked customized page', async () => {
     const projectRoot = await temporaryRoot();
-    const destination = path.join(projectRoot, '.juno_task/wiki/juno-benchmark/model_comparison.md');
+    const destination = path.join(projectRoot, '.juno_task/wiki/yylo-benchmark/model_comparison.md');
     await mkdir(path.dirname(destination), { recursive: true });
     await writeFile(destination, 'local page\n');
 
@@ -98,7 +98,7 @@ describe('managed benchmark wikis', () => {
 
     expect(await readFile(destination, 'utf8')).toBe('local page\n');
     expect(result.conflicts).toContainEqual(expect.objectContaining({
-      destination: '.juno_task/wiki/juno-benchmark/model_comparison.md',
+      destination: '.juno_task/wiki/yylo-benchmark/model_comparison.md',
     }));
   });
 });
@@ -108,31 +108,31 @@ describe('selected project wiki identity', () => {
     const projectRoot = await temporaryRoot();
     const first = `---\nwiki_contract:\n  line_limit: 30\n  purpose: "Explain backend evaluation constraints."\n  failure_mode_prevented: "Prevents invalid backend assumptions."\n  runtime_contract_enforced: "Backend checks use declared fixtures."\n  validation_gate: "focused backend checks"\n---\n\n# Backend\n\nStable project knowledge.\n`;
     const second = first.replaceAll('Backend', 'Frontend').replaceAll('backend', 'frontend');
-    const projectDirectory = path.join(projectRoot, '.juno_task/wiki/juno-benchmark/project');
+    const projectDirectory = path.join(projectRoot, '.juno_task/wiki/yylo-benchmark/project');
     await mkdir(projectDirectory, { recursive: true });
     await writeFile(path.join(projectDirectory, 'backend.md'), first);
     await writeFile(path.join(projectDirectory, 'frontend.md'), second);
 
     const result = await hashProjectWikis([
-      'juno-benchmark/project/frontend.md',
-      'juno-benchmark/project/backend.md',
-      'juno-benchmark/project/backend.md',
+      'yylo-benchmark/project/frontend.md',
+      'yylo-benchmark/project/backend.md',
+      'yylo-benchmark/project/backend.md',
     ], { projectRoot, linter: junoLinter });
 
     expect(result).toEqual([
-      { path: 'juno-benchmark/project/backend.md', sha256: `sha256:${sha256(first)}` },
-      { path: 'juno-benchmark/project/frontend.md', sha256: `sha256:${sha256(second)}` },
+      { path: 'yylo-benchmark/project/backend.md', sha256: `sha256:${sha256(first)}` },
+      { path: 'yylo-benchmark/project/frontend.md', sha256: `sha256:${sha256(second)}` },
     ]);
   });
 
   it.each([
     '../outside.md',
     'juno-benchmark/overview.md',
-    'juno-benchmark/project/../overview.md',
-    '/juno-benchmark/project/page.md',
+    'yylo-benchmark/project/../overview.md',
+    '/yylo-benchmark/project/page.md',
     'juno-benchmark\\project\\page.md',
-    'juno-benchmark/project/page.txt',
-    ' juno-benchmark/project/page.md',
+    'yylo-benchmark/project/page.txt',
+    ' yylo-benchmark/project/page.md',
   ])('rejects traversal or non-normalized path %s', (selected) => {
     expect(() => normalizeProjectWikiPath(selected)).toThrow();
   });
@@ -141,24 +141,24 @@ describe('selected project wiki identity', () => {
     const projectRoot = await temporaryRoot();
     const outside = await temporaryRoot();
     await writeFile(path.join(outside, 'escaped.md'), '# escaped\n');
-    const namespace = path.join(projectRoot, '.juno_task/wiki/juno-benchmark');
+    const namespace = path.join(projectRoot, '.juno_task/wiki/yylo-benchmark');
     await mkdir(namespace, { recursive: true });
     await symlink(outside, path.join(namespace, 'project'));
 
     await expect(hashProjectWikis(
-      ['juno-benchmark/project/escaped.md'],
+      ['yylo-benchmark/project/escaped.md'],
       { projectRoot, linter: junoLinter },
     )).rejects.toThrow(/symbolic link/u);
   });
 
   it('fails closed when the shared Juno linter rejects frontmatter', async () => {
     const projectRoot = await temporaryRoot();
-    const projectDirectory = path.join(projectRoot, '.juno_task/wiki/juno-benchmark/project');
+    const projectDirectory = path.join(projectRoot, '.juno_task/wiki/yylo-benchmark/project');
     await mkdir(projectDirectory, { recursive: true });
     await writeFile(path.join(projectDirectory, 'invalid.md'), '---\nwiki_contract:\n  line_limit: nope\n---\n# Invalid\n');
 
     await expect(hashProjectWikis(
-      ['juno-benchmark/project/invalid.md'],
+      ['yylo-benchmark/project/invalid.md'],
       { projectRoot, linter: junoLinter },
     )).rejects.toThrow(/wiki_contract lint failed/u);
   });

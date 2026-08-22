@@ -95,9 +95,11 @@ export class PublicKanbanClient {
 
   public async assertCompatibleVersion(): Promise<string> {
     const { stdout } = await this.invoke(['--version']);
-    const match = /(?:^|\s)(\d+)\.(\d+)\.(\d+)(?:\s|$)/u.exec(stdout);
-    if (match === null || Number(match[1]) !== 2) throw new Error(`unsupported public juno-kanban version: ${stdout || 'unknown'} (required >=2.0.0,<3.0.0)`);
-    return `${match[1]}.${match[2]}.${match[3]}`;
+    const match = /(?:^|\s)(\d+)\.(\d+)\.(\d+)(?:rc\d+)?(?:\s|$)/u.exec(stdout);
+    if (match === null || Number(match[1]) !== 0 || Number(match[2]) !== 1) {
+      throw new Error(`unsupported YYLO Ledger version: ${stdout || 'unknown'} (required >=0.1.0rc1,<0.2.0)`);
+    }
+    return stdout.trim().split(/\s/u).at(-1) ?? `${match[1]}.${match[2]}.${match[3]}`;
   }
 
   public async getTask(taskId: string): Promise<KanbanTask> {
@@ -133,7 +135,7 @@ export class PublicKanbanClient {
   }
 
   private async mutate(args: readonly string[], expected: { operation: string; before: string | null }): Promise<CanonicalRecord> {
-    const temporary = await mkdtemp(path.join(os.tmpdir(), 'juno-benchmark-kanban-'));
+    const temporary = await mkdtemp(path.join(os.tmpdir(), 'yylo-benchmark-kanban-'));
     const receiptPath = path.join(temporary, 'receipt.json');
     try {
       const { stdout } = await this.invokeJson([...args, '--receipt-file', receiptPath]);

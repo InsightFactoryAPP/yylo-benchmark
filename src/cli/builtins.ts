@@ -66,8 +66,8 @@ const caseLint = definition(['case', 'lint'], 'Validate an explicitly opted-in K
 });
 
 function privateRegistry(): ImmutableArtifactRegistry {
-  const root = process.env['JUNO_BENCHMARK_REGISTRY']?.trim();
-  if (root === undefined || root === '') throw new Error('JUNO_BENCHMARK_REGISTRY must select the private artifact registry');
+  const root = process.env['YYLO_BENCHMARK_REGISTRY']?.trim();
+  if (root === undefined || root === '') throw new Error('YYLO_BENCHMARK_REGISTRY must select the private artifact registry');
   return new ImmutableArtifactRegistry(root);
 }
 
@@ -88,12 +88,12 @@ async function readTaskAuthorization(authorizationPath: string | undefined, cont
   catch (error) { throw new Error(`malformed task authorization ${absolute}: ${error instanceof Error ? error.message : String(error)}`); }
 }
 function workflowStorage(context: CommandContext): { registry: ImmutableArtifactRegistry; locks: PersistentTypedResourceLocks } {
-  const root = process.env['JUNO_BENCHMARK_REGISTRY']?.trim() || path.join(context.cwd, '.juno_task', 'artifacts', 'juno-benchmark');
+  const root = process.env['YYLO_BENCHMARK_REGISTRY']?.trim() || path.join(context.cwd, '.juno_task', 'artifacts', 'yylo-benchmark');
   return { registry: new ImmutableArtifactRegistry(root), locks: new PersistentTypedResourceLocks({ root: path.join(root, 'locks') }) };
 }
 async function workflowBoundary() {
   const options = workflowBoundaryOptionsFromEnvironment();
-  if (options === null) throw new Error('live workflow execution requires JUNO_BENCHMARK_WORKFLOW_BOUNDARY and JUNO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256');
+  if (options === null) throw new Error('live workflow execution requires YYLO_BENCHMARK_WORKFLOW_BOUNDARY and YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256');
   return createReviewedWorkflowBoundary(options);
 }
 function variables(values: readonly string[]): Record<string, string> {
@@ -152,7 +152,7 @@ const run = definition(['run'], 'Execute an immutable task or workflow plan (wor
       const loaded = await loadConfig({ cwd: context.cwd, ...(context.configPath === undefined ? {} : { configPath: context.configPath }) });
       const executionPlan = await readExecutionPlan(absolutePlan); const client = new PublicKanbanClient(loaded); const registry = privateRegistry();
       const locks = new PersistentTypedResourceLocks({ root: path.join(registry.root, 'locks') });
-      const workRoot = process.env['JUNO_BENCHMARK_WORK_ROOT']?.trim() || path.join(registry.root, 'work'); await mkdir(workRoot, { recursive: true, mode: 0o700 });
+      const workRoot = process.env['YYLO_BENCHMARK_WORK_ROOT']?.trim() || path.join(registry.root, 'work'); await mkdir(workRoot, { recursive: true, mode: 0o700 });
       const policy = options.record === false ? { noRecord: true as const, nonCanonicalScope: options.nonCanonicalScope as 'fixture' | 'local' } : {};
       const authenticated = authenticatedLauncherOptionsFromEnvironment();
       const runner = authenticated === null ? createJunoRunner() : createAuthenticatedJunoRunner(authenticated);
@@ -249,7 +249,7 @@ const report = definition(['report'], 'Build a longitudinal case report', 'longi
 const releaseReadiness = definition(['release-readiness'], 'Generate a deterministic offline release-readiness receipt', 'longitudinal', true, (command, context) => {
   command.requiredOption('--input <path>', 'Path to measured path-free artifact identities').action(async (options: { input: string }) => {
     const raw = JSON.parse(await readFile(path.resolve(context.cwd, options.input), 'utf8')) as unknown;
-    const forbidden = Object.entries(process.env).filter(([key, value]) => value !== undefined && /(?:TOKEN|SECRET|PASSWORD|AUTH|REGISTRY|JUNO_BENCHMARK_(?:WORK_ROOT|REGISTRY)|^(?:HOME|XDG_))/u.test(key))
+    const forbidden = Object.entries(process.env).filter(([key, value]) => value !== undefined && /(?:TOKEN|SECRET|PASSWORD|AUTH|REGISTRY|YYLO_BENCHMARK_(?:WORK_ROOT|REGISTRY)|^(?:HOME|XDG_))/u.test(key))
       .map(([, value]) => value as string);
     context.writeStdout(`${canonicalJson(generateReleaseReadinessReceipt(raw, { forbiddenValues: forbidden }))}\n`);
   });

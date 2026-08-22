@@ -33,7 +33,7 @@ describe('attempt snapshot admission', () => {
       isolation: { git_objects: 'isolated', host_filesystem: 'trusted', container: 'none' },
     } as ExecutionPlan;
     const attempt = { schema_version: 'juno_benchmark_attempt.v1', attempt_id: 'A1', experiment_id: hash,
-      case_input_hash: hash, snapshot_hash: manifest.content_identity, prompt_hash: hash, agent: 'juno-code', provider: 'openai', model: 'openai/gpt-mini',
+      case_input_hash: hash, snapshot_hash: manifest.content_identity, prompt_hash: hash, agent: 'yylo', provider: 'openai', model: 'openai/gpt-mini',
       tool_policy_hash: hash, budget_hash: hash, package_version: '0.1.0', juno_version: '2.1.2', session_topology: 'fresh' } as AttemptV1;
     const client = { getRevisionedTask: async () => ({ task, revision: '1'.repeat(64) }) } as unknown as PublicKanbanClient;
     const workRoot = await mkdtemp(path.join(os.tmpdir(), 'benchmark-attempt-work-'));

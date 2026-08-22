@@ -11,8 +11,9 @@ import path from 'node:path';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-export const BENCHMARK_WIKI_NAMESPACE = '.juno_task/wiki/juno-benchmark' as const;
-export const BENCHMARK_PROJECT_WIKI_PREFIX = 'juno-benchmark/project/' as const;
+export const BENCHMARK_WIKI_NAMESPACE = '.juno_task/wiki/yylo-benchmark' as const;
+export const BENCHMARK_PROJECT_WIKI_PREFIX = 'yylo-benchmark/project/' as const;
+// Durable managed-page protocol version; independent from product marketing identity.
 export const BENCHMARK_WIKI_TEMPLATE_VERSION = 'juno-benchmark-wiki.v1' as const;
 
 export const BENCHMARK_WIKI_PAGES = [
@@ -32,7 +33,7 @@ interface ManagedPageRecord {
 
 interface ManagedWikiManifest {
   readonly schema_version: 1;
-  readonly package_name: '@juno-ai/juno-benchmark';
+  readonly package_name: '@yylo/benchmark';
   readonly template_version: typeof BENCHMARK_WIKI_TEMPLATE_VERSION;
   readonly pages: Record<string, ManagedPageRecord>;
 }
@@ -59,7 +60,7 @@ export interface SelectedProjectWiki {
 
 export interface HashProjectWikisOptions {
   readonly projectRoot: string;
-  /** Defaults to the project-installed Juno Code wiki_lint.sh public script. */
+  /** Defaults to the project-installed YYLO wiki_lint.sh public script. */
   readonly linter?: string;
 }
 
@@ -85,7 +86,7 @@ function relativeDestination(page: BenchmarkWikiPage): string {
 function emptyManifest(): ManagedWikiManifest {
   return {
     schema_version: 1,
-    package_name: '@juno-ai/juno-benchmark',
+    package_name: '@yylo/benchmark',
     template_version: BENCHMARK_WIKI_TEMPLATE_VERSION,
     pages: {},
   };
@@ -149,7 +150,7 @@ async function loadManifest(manifestPath: string): Promise<ManagedWikiManifest> 
   const candidate = parsed as Partial<ManagedWikiManifest>;
   if (
     candidate.schema_version !== 1 ||
-    candidate.package_name !== '@juno-ai/juno-benchmark' ||
+    !['@yylo/benchmark', '@juno-ai/juno-benchmark'].includes(candidate.package_name ?? '') ||
     candidate.template_version !== BENCHMARK_WIKI_TEMPLATE_VERSION ||
     candidate.pages === null || typeof candidate.pages !== 'object'
   ) {
@@ -202,11 +203,11 @@ export async function installBenchmarkWikis(options: InstallBenchmarkWikisOption
     installed: [], updated: [], unchanged: [], conflicts: [], backups: [],
   };
   const conflictRoot = path.join(
-    projectRoot, '.juno_task', 'managed-conflicts', 'juno-benchmark',
+    projectRoot, '.juno_task', 'managed-conflicts', 'yylo-benchmark',
     safeLabel(BENCHMARK_WIKI_TEMPLATE_VERSION),
   );
   const backupRoot = path.join(
-    projectRoot, '.juno_task', 'managed-backups', 'juno-benchmark',
+    projectRoot, '.juno_task', 'managed-backups', 'yylo-benchmark',
     safeLabel(BENCHMARK_WIKI_TEMPLATE_VERSION),
   );
 
@@ -301,7 +302,7 @@ async function runLinter(linter: string, file: string, cwd: string): Promise<voi
   });
 }
 
-/** Lint selected project pages through Juno Code's public script, then hash exact bytes. */
+/** Lint selected project pages through YYLO's public script, then hash exact bytes. */
 export async function hashProjectWikis(
   paths: readonly string[],
   options: HashProjectWikisOptions,

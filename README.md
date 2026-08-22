@@ -1,6 +1,6 @@
-# Juno Benchmark
+# YYLO Benchmark
 
-Juno Benchmark is the longitudinal evaluation and immutable-evidence system for agent runs. It invokes [Juno Code](https://github.com/yylo-dev/yylo), the AI coding-agent orchestration CLI, and uses [Juno Ledger](https://github.com/askbudi/juno-ledger), the Git-native task and workflow ledger, through its public JSON/receipt CLI contract.
+YYLO Benchmark is the longitudinal evaluation and immutable-evidence system for agent runs. It invokes [YYLO](https://github.com/yylo-dev/yylo), the AI coding-agent orchestration CLI, and uses [YYLO Ledger](https://github.com/yylo-dev/yylo-ledger), the Git-native task and workflow ledger, through its public JSON/receipt CLI contract.
 
 The private, independent package owns case validation, isolated snapshots, shadow
 boards, execution reconciliation, recovery, reports, and bounded investigations.
@@ -13,20 +13,20 @@ npm run build
 node dist/bin.js init
 node dist/bin.js case lint TASK_ID
 node dist/bin.js plan --task TASK_ID --models :mini,:sol --attempts 3 --output plan.json
-JUNO_BENCHMARK_REGISTRY=/private/path node dist/bin.js run --plan plan.json
-JUNO_BENCHMARK_REGISTRY=/private/path node dist/bin.js regrade --plan plan.json
-JUNO_BENCHMARK_REGISTRY=/private/path node dist/bin.js doctor EXPERIMENT_TASK_ID
-JUNO_BENCHMARK_REGISTRY=/private/path node dist/bin.js report --task TASK_ID
+YYLO_BENCHMARK_REGISTRY=/private/path node dist/bin.js run --plan plan.json
+YYLO_BENCHMARK_REGISTRY=/private/path node dist/bin.js regrade --plan plan.json
+YYLO_BENCHMARK_REGISTRY=/private/path node dist/bin.js doctor EXPERIMENT_TASK_ID
+YYLO_BENCHMARK_REGISTRY=/private/path node dist/bin.js report --task TASK_ID
 ```
 
 `yy benchmark ...` is a transparent delegate to an independently installed compatible
-`juno-benchmark` executable. The standalone CLI remains canonical.
+`yylo-benchmark` executable. The standalone CLI remains canonical.
 
 Legacy task-case plans also bind a USD 20 aggregate ceiling by default. `--max-usd` may
 select another positive ceiling; planning divides it deterministically across the exact
 model/attempt matrix. Live `run` requires a `juno_benchmark_task_authorization.v1` grant
 whose plan, models, currency, expiry, aggregate ceiling, and per-attempt ceiling exactly
-match the immutable plan. The grant is carried to both direct and authenticated Juno
+match the immutable plan. The grant is carried to both direct and authenticated YYLO
 launchers, and its worst-case reservation is retained before provider dispatch.
 
 ## Project-owned workflow lifecycle
@@ -37,16 +37,16 @@ command source. A mandatory policy sidecar supplies stable scoring IDs, typed re
 limits, redaction, recovery classification, a governed judge, and estimate metadata:
 
 ```bash
-juno-benchmark plan \
+yylo-benchmark plan \
   --workflow .juno_task/workflows/example.yaml \
   --steps-file benchmark-policy.yaml \
   --steps collect,analyze,publish \
   --models :sol,:mini,zai/glm-5.2 \
   --var run_date=2026-08-12 --attempts 1 \
   --output workflow-plan.json --dry-run
-juno-benchmark run --plan workflow-plan.json --steps-file benchmark-policy.yaml --dry-run
-juno-benchmark recover --plan workflow-plan.json --steps-file benchmark-policy.yaml --dry-run
-juno-benchmark rejudge --plan workflow-plan.json --steps-file benchmark-policy.yaml --judge :sol --dry-run
+yylo-benchmark run --plan workflow-plan.json --steps-file benchmark-policy.yaml --dry-run
+yylo-benchmark recover --plan workflow-plan.json --steps-file benchmark-policy.yaml --dry-run
+yylo-benchmark rejudge --plan workflow-plan.json --steps-file benchmark-policy.yaml --judge :sol --dry-run
 ```
 
 Live execution uses one separately reviewed, hash-pinned JavaScript boundary module. The
@@ -56,12 +56,12 @@ request; they never receive candidate credentials or unblinded identity. Cost re
 runner is retained as best-effort evidence and never acts as dispatch authorization:
 
 ```bash
-export JUNO_BENCHMARK_WORKFLOW_BOUNDARY=/absolute/path/reviewed-workflow-boundary.mjs
-export JUNO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256=<lowercase-sha256-of-exact-module-bytes>
-export JUNO_BENCHMARK_REGISTRY=/private/path
-juno-benchmark run --plan workflow-plan.json --steps-file benchmark-policy.yaml
-juno-benchmark recover --plan workflow-plan.json --steps-file benchmark-policy.yaml
-juno-benchmark rejudge --plan workflow-plan.json --steps-file benchmark-policy.yaml --judge :sol
+export YYLO_BENCHMARK_WORKFLOW_BOUNDARY=/absolute/path/reviewed-workflow-boundary.mjs
+export YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256=<lowercase-sha256-of-exact-module-bytes>
+export YYLO_BENCHMARK_REGISTRY=/private/path
+yylo-benchmark run --plan workflow-plan.json --steps-file benchmark-policy.yaml
+yylo-benchmark recover --plan workflow-plan.json --steps-file benchmark-policy.yaml
+yylo-benchmark rejudge --plan workflow-plan.json --steps-file benchmark-policy.yaml --judge :sol
 ```
 
 `yy benchmark` accepts the identical argument tail and preserves stdout, stderr, cwd, exit
@@ -111,8 +111,8 @@ task body is the candidate prompt. Planning is read-only and content-addressed. 
 canonical run creates one related experiment task; `--no-record` additionally requires
 `--non-canonical-scope fixture|local` and is only for non-canonical fixture work.
 
-Set `JUNO_BENCHMARK_REGISTRY` to a private controller-resolved local registry before
-commands that retain or read evidence. `JUNO_BENCHMARK_WORK_ROOT` may select retained
+Set `YYLO_BENCHMARK_REGISTRY` to a private controller-resolved local registry before
+commands that retain or read evidence. `YYLO_BENCHMARK_WORK_ROOT` may select retained
 attempt workspaces. By default the public Kanban adapter discovers
 `.juno_task/scripts/kanban.sh`; configuration may select another public CLI executable.
 Alias selectors such as `:mini` must have an exact `provider/model` entry in the
@@ -133,7 +133,7 @@ retained attempt/candidate/patch evidence and can append a new grading generatio
 without accepting or rerunning a candidate runner.
 
 `init` installs the five package-managed benchmark wiki pages with checksum/conflict
-semantics. Pages under `.juno_task/wiki/juno-benchmark/project/` are project-owned and
+semantics. Pages under `.juno_task/wiki/yylo-benchmark/project/` are project-owned and
 are never overwritten. V1 provides isolated Git objects in a fresh repository but truthfully treats the
 same-user host filesystem as trusted; it does not claim container or hostile-host
 isolation. Candidate execution receives a snapshot-local HOME/XDG and a sanitized
@@ -142,9 +142,9 @@ environment with credential and canonical-controller routing variables removed.
 ## Authenticated launcher boundary
 
 Authenticated execution is available only through one reviewed launcher boundary. Set
-all of `JUNO_BENCHMARK_AUTH_LAUNCHER`, `JUNO_BENCHMARK_AUTH_LAUNCHER_SHA256`, and
-`JUNO_BENCHMARK_AUTH_PROVIDER`, plus exactly one of `JUNO_BENCHMARK_AUTH_ENV` or
-`JUNO_BENCHMARK_AUTH_FILE`. Environment transports are provider-allowlisted:
+all of `YYLO_BENCHMARK_AUTH_LAUNCHER`, `YYLO_BENCHMARK_AUTH_LAUNCHER_SHA256`, and
+`YYLO_BENCHMARK_AUTH_PROVIDER`, plus exactly one of `YYLO_BENCHMARK_AUTH_ENV` or
+`YYLO_BENCHMARK_AUTH_FILE`. Environment transports are provider-allowlisted:
 `OPENAI_API_KEY` for `openai`, `OPENAI_CODEX_TOKEN` for the distinct `openai-codex`
 identity, `ANTHROPIC_API_KEY` for `anthropic`, `GEMINI_API_KEY`/`GOOGLE_API_KEY` for
 Google identities, and `ZAI_API_KEY` for `zai`. Credentials must be 16–65536 ASCII
@@ -167,7 +167,7 @@ not authority for paid dispatch, and the package does not ship provider credenti
 
 ## Deterministic release readiness and D0 exclusion
 
-`juno-benchmark release-readiness --input measured-identities.json` emits the canonical
+`yylo-benchmark release-readiness --input measured-identities.json` emits the canonical
 `juno_benchmark_release_readiness.v1` receipt. The path-free input binds the clean Git
 commit/tree, both package versions, source/dist/npm-tarball hashes, and standalone plus
 `yy benchmark` identities from both built and tarball-installed CLIs. It must also carry
@@ -211,7 +211,7 @@ linked integration-owner worktree on branch `juno-mono-002`; rerun package tests
 typecheck, builds, packs, packed delegate verification, Real-Git and fake recovery
 checks; regenerate the identical receipt from the resulting tarballs; independently
 review that receipt and tarball hashes; then, and only with explicit owner release and
-registry authority, invoke the repository's guarded Juno Code release script described
+registry authority, invoke the repository's guarded YYLO release script described
 in the root operator instructions and publish the reviewed benchmark tarball under the
 next/RC tag. Any tree, version, tarball hash, CLI identity, review, authority, or clean
 state mismatch restarts the gate. This project does not run that release or publication

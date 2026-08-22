@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import { registerBuiltinCommands } from './builtins.js';
 import { CommandRegistry, type BenchmarkPlugin, type CommandContext } from './registry.js';
 
-export const PACKAGE_VERSION = '0.1.1';
+export const PACKAGE_VERSION = '0.1.0-rc.1';
 
 export interface ProgramOptions {
   readonly cwd?: string;
@@ -21,11 +21,11 @@ export function createCommandRegistry(plugins: readonly BenchmarkPlugin[] = []):
 export function createProgram(options: ProgramOptions = {}): Command {
   const root = new Command();
   root
-    .name('juno-benchmark')
+    .name('yylo-benchmark')
     .description('Immutable task-case and project-owned workflow evaluation')
-    .showHelpAfterError('Run juno-benchmark --help for supported commands.')
+    .showHelpAfterError('Run yylo-benchmark --help for supported commands.')
     .version(PACKAGE_VERSION)
-    .option('--config <path>', 'Use an explicit juno-benchmark.config.json');
+    .option('--config <path>', 'Use an explicit yylo-benchmark.config.json');
 
   const context: CommandContext = {
     cwd: options.cwd ?? process.cwd(),
@@ -68,6 +68,6 @@ export async function runCli(argv: readonly string[], options: ProgramOptions = 
     if (token.startsWith('--config=') || token === '--help' || token === '-h' || token === '--version' || token === '-V') continue;
     if (!token.startsWith('-')) { command = token; break; }
   }
-  if (command !== undefined && !supported.has(command)) throw new Error(`unknown command '${command}'; run juno-benchmark --help for plan, run, recover, and rejudge`);
+  if (command !== undefined && !supported.has(command)) throw new Error(`unknown command '${command}'; run yylo-benchmark --help for plan, run, recover, and rejudge`);
   await createProgram(options).parseAsync([...argv], { from: 'user' });
 }

@@ -45,12 +45,12 @@ function input() {
     command_hash: canonicalHash(RELEASE_VERIFICATION_COMMANDS.leakage), results: leakChecks, results_hash: canonicalHash(leakChecks) };
   return {
     source: { commit: '1'.repeat(40), tree: '2'.repeat(40), clean: true, packages: [
-      { name: '@juno-ai/juno-benchmark', version: '0.1.0' }, { name: 'juno-code', version: '2.1.3-rc.0.21' },
+      { name: '@yylo/benchmark', version: '0.1.0' }, { name: '@yylo/cli', version: '2.1.3-rc.0.21' },
     ] },
     artifacts: [
-      ['@juno-ai/juno-benchmark', 'source', d('1')], ['@juno-ai/juno-benchmark', 'dist', d('2')], ['@juno-ai/juno-benchmark', 'npm_tarball', d('3')],
-      ['juno-code', 'source', d('4')], ['juno-code', 'dist', d('5')], ['juno-code', 'npm_tarball', d('6')],
-    ].map(([packageName, kind, sha256]) => ({ package: packageName, kind, version: packageName === 'juno-code' ? '2.1.3-rc.0.21' : '0.1.0', sha256 })),
+      ['@yylo/benchmark', 'source', d('1')], ['@yylo/benchmark', 'dist', d('2')], ['@yylo/benchmark', 'npm_tarball', d('3')],
+      ['@yylo/cli', 'source', d('4')], ['@yylo/cli', 'dist', d('5')], ['@yylo/cli', 'npm_tarball', d('6')],
+    ].map(([packageName, kind, sha256]) => ({ package: packageName, kind, version: packageName === '@yylo/cli' ? '2.1.3-rc.0.21' : '0.1.0', sha256 })),
     cli_identities: ['built', 'installed'].flatMap((installation) => [
       { installation, surface: 'standalone', benchmark_version: '0.1.0', juno_code_version: null },
       { installation, surface: 'delegate', benchmark_version: '0.1.0', juno_code_version: '2.1.3-rc.0.21' },
@@ -145,9 +145,9 @@ describe('deterministic release-readiness receipt', () => {
   });
 });
 
-const evidencePath = process.env['JUNO_BENCHMARK_RELEASE_CASE_EVIDENCE'];
-const sourceTree = process.env['JUNO_BENCHMARK_RELEASE_SOURCE_TREE'];
-const commandHash = process.env['JUNO_BENCHMARK_RELEASE_COMMAND_HASH'];
+const evidencePath = process.env['YYLO_BENCHMARK_RELEASE_CASE_EVIDENCE'];
+const sourceTree = process.env['YYLO_BENCHMARK_RELEASE_SOURCE_TREE'];
+const commandHash = process.env['YYLO_BENCHMARK_RELEASE_COMMAND_HASH'];
 const requiredEnvironment = evidencePath !== undefined || sourceTree !== undefined || commandHash !== undefined;
 const exec = promisify(execFile);
 const h = (digit: string) => `sha256:${digit.repeat(64)}` as `sha256:${string}`;

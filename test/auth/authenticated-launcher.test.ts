@@ -21,7 +21,7 @@ const digest = (bytes: Uint8Array): string => createHash('sha256').update(bytes)
 const h = `sha256:${'1'.repeat(64)}` as const;
 function attemptFor(provider: string, model: string): AttemptV1 {
   return { schema_version: 'juno_benchmark_attempt.v1', attempt_id: 'A', experiment_id: h, case_input_hash: h,
-    snapshot_hash: h, prompt_hash: h, agent: 'juno-code', provider, model, tool_policy_hash: h,
+    snapshot_hash: h, prompt_hash: h, agent: 'yylo', provider, model, tool_policy_hash: h,
     budget_hash: h, package_version: '0.1.0', juno_version: '9.8.7', session_topology: 'fresh' };
 }
 const attempt = attemptFor('openai', 'openai/synthetic');
@@ -115,7 +115,7 @@ async function waitForFile(file: string): Promise<void> {
 
 async function pinnedDirectories(): Promise<Set<string>> {
   return new Set((await readdir(os.tmpdir(), { withFileTypes: true }))
-    .filter((entry) => entry.isDirectory() && entry.name.startsWith('juno-benchmark-launcher-'))
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith('yylo-benchmark-launcher-'))
     .map((entry) => path.join(os.tmpdir(), entry.name)));
 }
 
@@ -355,7 +355,7 @@ describe('authenticated launcher boundary', () => {
   });
 
   it('fails closed before launch for missing identity, ambiguity, provider drift, output rewriting, or leakage', async () => {
-    expect(() => authenticatedLauncherOptionsFromEnvironment({ JUNO_BENCHMARK_AUTH_LAUNCHER: '/x', JUNO_BENCHMARK_AUTH_LAUNCHER_SHA256: 'a'.repeat(64), JUNO_BENCHMARK_AUTH_PROVIDER: 'openai', JUNO_BENCHMARK_AUTH_ENV: 'OPENAI_API_KEY', JUNO_BENCHMARK_AUTH_FILE: '/token' })).toThrow(/exactly one/u);
+    expect(() => authenticatedLauncherOptionsFromEnvironment({ YYLO_BENCHMARK_AUTH_LAUNCHER: '/x', YYLO_BENCHMARK_AUTH_LAUNCHER_SHA256: 'a'.repeat(64), YYLO_BENCHMARK_AUTH_PROVIDER: 'openai', YYLO_BENCHMARK_AUTH_ENV: 'OPENAI_API_KEY', YYLO_BENCHMARK_AUTH_FILE: '/token' })).toThrow(/exactly one/u);
     const { root, repository } = await fixture('benchmark-auth-reject-'); const launcher = await syntheticLauncher(root); vi.stubEnv('OPENAI_API_KEY', randomBytes(32).toString('hex'));
     try {
       const badIdentity = createAuthenticatedJunoRunner({ ...launcher, sha256: '0'.repeat(64), provider: 'openai', credential: { kind: 'environment', name: 'OPENAI_API_KEY' } });

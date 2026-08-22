@@ -34,9 +34,9 @@ describe('command and plugin registration', () => {
   it('initializes configuration and packaged managed guidance together', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'benchmark-init-')); const output: string[] = [];
     await runCli(['init'], { cwd: root, stdout: (text) => output.push(text) });
-    expect(JSON.parse(await readFile(path.join(root, 'juno-benchmark.config.json'), 'utf8'))).toMatchObject({ schema_version: 'juno_benchmark_config.v1' });
-    expect(await readFile(path.join(root, '.juno_task/wiki/juno-benchmark/overview.md'), 'utf8')).toContain('wiki_contract');
-    expect(output.join('')).toContain('juno-benchmark.config.json');
+    expect(JSON.parse(await readFile(path.join(root, 'yylo-benchmark.config.json'), 'utf8'))).toMatchObject({ schema_version: 'juno_benchmark_config.v1' });
+    expect(await readFile(path.join(root, '.juno_task/wiki/yylo-benchmark/overview.md'), 'utf8')).toContain('wiki_contract');
+    expect(output.join('')).toContain('yylo-benchmark.config.json');
   });
 
   it('allows versioned extensions but refuses collisions', () => {

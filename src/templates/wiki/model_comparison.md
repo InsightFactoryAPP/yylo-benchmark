@@ -4,7 +4,7 @@ wiki_contract:
   purpose: "Define reliability-first comparison and cheapest-good-enough recommendation evidence."
   failure_mode_prevented: "Prevents universal scoring, invalid-run bias, and unsupported model-routing claims."
   runtime_contract_enforced: "Comparisons preserve repeated resolved outcomes, uncertainty, economics, runtime, and system identity."
-  validation_gate: "juno-benchmark comparison and longitudinal report tests"
+  validation_gate: "yylo-benchmark comparison and longitudinal report tests"
   owns:
     - "Model and agent-system comparison guidance"
   does_not_own:

@@ -4,11 +4,11 @@ wiki_contract:
   purpose: "Define truthful benchmark telemetry, immutable artifacts, privacy, and retention boundaries."
   failure_mode_prevented: "Prevents missing economics, mutable evidence, sensitive leakage, and unverifiable references."
   runtime_contract_enforced: "Every retained object is content-addressed and every attempt reports explicit evidence completeness."
-  validation_gate: "juno-benchmark registry, telemetry, privacy, and doctor tests"
+  validation_gate: "yylo-benchmark registry, telemetry, privacy, and doctor tests"
   owns:
     - "Benchmark telemetry and retention guidance"
   does_not_own:
-    - "Juno Code raw session capture"
+    - "YYLO raw session capture"
     - "Retention deletion policy"
 ---
 

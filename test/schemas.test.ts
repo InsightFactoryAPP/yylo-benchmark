@@ -8,9 +8,11 @@ describe('versioned contracts', () => {
     const value = {
       schema_version: 'juno_benchmark_case_ref.v1', eligible: true, case_version: 1,
       repository_id: 'root', base_commit: 'a'.repeat(40), category: 'backend',
-      grader_profile: 'focused-tests', wiki_paths: ['juno-benchmark/project/backend.md'],
+      grader_profile: 'focused-tests', wiki_paths: ['yylo-benchmark/project/backend.md'],
     };
     expect(BenchmarkCaseRefV1Schema.parse(value)).toEqual(value);
+    expect(BenchmarkCaseRefV1Schema.parse({ ...value, wiki_paths: ['juno-benchmark/project/backend.md'] }).wiki_paths)
+      .toEqual(['juno-benchmark/project/backend.md']);
     expect(() => BenchmarkCaseRefV1Schema.parse({ ...value, wiki_paths: ['../hidden.md'] })).toThrow();
     expect(() => BenchmarkCaseRefV1Schema.parse({ ...value, unknown: true })).toThrow();
   });

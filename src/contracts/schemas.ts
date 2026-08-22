@@ -8,8 +8,8 @@ const relativeWikiPath = z.string().min(1).superRefine((value, context) => {
   if (value.startsWith('/') || value.includes('\\') || value.split('/').some((part) => part === '' || part === '.' || part === '..')) {
     context.addIssue({ code: z.ZodIssueCode.custom, message: 'expected a normalized repository-relative path' });
   }
-  if (!value.startsWith('juno-benchmark/project/')) {
-    context.addIssue({ code: z.ZodIssueCode.custom, message: 'project wiki must be under juno-benchmark/project/' });
+  if (!value.startsWith('yylo-benchmark/project/') && !value.startsWith('juno-benchmark/project/')) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'project wiki must be under yylo-benchmark/project/ (legacy juno-benchmark/project remains readable)' });
   }
 });
 
