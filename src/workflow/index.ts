@@ -73,7 +73,7 @@ export interface DailyOpsPlan {
 function assertHash(value: string, label: string): asserts value is `sha256:${string}` {
   if (!/^sha256:[0-9a-f]{64}$/u.test(value)) throw new Error(`${label} must be a canonical SHA-256`);
 }
-function exactModel(value: string): boolean { return /^[^:/\s]+\/[^:/\s]+$/u.test(value); }
+function exactModel(value: string): boolean { return value.length <= 256 && /^[^:/\s\x00-\x1f\x7f]+\/[^:/\s\x00-\x1f\x7f]+$/u.test(value); }
 function orderedResources(resources: readonly SharedResource[]): SharedResource[] {
   const unique = [...new Set(resources)];
   if (unique.length !== resources.length || unique.some((item) => !SHARED_RESOURCE_ORDER.includes(item))) throw new Error('workflow resources must be unique typed shared resources');

@@ -17,14 +17,14 @@ const hash = z.string().regex(/^sha256:[0-9a-f]{64}$/u);
 export const WORKFLOW_DISPATCH_INTENT_SCHEMA_VERSION = 'juno_benchmark_workflow_dispatch_intent.v1' as const;
 export const WORKFLOW_JUDGE_INTENT_SCHEMA_VERSION = 'juno_benchmark_workflow_judge_intent.v1' as const;
 export const WORKFLOW_RECOVERY_INTENT_SCHEMA_VERSION = 'juno_benchmark_workflow_recovery_intent.v1' as const;
-export const WORKFLOW_STEP_TERMINAL_SCHEMA_VERSION = 'juno_benchmark_workflow_step_terminal.v1' as const;
+export const WORKFLOW_STEP_TERMINAL_SCHEMA_VERSION = 'juno_benchmark_workflow_step_terminal.v2' as const;
 
 export interface WorkflowRuntimeInvocation {
   readonly dispatch_id: `sha256:${string}`; readonly invocation_hash: `sha256:${string}`; readonly plan_id: `sha256:${string}`;
   readonly model: string; readonly provider: string; readonly attempt: number; readonly step_id: string;
   readonly workflow_sha256: `sha256:${string}`; readonly workflow_bytes_base64: string;
   readonly variables: Readonly<Record<string, string | number | boolean | null>>; readonly timeout_ms: number;
-  readonly deterministic_command: DeterministicCommandPolicy | null;
+  readonly deterministic_command: DeterministicCommandPolicy | null; readonly juno_version: string;
 }
 const candidateEvidence = z.object({
   outer_session_id: z.string().trim().min(1), nested_session_ids: z.array(z.string().trim().min(1)).min(1),
@@ -35,7 +35,7 @@ const candidateEvidence = z.object({
 }).strict();
 const terminalSummary = z.object({
   dispatch_id: hash, status: z.enum(['success', 'failure']), effect: z.enum(['none', 'completed']),
-  runner_run_id: z.string().trim().min(1), observed_provider: z.string().trim().min(1), observed_model: z.string().trim().min(1),
+  runner_run_id: z.string().trim().min(1), observed_provider: z.string().trim().min(1), observed_model: z.string().trim().min(1), observed_juno_version: z.string().trim().min(1),
 }).strict();
 const terminalResult = terminalSummary.extend({ evidence: candidateEvidence }).strict();
 export type WorkflowRuntimeTerminalResult = z.infer<typeof terminalResult>;
@@ -87,6 +87,7 @@ export interface WorkflowRuntimeDryRun {
   readonly models: readonly string[]; readonly judge: WorkflowExecutionPlan['policy']['judge'];
   readonly injection_points: readonly { readonly model: string; readonly step_ids: readonly string[]; readonly workflow_sha256: string }[];
   readonly estimates: WorkflowExecutionPlan['policy']['estimates'] | null;
+  readonly estimate_availability: readonly { readonly model: string; readonly status: 'available' | 'unavailable' }[];
   readonly estimated_totals: { readonly usd: number; readonly runtime_ms: number } | null;
   readonly cost_tracking: { readonly mode: 'best_effort'; readonly unavailable_is_valid: true };
   readonly immutable_hashes: { readonly plan: string; readonly workflow_raw: string; readonly workflow_semantics: string; readonly policy_raw: string; readonly policy_semantics: string; readonly variables: string };
@@ -96,6 +97,7 @@ export interface WorkflowRuntimeOptions {
   readonly plan: WorkflowExecutionPlan; readonly projectRoot: string; readonly policyPath: string;
   readonly registry: ImmutableArtifactRegistry; readonly locks: PersistentTypedResourceLocks; readonly dispatcher?: TrustedWorkflowDispatcher;
   readonly judge?: GovernedWorkflowJudgeRunner; readonly dryRun?: boolean;
+  readonly boundaryIdentity?: { readonly protocol: typeof WORKFLOW_PROCESS_BOUNDARY_PROTOCOL; readonly sha256: `sha256:${string}` };
 }
 
 const execFileAsync = promisify(execFile);
@@ -123,7 +125,13 @@ async function verifyImmediateBindings(options: WorkflowRuntimeOptions): Promise
   try { configRaw = await readFile(configPath); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   if ((configRaw === null ? null : prefixed(configRaw)) !== plan.workflow_model_policy.config_sha256) throw new Error('workflow model policy bytes drift detected');
   const models = configRaw === null ? [] : ((JSON.parse(configRaw.toString('utf8')) as { workflowModels?: unknown }).workflowModels ?? []);
-  if (canonicalHash(models) !== plan.workflow_model_policy.workflow_models_sha256) throw new Error('workflow model allowlist drift detected');
+  if (canonicalHash(models) !== plan.workflow_model_policy.workflow_models_sha256) throw new Error('workflow model policy drift detected');
+  if (plan.selector_config.config_path !== null) {
+    const aliasConfigRaw = await readFile(inside(root, plan.selector_config.config_path, 'model alias config path'));
+    if (prefixed(aliasConfigRaw) !== plan.selector_config.config_sha256) throw new Error('model alias config drift detected');
+    const aliases = (JSON.parse(aliasConfigRaw.toString('utf8')) as { model_aliases?: unknown }).model_aliases ?? {};
+    if (canonicalHash(aliases) !== plan.selector_config.model_aliases_sha256) throw new Error('model alias binding drift detected');
+  } else if (plan.selector_config.config_sha256 !== null) throw new Error('model alias config binding is incomplete');
   parseWorkflowPolicyBytes(policyRaw); // Same strict parser immediately before dispatch.
   for (const commandPolicy of plan.policy.deterministic_commands ?? []) {
     const scriptPath = inside(root, commandPolicy.script, 'deterministic tracked script path');
@@ -142,7 +150,8 @@ function invocation(plan: WorkflowExecutionPlan, item: WorkflowExecutionPlan['ex
   const dispatchId = canonicalHash(core); const invocationCore = { dispatch_id: dispatchId, plan_id: plan.plan_id as `sha256:${string}`,
     model: item.model, provider: compiled.provider, attempt: item.attempt, step_id: item.step_id, workflow_sha256: compiled.workflow_sha256 as `sha256:${string}`,
     workflow_bytes_base64: compiled.workflow_bytes_base64, variables: plan.variables, timeout_ms: policy.limits.timeout_ms,
-    deterministic_command: plan.policy.deterministic_commands?.find((entry) => entry.step_id === item.step_id) ?? null };
+    deterministic_command: plan.policy.deterministic_commands?.find((entry) => entry.step_id === item.step_id) ?? null,
+    juno_version: plan.runtime_binding.juno_version };
   return Object.freeze({ ...invocationCore, invocation_hash: canonicalHash(invocationCore) });
 }
 function resourcesFor(plan: WorkflowExecutionPlan, stepId: string): TypedResource[] {
@@ -183,50 +192,63 @@ function judgeIntentFor(plan: WorkflowExecutionPlan, input: WorkflowRuntimeInvoc
 }
 function validateResult(result: WorkflowRuntimeTerminalResult, input: WorkflowRuntimeInvocation): WorkflowRuntimeTerminalResult {
   const value = terminalResult.parse(result);
-  if (value.dispatch_id !== input.dispatch_id || value.observed_provider !== input.provider || value.observed_model !== input.model) throw new Error('Workflow Runner/Juno terminal identity does not match the dispatch intent');
+  if (value.dispatch_id !== input.dispatch_id || value.observed_provider !== input.provider || value.observed_model !== input.model
+      || value.observed_juno_version !== input.juno_version) throw new Error('Workflow Runner/Juno terminal identity does not match the dispatch intent');
   if ((value.evidence.harness_validity.status === 'valid') !== (value.evidence.harness_validity.reason === null)) throw new Error('Workflow Runner/Juno harness validity is inconsistent');
   if (Date.parse(value.evidence.ended_at) < Date.parse(value.evidence.started_at)) throw new Error('Workflow Runner/Juno runtime evidence is invalid');
   return value;
 }
 function terminalSummaryValue(result: WorkflowRuntimeTerminalResult): z.infer<typeof terminalSummary> {
   return { dispatch_id: result.dispatch_id, status: result.status, effect: result.effect, runner_run_id: result.runner_run_id,
-    observed_provider: result.observed_provider, observed_model: result.observed_model };
+    observed_provider: result.observed_provider, observed_model: result.observed_model, observed_juno_version: result.observed_juno_version };
 }
 function terminalFromReceipt(receipt: WorkflowEvidenceReceipt, input: WorkflowRuntimeInvocation, plan: WorkflowExecutionPlan): WorkflowStepTerminal {
   if (receipt.plan_id !== plan.plan_id || receipt.policy_semantics_sha256 !== plan.policy_semantics_sha256
       || receipt.dispatch_id !== input.dispatch_id || receipt.invocation_hash !== input.invocation_hash
       || receipt.model !== input.model || receipt.attempt !== input.attempt || receipt.step_id !== input.step_id
+      || receipt.identity.requested_selector !== plan.model_selectors[input.model]
       || receipt.identity.requested_provider !== input.provider || receipt.identity.requested_model !== input.model
-      || receipt.identity.observed_provider !== input.provider || receipt.identity.observed_model !== input.model) {
+      || receipt.identity.observed_provider !== input.provider || receipt.identity.observed_model !== input.model
+      || receipt.identity.requested_juno_version !== input.juno_version || receipt.identity.observed_juno_version !== input.juno_version) {
     throw new Error('retained workflow receipt invocation binding is invalid');
   }
   return retainedTerminalSchema.parse({ schema_version: WORKFLOW_STEP_TERMINAL_SCHEMA_VERSION, dispatch_id: input.dispatch_id,
     invocation_hash: input.invocation_hash, plan_id: plan.plan_id, model: input.model, attempt: input.attempt, step_id: input.step_id, recovered: true,
     result: { dispatch_id: input.dispatch_id, status: receipt.candidate_outcome.status, effect: receipt.dispatch_recovery.effect,
-      runner_run_id: receipt.dispatch_recovery.runner_run_id, observed_provider: receipt.identity.observed_provider, observed_model: receipt.identity.observed_model } });
+      runner_run_id: receipt.dispatch_recovery.runner_run_id, observed_provider: receipt.identity.observed_provider, observed_model: receipt.identity.observed_model,
+      observed_juno_version: receipt.identity.observed_juno_version } });
 }
 
 export async function executeWorkflowPlan(options: WorkflowRuntimeOptions): Promise<WorkflowRuntimeDryRun | WorkflowRuntimeOutcome> {
   const plan = WorkflowExecutionPlanSchema.parse(options.plan); await verifyImmediateBindings(options);
   const invocations = plan.execution_order.map((item) => invocation(plan, item)); const allResources = plan.selected_step_ids.flatMap((id) => resourcesFor(plan, id));
-  if (options.dryRun === true) return {
+  if (options.dryRun === true) {
+    const estimateOverrides = plan.policy.estimates?.models ?? [];
+    const selectedEstimates = plan.models.map((model) => estimateOverrides.find((item) => item.model === model));
+    const completeEstimates = selectedEstimates.every((item) => item !== undefined);
+    return {
     schema_version: 'juno_benchmark_workflow_dry_run.v1', plan_id: plan.plan_id as `sha256:${string}`, dispatch_count: 0,
     order: invocations.map((item) => ({ model: item.model, attempt: item.attempt, step_id: item.step_id, dispatch_id: item.dispatch_id })),
     production_models_sequential: true, required_resources: [...new Map(allResources.map((item) => [`${item.type}\0${item.id}`, item])).values()],
     source: plan.source, selected_step_ids: plan.selected_step_ids, models: plan.models, judge: plan.policy.judge,
     injection_points: plan.compiled_workflows.map((item) => ({ model: item.model, step_ids: item.injected_step_ids, workflow_sha256: item.workflow_sha256 })),
-    estimates: plan.policy.estimates ?? null,
-    estimated_totals: plan.policy.estimates === undefined ? null : {
-      usd: Math.round(plan.policy.estimates.models.reduce((total, item) => total + item.candidate_usd + item.judge_usd, 0) * 1_000_000) / 1_000_000,
-      runtime_ms: plan.policy.estimates.models.reduce((total, item) => total + item.runtime_ms, 0),
+    estimates: selectedEstimates.every((item) => item === undefined) ? null : { models: selectedEstimates.filter((item) => item !== undefined) },
+    estimate_availability: plan.models.map((model, index) => ({ model, status: selectedEstimates[index] === undefined ? 'unavailable' as const : 'available' as const })),
+    estimated_totals: !completeEstimates ? null : {
+      usd: Math.round(selectedEstimates.reduce((total, item) => total + item!.candidate_usd + item!.judge_usd, 0) * 1_000_000) / 1_000_000,
+      runtime_ms: selectedEstimates.reduce((total, item) => total + item!.runtime_ms, 0),
     },
     cost_tracking: { mode: 'best_effort', unavailable_is_valid: true },
     immutable_hashes: { plan: plan.plan_id, workflow_raw: plan.source.raw_sha256, workflow_semantics: plan.source.semantics_sha256,
       policy_raw: plan.policy_raw_sha256, policy_semantics: plan.policy_semantics_sha256, variables: plan.variables_hash },
-  };
+    };
+  }
   const dispatcher = options.dispatcher; if (dispatcher === undefined || dispatcher.protocol !== AUTH_LAUNCHER_PROTOCOL) throw new Error('workflow execution requires the trusted Juno credential launcher boundary');
+  if (plan.runtime_binding.boundary === null || options.boundaryIdentity === undefined
+      || canonicalHash(plan.runtime_binding.boundary) !== canonicalHash(options.boundaryIdentity)) throw new Error('workflow execution requires the exact plan-bound reviewed boundary identity');
   const judge = options.judge; if (judge === undefined) throw new Error('workflow execution requires the plan-bound governed judge');
   if (plan.compiled_workflows.some((item) => !dispatcher.providers.has(item.provider))) throw new Error('trusted launcher has no credential route for every exact provider');
+  for (const input of invocations) await dispatcher.preflight(input); // Confirm every exact identity before any durable intent or candidate dispatch.
   const terminals: WorkflowStepTerminal[] = []; let recovered = false; const experiment = experimentId(plan);
   const groups = new Map<string, WorkflowRuntimeInvocation[]>(); for (const item of invocations) { const key = `${item.model}\0${item.attempt}`; groups.set(key, [...(groups.get(key) ?? []), item]); }
   // A plan identity has one process owner at a time. This closes the no-resource
@@ -252,7 +274,6 @@ export async function executeWorkflowPlan(options: WorkflowRuntimeOptions): Prom
             await appendJson(options.registry, experiment, 'workflow-step-terminal', terminal);
             terminals.push(terminal); recovered = true; return;
           }
-          await dispatcher.preflight(input); // Credentials remain behind the reviewed boundary; cost is observational.
           let result: WorkflowRuntimeTerminalResult; let wasRecovered = false;
           let recoveryCount = current.recoveryAttempts.get(input.dispatch_id) ?? 0;
           const prior = current.intents.get(input.dispatch_id);
@@ -284,7 +305,7 @@ export async function executeWorkflowPlan(options: WorkflowRuntimeOptions): Prom
             const judgeIntent = judgeIntentFor(plan, input, await state(options.registry, plan));
             await retainAndGradeWorkflowStep({ registry: options.registry, experimentId: experiment, plan, dispatchId: input.dispatch_id,
               invocationHash: input.invocation_hash, model: input.model, provider: input.provider, attempt: input.attempt, stepId: input.step_id,
-              observedProvider: result.observed_provider, observedModel: result.observed_model, runnerRunId: result.runner_run_id,
+              observedProvider: result.observed_provider, observedModel: result.observed_model, observedJunoVersion: result.observed_juno_version, runnerRunId: result.runner_run_id,
               effect: result.effect, recoveryCount, recovered: wasRecovered, evidence: result.evidence as WorkflowCandidateEvidence, judge,
               beforeJudgeDispatch: async () => appendJson(options.registry, experiment, 'workflow-judge-intent', judgeIntent) });
           }
@@ -302,7 +323,7 @@ export const WORKFLOW_PROCESS_BOUNDARY_PROTOCOL = 'juno_benchmark_workflow_proce
 const MAX_BOUNDARY_OUTPUT_BYTES = 8 * 1024 * 1024;
 const DEFAULT_BOUNDARY_TIMEOUT_MS = 120_000;
 const boundaryProbeResult = z.object({ schema_version: z.literal(WORKFLOW_PROCESS_BOUNDARY_PROTOCOL), providers: z.array(z.string().trim().min(1)).min(1) }).strict();
-const boundaryPreflightResult = z.object({ ok: z.literal(true) }).strict();
+const boundaryPreflightResult = z.object({ ok: z.literal(true), provider: z.string().trim().min(1), model: z.string().trim().min(1), juno_version: z.string().trim().min(1) }).strict();
 const boundaryReconciliation = z.discriminatedUnion('state', [
   z.object({ state: z.literal('terminal'), result: terminalResult }).strict(),
   z.object({ state: z.enum(['safely_resumable', 'proven_not_dispatched', 'ambiguous']) }).strict(),
@@ -399,7 +420,7 @@ export async function createReviewedWorkflowBoundary(options: ReviewedWorkflowBo
     const invocationCore = { dispatch_id: input.dispatch_id, plan_id: input.plan_id, model: input.model, provider: input.provider,
       attempt: input.attempt, step_id: input.step_id, workflow_sha256: input.workflow_sha256,
       workflow_bytes_base64: input.workflow_bytes_base64, variables: input.variables, timeout_ms: input.timeout_ms,
-      deterministic_command: input.deterministic_command };
+      deterministic_command: input.deterministic_command, juno_version: input.juno_version };
     if (canonicalHash(invocationCore) !== input.invocation_hash) throw boundaryError('workflow invocation hash does not match its exact bytes');
     workflowStepRequiresModelDispatch(workflowBytes, input.step_id, input.deterministic_command ?? undefined); // Revalidate the exact command contract at the boundary.
     const operationTimeout = ['dispatch', 'resume'].includes(name) ? Math.max(timeoutMs, input.timeout_ms + 5_000) : timeoutMs;
@@ -407,7 +428,12 @@ export async function createReviewedWorkflowBoundary(options: ReviewedWorkflowBo
   };
   const dispatcher: TrustedWorkflowDispatcher = {
     protocol: AUTH_LAUNCHER_PROTOCOL, providers,
-    preflight: async (input) => { await operation('preflight', input, boundaryPreflightResult); },
+    preflight: async (input) => {
+      const result = await operation('preflight', input, boundaryPreflightResult);
+      if (result.provider !== input.provider || `${result.provider}/${result.model}` !== input.model || result.juno_version !== input.juno_version) {
+        throw boundaryError('preflight substituted the exact provider/model or Juno version');
+      }
+    },
     dispatch: async (input) => operation('dispatch', input, terminalResult) as Promise<WorkflowRuntimeTerminalResult>,
     reconcile: async (input) => operation('reconcile', input, boundaryReconciliation) as Promise<WorkflowReconciliation>,
     resume: async (input) => operation('resume', input, terminalResult) as Promise<WorkflowRuntimeTerminalResult>,

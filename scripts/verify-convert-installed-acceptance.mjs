@@ -81,6 +81,21 @@ try {
   same(plan.execution_order.map((item) => `${item.model}:${item.attempt}:${item.step_id}`),
     expected.models.flatMap((model) => expected.selected_step_ids.map((step) => `${model}:1:${step}`)), 'strict sequential execution order');
 
+  const comparisonPlanPath = path.join(project, 'aug-19-comparison-plan.json');
+  const comparisonArgs = ['plan', '--workflow', expected.workflow_path, '--steps-file', path.basename(policyPath),
+    '--steps', expected.selected_step_ids.join(','), '--models', ':mini,zai/glm-5.3', '--var', `run_date=${expected.requested_comparison_date}`, '--attempts', '1', '--dry-run'];
+  const comparisonPlanResult = execute(benchmark, comparisonArgs); const comparisonPlan = json(comparisonPlanResult);
+  await writeFile(comparisonPlanPath, `${comparisonPlanResult.stdout.trim()}\n`, { mode: 0o600 });
+  same(comparisonPlan.models, expected.requested_comparison_models, 'Aug. 19 arbitrary exact model identities');
+  same(comparisonPlan.model_dispatch_step_ids, expected.injection_step_ids, 'Aug. 19 model injection points');
+  if (comparisonPlan.workflow_model_policy.workflow_models.includes('zai/glm-5.3')) throw new Error('exact model unexpectedly required a workflowModels catalog entry');
+  const comparisonDryRun = json(execute(benchmark, ['run', '--plan', path.basename(comparisonPlanPath), '--steps-file', path.basename(policyPath), '--dry-run']));
+  same(comparisonDryRun.estimate_availability, [
+    { model: 'openai-codex/gpt-5.6-terra', status: 'available' },
+    { model: 'zai/glm-5.3', status: 'unavailable' },
+  ], 'Aug. 19 estimate availability');
+  if (comparisonDryRun.estimated_totals !== null) throw new Error('partial estimate overrides must not produce a false complete total');
+
   const operations = [
     ['run', '--plan', path.basename(planPath), '--steps-file', path.basename(policyPath), '--dry-run'],
     ['recover', '--plan', path.basename(planPath), '--steps-file', path.basename(policyPath), '--dry-run'],
@@ -90,6 +105,8 @@ try {
   if (delegate) {
     const delegatedPlan = execute(delegate, ['benchmark', ...planArgs]);
     if (delegatedPlan.stdout !== standalonePlanResult.stdout || delegatedPlan.stderr !== standalonePlanResult.stderr) throw new Error('delegated historical plan differs from standalone');
+    const delegatedComparison = execute(delegate, ['benchmark', ...comparisonArgs]);
+    if (delegatedComparison.stdout !== comparisonPlanResult.stdout || delegatedComparison.stderr !== comparisonPlanResult.stderr) throw new Error('delegated Aug. 19 arbitrary-model plan differs from standalone');
     operations.forEach((operation, index) => {
       const delegated = execute(delegate, ['benchmark', ...operation]);
       if (delegated.stdout !== standalone[index].stdout || delegated.stderr !== standalone[index].stderr) throw new Error(`delegated ${operation[0]} differs from standalone`);

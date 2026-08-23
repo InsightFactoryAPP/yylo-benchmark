@@ -43,13 +43,14 @@ async function fixture(definition: { workflow?: string; policy?: WorkflowPolicy;
   execFileSync('git', ['add', 'workflow.yaml'], { cwd: root });
   execFileSync('git', ['commit', '-m', 'fixture'], { cwd: root, stdio: 'ignore' });
   const plan = await planWorkflowFromProject({ projectRoot: root, repositoryId: 'fixture', workflowPath: 'workflow.yaml', policyPath,
-    models: [':sol', 'zai/glm-5.2'], modelAliases: { ':sol': 'openai-codex/gpt-5.6-sol' }, attempts: 1,
+    models: [':sol', 'zai/glm-5.2'], modelAliases: { ':sol': 'openai-codex/gpt-5.6-sol' }, junoVersion: '2.1.3-test',
+    boundaryIdentity: { protocol: 'juno_benchmark_workflow_process_boundary.v1', sha256: `sha256:${'b'.repeat(64)}` }, attempts: 1,
     selectedStepIds: definition.selected ?? ['publish'], variables: { date: '2026-08-12' } });
   return { root, plan, policyPath };
 }
 function terminal(input: WorkflowRuntimeInvocation, cost: WorkflowRuntimeTerminalResult['evidence']['cost'] = { completeness: 'unavailable', usd: null }): WorkflowRuntimeTerminalResult {
   return { dispatch_id: input.dispatch_id, status: 'success', effect: 'completed', runner_run_id: `run-${input.step_id}`,
-    observed_provider: input.provider, observed_model: input.model, evidence: {
+    observed_provider: input.provider, observed_model: input.model, observed_juno_version: input.juno_version, evidence: {
       outer_session_id: `outer-${input.dispatch_id.slice(-8)}`, nested_session_ids: [`nested-${input.dispatch_id.slice(-8)}`],
       started_at: '2026-08-12T09:00:00.000Z', ended_at: '2026-08-12T09:00:01.000Z', runtime_ms: 1000,
       cost, candidate_outcome: { status: 'success' }, harness_validity: { status: 'valid', reason: null },
@@ -66,7 +67,7 @@ function options(item: Awaited<ReturnType<typeof fixture>>, registryName = 'regi
   return { plan: item.plan, projectRoot: item.root, policyPath: item.policyPath,
     registry: new ImmutableArtifactRegistry(path.join(item.root, registryName)),
     locks: new PersistentTypedResourceLocks({ root: path.join(item.root, `${registryName}-locks`) }),
-    dispatcher: dispatcher(), judge };
+    dispatcher: dispatcher(), judge, boundaryIdentity: item.plan.runtime_binding.boundary! };
 }
 
 describe('immutable workflow runtime', () => {
@@ -82,13 +83,25 @@ process.stdout.write(JSON.stringify(operation === 'probe' ? { schema_version: 'j
     const execution = item.plan.execution_order[0]!; const compiled = item.plan.compiled_workflows[0]!;
     const base = { dispatch_id: `sha256:${'1'.repeat(64)}` as const, plan_id: item.plan.plan_id, model: execution.model,
       provider: compiled.provider, attempt: execution.attempt, step_id: execution.step_id, variables: item.plan.variables, timeout_ms: 5000,
-      deterministic_command: null };
+      deterministic_command: null, juno_version: item.plan.runtime_binding.juno_version };
     for (const command of ['"bash -c hidden"', '[bash, -c, "$AGENT exec"]', '[env, bash, -c, hidden]', '[python3, -c, hidden]', '[node, -e, hidden]']) {
       const raw = Buffer.from(`schema_version: 2\nworkflow_id: rejected\nsteps:\n  - id: publish\n    command: ${command}\n`);
       const core = { ...base, workflow_sha256: `sha256:${createHash('sha256').update(raw).digest('hex')}` as const, workflow_bytes_base64: raw.toString('base64') };
       await expect(reviewed.dispatcher.dispatch({ ...core, invocation_hash: canonicalHash(core) })).rejects.toThrow(/argument array|approved direct ordinary|exact policy binding/u);
     }
     await expect(access(marker)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('preflights every exact mixed-provider identity before any dispatch and rejects terminal substitution', async () => {
+    const item = await fixture(); let dispatches = 0;
+    await expect(executeWorkflowPlan({ ...options(item), dispatcher: dispatcher({
+      preflight: async (input) => { if (input.model === 'zai/glm-5.2') throw new Error('unsupported exact model'); },
+      dispatch: async (input) => { dispatches += 1; return terminal(input); },
+    }) })).rejects.toThrow(/unsupported exact model/u);
+    expect(dispatches).toBe(0);
+    await expect(executeWorkflowPlan({ ...options(item, 'substitution'), dispatcher: dispatcher({
+      dispatch: async (input) => ({ ...terminal(input), observed_model: `${input.provider}/substituted` }),
+    }) })).rejects.toThrow(/terminal identity/u);
   });
 
   it('executes canonical model and minimal ordinary argv without authorization and accepts unavailable cost', async () => {
@@ -174,11 +187,13 @@ steps:
     expect(receipts[1]!.dispatch_recovery).toMatchObject({ recovered: false, recovery_count: 0 });
   });
 
-  it('keeps dry-run read-only and reports best-effort cost tracking', async () => {
-    const item = await fixture(); const registryRoot = path.join(item.root, 'dry-registry');
+  it('keeps dry-run read-only and represents missing estimates as unavailable rather than zero', async () => {
+    const estimatedPolicy = { ...policy(), estimates: { models: [{ model: 'openai-codex/gpt-5.6-sol', candidate_usd: 1, judge_usd: 0.2, runtime_ms: 1000 }] } };
+    const item = await fixture({ policy: estimatedPolicy }); const registryRoot = path.join(item.root, 'dry-registry');
     const result = await executeWorkflowPlan({ plan: item.plan, projectRoot: item.root, policyPath: item.policyPath,
       registry: new ImmutableArtifactRegistry(registryRoot), locks: new PersistentTypedResourceLocks({ root: path.join(item.root, 'locks') }), dryRun: true });
-    expect(result).toMatchObject({ dispatch_count: 0, cost_tracking: { mode: 'best_effort', unavailable_is_valid: true } });
+    expect(result).toMatchObject({ dispatch_count: 0, cost_tracking: { mode: 'best_effort', unavailable_is_valid: true }, estimated_totals: null,
+      estimate_availability: [{ model: 'openai-codex/gpt-5.6-sol', status: 'available' }, { model: 'zai/glm-5.2', status: 'unavailable' }] });
     await expect(access(registryRoot)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 

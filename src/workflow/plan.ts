@@ -6,14 +6,14 @@ import { isAlias, parseDocument, stringify, visit } from 'yaml';
 import { z } from 'zod';
 import { canonicalHash, sha256Hex, type JsonValue } from '../contracts/canonical.js';
 
-export const WORKFLOW_PLAN_SCHEMA_VERSION = 'juno_benchmark_workflow_plan.v1' as const;
+export const WORKFLOW_PLAN_SCHEMA_VERSION = 'juno_benchmark_workflow_plan.v2' as const;
 export const WORKFLOW_POLICY_SCHEMA_VERSION = 'juno_benchmark_workflow_policy.v1' as const;
 export const WORKFLOW_COMPILER_VERSION = 'juno_benchmark_workflow_overlay.v1' as const;
 export const WORKFLOW_RUNNER_SCHEMA_VERSION = 'juno_workflow_runner.v2' as const;
 
 const nonEmpty = z.string().trim().min(1);
 const sha256 = z.string().regex(/^sha256:[0-9a-f]{64}$/u);
-const exactModel = z.string().regex(/^[^:/\s]+\/[^:/\s]+$/u);
+const exactModel = z.string().max(256).regex(/^[^:/\s\x00-\x1f\x7f]+\/[^:/\s\x00-\x1f\x7f]+$/u);
 const stepId = z.string().regex(/^[A-Za-z0-9_.-]+$/u);
 const jsonScalar = z.union([z.string(), z.number().finite(), z.boolean(), z.null()]);
 const resource = z.object({
@@ -109,6 +109,8 @@ export const WorkflowExecutionPlanObjectSchema = z.object({
   model_dispatch_step_ids: z.array(stepId),
   model_selectors: z.record(nonEmpty),
   workflow_model_policy: z.object({ config_path: nonEmpty, config_sha256: sha256.nullable(), workflow_models: z.array(nonEmpty), workflow_models_sha256: sha256 }).strict(),
+  selector_config: z.object({ config_path: nonEmpty.nullable(), config_sha256: sha256.nullable(), model_aliases: z.record(exactModel), model_aliases_sha256: sha256 }).strict(),
+  runtime_binding: z.object({ juno_version: nonEmpty, boundary: z.object({ protocol: z.literal('juno_benchmark_workflow_process_boundary.v1'), sha256 }).strict().nullable() }).strict(),
   policy: WorkflowPolicySchema,
   policy_raw_sha256: sha256,
   policy_semantics_sha256: sha256,
@@ -123,10 +125,12 @@ export const WorkflowExecutionPlanSchema = WorkflowExecutionPlanObjectSchema.sup
   if (canonicalHash(value.variables) !== value.variables_hash) issue(['variables_hash'], 'variables hash is invalid');
   if (canonicalHash(value.policy) !== value.policy_semantics_sha256) issue(['policy_semantics_sha256'], 'policy semantics hash is invalid');
   if (canonicalHash(value.workflow_model_policy.workflow_models) !== value.workflow_model_policy.workflow_models_sha256) issue(['workflow_model_policy'], 'workflowModels hash is invalid');
-  if (Object.keys(value.model_selectors).length !== value.models.length || value.models.some((model) => value.model_selectors[model] === undefined)) issue(['model_selectors'], 'model selector bindings are incomplete');
-  if (value.policy.estimates !== undefined && canonicalHash(value.policy.estimates.models.map((item) => item.model)) !== canonicalHash(value.models)) {
-    issue(['policy', 'estimates'], 'model estimates must exactly match planned model order and identities');
+  if (canonicalHash(value.selector_config.model_aliases) !== value.selector_config.model_aliases_sha256) issue(['selector_config'], 'model alias hash is invalid');
+  for (const [model, selector] of Object.entries(value.model_selectors)) {
+    if (selector.startsWith(':') && value.selector_config.model_aliases[selector] !== model) issue(['model_selectors', model], 'model alias binding drifted from selector config');
+    if (!selector.startsWith(':') && selector !== model) issue(['model_selectors', model], 'exact model selector was substituted or normalized');
   }
+  if (Object.keys(value.model_selectors).length !== value.models.length || value.models.some((model) => value.model_selectors[model] === undefined)) issue(['model_selectors'], 'model selector bindings are incomplete');
   value.compiled_workflows.forEach((compiled, index) => {
     if (compiled.model !== value.models[index] || compiled.selector !== value.model_selectors[compiled.model]) issue(['compiled_workflows', index], 'compiled workflow model/selector order is invalid');
     try {
@@ -290,8 +294,7 @@ export function workflowStepRequiresModelDispatch(rawBytes: Uint8Array, stepId: 
 }
 
 function clone<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T; }
-export function compileWorkflowOverlay(parsed: ParsedWorkflow, selectedStepIds: readonly string[], selection: Selection, workflowModels: readonly string[], policy?: WorkflowPolicy): z.infer<typeof compiledWorkflow> {
-  if (!workflowModels.includes(selection.selector)) throw new Error(`model selector ${selection.selector} is not exactly allowlisted by workflowModels`);
+export function compileWorkflowOverlay(parsed: ParsedWorkflow, selectedStepIds: readonly string[], selection: Selection, _workflowModels: readonly string[], policy?: WorkflowPolicy): z.infer<typeof compiledWorkflow> {
   const workflow = clone(parsed.semantics); const steps = workflow['steps'] as Array<Record<string, JsonValue>>; const selected = new Set(selectedStepIds); const injected: string[] = [];
   for (const step of steps) {
     const id = String(step['id']); if (!selected.has(id)) continue;
@@ -365,7 +368,9 @@ export async function loadWorkflowModelPolicy(projectRoot: string): Promise<Work
 
 export async function planWorkflowFromProject(input: {
   readonly projectRoot: string; readonly repositoryId: string; readonly workflowPath: string; readonly policyPath: string;
-  readonly models: readonly string[]; readonly modelAliases: Readonly<Record<string, string>>; readonly attempts: number;
+  readonly models: readonly string[]; readonly modelAliases: Readonly<Record<string, string>>; readonly attempts: number; readonly junoVersion: string;
+  readonly selectorConfig?: { readonly configPath: string | null; readonly configSha256: `sha256:${string}` | null };
+  readonly boundaryIdentity?: { readonly protocol: 'juno_benchmark_workflow_process_boundary.v1'; readonly sha256: `sha256:${string}` };
   readonly variables?: Readonly<Record<string, string | number | boolean | null>>; readonly selectedStepIds?: readonly string[];
 }): Promise<WorkflowExecutionPlan> {
   if (!Number.isSafeInteger(input.attempts) || input.attempts < 1) throw new Error('attempts must be a positive safe integer');
@@ -382,7 +387,7 @@ export async function planWorkflowFromProject(input: {
   const seen = new Set<string>(); const selections: Selection[] = input.models.map((selector) => {
     const exact = selector.startsWith(':') ? input.modelAliases[selector] : selector;
     if (exact === undefined) throw new Error(`model alias ${selector} has no exact binding in model_aliases`);
-    if (!/^[^:/\s]+\/[^:/\s]+$/u.test(exact)) throw new Error(`model ${selector} does not resolve to an exact provider/model identity`);
+    if (!/^[^:/\s\x00-\x1f\x7f]+\/[^:/\s\x00-\x1f\x7f]+$/u.test(exact) || exact.length > 256) throw new Error(`model ${selector} does not resolve to an exact provider/model identity`);
     if (seen.has(exact)) throw new Error(`multiple selectors resolve to the same exact model: ${exact}`); seen.add(exact);
     const separator = exact.indexOf('/'); return { selector, exact, provider: exact.slice(0, separator), modelName: exact.slice(separator + 1) };
   });
@@ -410,6 +415,9 @@ export async function planWorkflowFromProject(input: {
     variables, variables_hash: canonicalHash(variables), selected_step_ids: selected, execution_order: executionOrder, attempts: input.attempts,
     models: selections.map((item) => item.exact), model_dispatch_step_ids: modelDispatchStepIds,
     model_selectors: Object.fromEntries(selections.map((item) => [item.exact, item.selector])), workflow_model_policy: modelPolicy,
+    selector_config: { config_path: input.selectorConfig?.configPath ?? null, config_sha256: input.selectorConfig?.configSha256 ?? null,
+      model_aliases: input.modelAliases, model_aliases_sha256: canonicalHash(input.modelAliases) },
+    runtime_binding: { juno_version: input.junoVersion, boundary: input.boundaryIdentity ?? null },
     policy: policyBinding.policy, policy_raw_sha256: policyBinding.raw_sha256, policy_semantics_sha256: policyBinding.semantics_sha256, compiled_workflows: compiled,
   };
   const plan = { ...core, plan_id: canonicalHash(core) };

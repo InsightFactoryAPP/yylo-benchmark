@@ -2,6 +2,11 @@
   "schema_version": "juno_benchmark_installed_acceptance_fixture.v1",
   "consumer": "Convert",
   "historical_date": "2026-08-12",
+  "requested_comparison_date": "2026-08-19",
+  "requested_comparison_models": [
+    "openai-codex/gpt-5.6-terra",
+    "zai/glm-5.3"
+  ],
   "historical_source_ref": "detached@816fa6272fb7071d7e9cbe20aeaa232a0d4920e3",
   "historical_source_commit": "816fa6272fb7071d7e9cbe20aeaa232a0d4920e3",
   "workflow_path": ".juno_task/workflows/daily_product_ops.yaml",

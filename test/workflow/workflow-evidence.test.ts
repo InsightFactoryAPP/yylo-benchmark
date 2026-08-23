@@ -37,12 +37,13 @@ steps:
   execFileSync('git', ['config', 'user.name', 'Fixture'], { cwd: root });
   execFileSync('git', ['add', 'workflow.yaml'], { cwd: root }); execFileSync('git', ['commit', '-m', 'fixture'], { cwd: root, stdio: 'ignore' });
   const plan = await planWorkflowFromProject({ projectRoot: root, repositoryId: 'fixture', workflowPath: 'workflow.yaml', policyPath,
-    models: [':sol'], modelAliases: { ':sol': 'openai-codex/gpt-5.6-sol' }, attempts: 1, selectedStepIds: ['first', 'second'] });
+    models: [':sol'], modelAliases: { ':sol': 'openai-codex/gpt-5.6-sol' }, junoVersion: '2.1.3-test',
+    boundaryIdentity: { protocol: 'juno_benchmark_workflow_process_boundary.v1', sha256: `sha256:${'b'.repeat(64)}` }, attempts: 1, selectedStepIds: ['first', 'second'] });
   return { root, plan, policyPath };
 }
 function terminal(input: WorkflowRuntimeInvocation, cost: WorkflowRuntimeTerminalResult['evidence']['cost']): WorkflowRuntimeTerminalResult {
   return { dispatch_id: input.dispatch_id, status: 'success', effect: 'completed', runner_run_id: `run-${input.step_id}`,
-    observed_provider: input.provider, observed_model: input.model, evidence: { outer_session_id: 'outer', nested_session_ids: ['nested'],
+    observed_provider: input.provider, observed_model: input.model, observed_juno_version: input.juno_version, evidence: { outer_session_id: 'outer', nested_session_ids: ['nested'],
       started_at: '2026-08-12T09:00:00.000Z', ended_at: '2026-08-12T09:00:01.000Z', runtime_ms: 1000, cost,
       candidate_outcome: { status: 'success' }, harness_validity: { status: 'valid', reason: null }, transcript: input.step_id, artifacts: {} } };
 }
@@ -57,8 +58,8 @@ describe('workflow evidence and observational cost', () => {
     const dispatcher: TrustedWorkflowDispatcher = { protocol: AUTH_LAUNCHER_PROTOCOL, providers: new Set(['openai-codex']),
       preflight: async () => undefined, dispatch: async (input) => terminal(input, costs[index++]!),
       reconcile: async () => ({ state: 'ambiguous' }), resume: async (input) => terminal(input, { completeness: 'unavailable', usd: null }) };
-    await executeWorkflowPlan({ plan: item.plan, projectRoot: item.root, policyPath: item.policyPath, registry, locks, dispatcher,
-      judge: async () => ({ resolved: true, evidence: 'pass' }) });
+    await executeWorkflowPlan({ plan: item.plan, projectRoot: item.root, policyPath: item.policyPath, registry, locks,
+      boundaryIdentity: item.plan.runtime_binding.boundary!, dispatcher, judge: async () => ({ resolved: true, evidence: 'pass' }) });
     const receipts = await readWorkflowEvidenceReceipts(registry, `workflow-${item.plan.plan_id.slice(7)}`);
     expect(receipts.map((receipt) => receipt.cost)).toEqual(costs);
     expect(receipts.every((receipt) => receipt.harness_validity.status === 'valid' && receipt.terminal_class === 'resolved')).toBe(true);
@@ -72,8 +73,8 @@ describe('workflow evidence and observational cost', () => {
     const dispatcher: TrustedWorkflowDispatcher = { protocol: AUTH_LAUNCHER_PROTOCOL, providers: new Set(['openai-codex']), preflight: async () => undefined,
       dispatch: async (input) => terminal(input, { completeness: 'unavailable', usd: null }), reconcile: async () => ({ state: 'ambiguous' }),
       resume: async (input) => terminal(input, { completeness: 'unavailable', usd: null }) };
-    await executeWorkflowPlan({ plan: item.plan, projectRoot: item.root, policyPath: item.policyPath, registry, locks, dispatcher,
-      judge: async () => ({ resolved: true, evidence: 'initial' }) });
+    await executeWorkflowPlan({ plan: item.plan, projectRoot: item.root, policyPath: item.policyPath, registry, locks,
+      boundaryIdentity: item.plan.runtime_binding.boundary!, dispatcher, judge: async () => ({ resolved: true, evidence: 'initial' }) });
     const experimentId = `workflow-${item.plan.plan_id.slice(7)}`;
     const receipt = (await readWorkflowEvidenceReceipts(registry, experimentId))[0]!;
     const judgement = await rejudgeRetainedWorkflowStep({ registry, experimentId, receipt, trustedReceiptHash: receipt.receipt_hash,
@@ -90,10 +91,11 @@ describe('workflow evidence and observational cost', () => {
     const lost = { protocol: AUTH_LAUNCHER_PROTOCOL, providers: new Set(['openai-codex']), preflight: async () => undefined,
       dispatch: async (): Promise<never> => { throw new Error('process loss'); }, reconcile: async () => ({ state: 'proven_not_dispatched' as const }),
       resume: async (input) => terminal(input, { completeness: 'unavailable', usd: null }) };
-    await expect(executeWorkflowPlan({ plan: item.plan, projectRoot: item.root, policyPath: item.policyPath, registry, locks, dispatcher: lost,
+    await expect(executeWorkflowPlan({ plan: item.plan, projectRoot: item.root, policyPath: item.policyPath, registry, locks,
+      boundaryIdentity: item.plan.runtime_binding.boundary!, dispatcher: lost,
       judge: async () => ({ resolved: true, evidence: 'pass' }) })).rejects.toThrow(/process loss/u);
     await executeWorkflowPlan({ plan: item.plan, projectRoot: item.root, policyPath: item.policyPath, registry, locks,
-      dispatcher: { ...lost, dispatch: async (input) => terminal(input, { completeness: 'unavailable', usd: null }) },
+      boundaryIdentity: item.plan.runtime_binding.boundary!, dispatcher: { ...lost, dispatch: async (input) => terminal(input, { completeness: 'unavailable', usd: null }) },
       judge: async () => ({ resolved: true, evidence: 'pass' }) });
     const experimentId = `workflow-${item.plan.plan_id.slice(7)}`;
     const receipt = (await readWorkflowEvidenceReceipts(registry, experimentId))[0]!;
