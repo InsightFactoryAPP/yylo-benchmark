@@ -72,8 +72,13 @@ model/attempt/step order. The overlay compiler modifies only canonical `yy pi` a
 arrays. It never rewrites prompt text or deterministic commands, and rejects hidden,
 ambiguous, or conflicting selectors. Workflow commands must be explicit argument arrays:
 canonical `[yy, pi, ...]` arrays are model steps, while the deliberately minimal ordinary
-surface is limited to direct `echo` and `printf` argv. Scalar commands, shells, interpreters,
-wrappers, and every other executable are rejected instead of heuristically parsed.
+surface is limited to direct `echo` and `printf` argv. A policy may additionally bind a
+specific selected step to the exact tracked-script shape
+`[env, PYTHONPATH=., python3, scripts/<path>.py, ...]`; Benchmark verifies the policy,
+working directory, environment prefix, committed script bytes, and unchanged overlay argv
+again before dispatch. No other environment assignment, interpreter mode, absolute/untracked
+script, shell, wrapper, or inline code is accepted. Scalar commands and every other executable
+are rejected instead of heuristically parsed.
 
 Planning and every `--dry-run` are read-only and report `dispatch_count: 0`. Every canonical
 `yy pi` command is classified as a model dispatch, but workflow plans contain no spend grant,

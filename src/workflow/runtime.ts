@@ -11,7 +11,7 @@ import { CostEvidenceSchema } from '../contracts/schemas.js';
 import { PersistentTypedResourceLocks, type TypedResource } from '../execution/resource-lock.js';
 import { ImmutableArtifactRegistry, type ArtifactReference } from '../registry/index.js';
 import { readWorkflowEvidenceReceipts, retainAndGradeWorkflowStep, type GovernedWorkflowJudgeRunner, type WorkflowCandidateEvidence, type WorkflowEvidenceReceipt } from './evidence.js';
-import { WORKFLOW_COMPILER_VERSION, WorkflowExecutionPlanSchema, parseWorkflowPolicyBytes, type WorkflowExecutionPlan, verifyWorkflowPlanBindings, workflowStepRequiresModelDispatch } from './plan.js';
+import { WORKFLOW_COMPILER_VERSION, WorkflowExecutionPlanSchema, parseWorkflowPolicyBytes, type DeterministicCommandPolicy, type WorkflowExecutionPlan, verifyWorkflowPlanBindings, workflowStepRequiresModelDispatch } from './plan.js';
 
 const hash = z.string().regex(/^sha256:[0-9a-f]{64}$/u);
 export const WORKFLOW_DISPATCH_INTENT_SCHEMA_VERSION = 'juno_benchmark_workflow_dispatch_intent.v1' as const;
@@ -24,6 +24,7 @@ export interface WorkflowRuntimeInvocation {
   readonly model: string; readonly provider: string; readonly attempt: number; readonly step_id: string;
   readonly workflow_sha256: `sha256:${string}`; readonly workflow_bytes_base64: string;
   readonly variables: Readonly<Record<string, string | number | boolean | null>>; readonly timeout_ms: number;
+  readonly deterministic_command: DeterministicCommandPolicy | null;
 }
 const candidateEvidence = z.object({
   outer_session_id: z.string().trim().min(1), nested_session_ids: z.array(z.string().trim().min(1)).min(1),
@@ -124,6 +125,14 @@ async function verifyImmediateBindings(options: WorkflowRuntimeOptions): Promise
   const models = configRaw === null ? [] : ((JSON.parse(configRaw.toString('utf8')) as { workflowModels?: unknown }).workflowModels ?? []);
   if (canonicalHash(models) !== plan.workflow_model_policy.workflow_models_sha256) throw new Error('workflow model allowlist drift detected');
   parseWorkflowPolicyBytes(policyRaw); // Same strict parser immediately before dispatch.
+  for (const commandPolicy of plan.policy.deterministic_commands ?? []) {
+    const scriptPath = inside(root, commandPolicy.script, 'deterministic tracked script path');
+    const [workingScript, committedScript] = await Promise.all([
+      readFile(scriptPath),
+      execFileAsync('git', ['-C', root, 'show', `${plan.source.source_commit}:${commandPolicy.script}`], { encoding: 'buffer', maxBuffer: 10 * 1024 * 1024 }).then((item) => Buffer.from(item.stdout)),
+    ]);
+    if (!workingScript.equals(committedScript)) throw new Error(`deterministic tracked script drift detected: ${commandPolicy.script}`);
+  }
 }
 
 function invocation(plan: WorkflowExecutionPlan, item: WorkflowExecutionPlan['execution_order'][number]): WorkflowRuntimeInvocation {
@@ -132,7 +141,8 @@ function invocation(plan: WorkflowExecutionPlan, item: WorkflowExecutionPlan['ex
     workflow_sha256: compiled.workflow_sha256, variables_hash: plan.variables_hash, policy_sha256: plan.policy_semantics_sha256 };
   const dispatchId = canonicalHash(core); const invocationCore = { dispatch_id: dispatchId, plan_id: plan.plan_id as `sha256:${string}`,
     model: item.model, provider: compiled.provider, attempt: item.attempt, step_id: item.step_id, workflow_sha256: compiled.workflow_sha256 as `sha256:${string}`,
-    workflow_bytes_base64: compiled.workflow_bytes_base64, variables: plan.variables, timeout_ms: policy.limits.timeout_ms };
+    workflow_bytes_base64: compiled.workflow_bytes_base64, variables: plan.variables, timeout_ms: policy.limits.timeout_ms,
+    deterministic_command: plan.policy.deterministic_commands?.find((entry) => entry.step_id === item.step_id) ?? null };
   return Object.freeze({ ...invocationCore, invocation_hash: canonicalHash(invocationCore) });
 }
 function resourcesFor(plan: WorkflowExecutionPlan, stepId: string): TypedResource[] {
@@ -388,9 +398,10 @@ export async function createReviewedWorkflowBoundary(options: ReviewedWorkflowBo
     }
     const invocationCore = { dispatch_id: input.dispatch_id, plan_id: input.plan_id, model: input.model, provider: input.provider,
       attempt: input.attempt, step_id: input.step_id, workflow_sha256: input.workflow_sha256,
-      workflow_bytes_base64: input.workflow_bytes_base64, variables: input.variables, timeout_ms: input.timeout_ms };
+      workflow_bytes_base64: input.workflow_bytes_base64, variables: input.variables, timeout_ms: input.timeout_ms,
+      deterministic_command: input.deterministic_command };
     if (canonicalHash(invocationCore) !== input.invocation_hash) throw boundaryError('workflow invocation hash does not match its exact bytes');
-    workflowStepRequiresModelDispatch(workflowBytes, input.step_id); // Revalidate the exact command contract at the boundary.
+    workflowStepRequiresModelDispatch(workflowBytes, input.step_id, input.deterministic_command ?? undefined); // Revalidate the exact command contract at the boundary.
     const operationTimeout = ['dispatch', 'resume'].includes(name) ? Math.max(timeoutMs, input.timeout_ms + 5_000) : timeoutMs;
     return schema.parse(await invokeReviewedBoundary(bytes, name, { invocation: input }, operationTimeout));
   };

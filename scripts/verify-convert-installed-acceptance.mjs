@@ -69,7 +69,15 @@ try {
   if (plan.spend_limits !== undefined) throw new Error('workflow plan must not carry spend limits; cost is observational evidence only');
   same(plan.policy.judge, expected.judge, 'governed judge');
   if (plan.normalized_workflow.steps.length !== expected.current_step_count) throw new Error('historical 13-of-17 distinction is invalid');
-  for (const compiled of plan.compiled_workflows) same(compiled.injected_step_ids, expected.injection_step_ids, `injection points for ${compiled.model}`);
+  const sourceCommands = new Map(plan.normalized_workflow.steps.map((step) => [step.id, step.command]));
+  same(plan.policy.deterministic_commands.map((item) => item.step_id), expected.deterministic_step_ids, 'deterministic command policy');
+  for (const compiled of plan.compiled_workflows) {
+    same(compiled.injected_step_ids, expected.injection_step_ids, `injection points for ${compiled.model}`);
+    const compiledWorkflow = JSON.parse(JSON.stringify((await import('yaml')).parse(Buffer.from(compiled.workflow_bytes_base64, 'base64').toString('utf8'))));
+    for (const stepId of expected.deterministic_step_ids) {
+      same(compiledWorkflow.steps.find((step) => step.id === stepId).command, sourceCommands.get(stepId), `deterministic argv for ${compiled.model}/${stepId}`);
+    }
+  }
   same(plan.execution_order.map((item) => `${item.model}:${item.attempt}:${item.step_id}`),
     expected.models.flatMap((model) => expected.selected_step_ids.map((step) => `${model}:1:${step}`)), 'strict sequential execution order');
 

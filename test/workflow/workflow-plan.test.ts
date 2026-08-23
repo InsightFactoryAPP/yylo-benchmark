@@ -122,11 +122,45 @@ describe('generic immutable workflow planning', () => {
       '[./yy, pi, hidden]',
       '[yy, task, status, T1]',
     ]) {
-      expect(() => compileWorkflowOverlay(commandWorkflow(command), ['analyze'], selection, [':sol'])).toThrow(/argument array|approved direct ordinary|canonical yy pi/u);
+      expect(() => compileWorkflowOverlay(commandWorkflow(command), ['analyze'], selection, [':sol'])).toThrow(/argument array|approved direct ordinary|canonical yy pi|exact policy binding/u);
     }
     for (const command of ['[printf, safe]', '[echo, safe]']) {
       expect(() => compileWorkflowOverlay(commandWorkflow(command), ['analyze'], selection, [':sol'])).not.toThrow();
     }
+  });
+
+  it('binds narrow tracked env/python deterministic commands and rejects policy, argv, and script drift', async () => {
+    const deterministicWorkflow = `schema_version: 2
+workflow_id: deterministic
+steps:
+  - id: prepare
+    command: [env, PYTHONPATH=., python3, scripts/report.py, --run-date, "{{ run_date }}"]
+`;
+    const deterministicPolicy: WorkflowPolicy = {
+      ...policy(false),
+      deterministic_commands: [{ step_id: 'prepare', executable: 'env', environment: [{ name: 'PYTHONPATH', value: '.' }],
+        interpreter: 'python3', script: 'scripts/report.py', working_directory: '.' }],
+    };
+    const root = await fixture(deterministicWorkflow, deterministicPolicy);
+    await mkdir(path.join(root, 'scripts'), { recursive: true });
+    await writeFile(path.join(root, 'scripts', 'report.py'), 'print("ok")\n');
+    execFileSync('git', ['add', 'scripts/report.py'], { cwd: root });
+    execFileSync('git', ['commit', '--amend', '--no-edit'], { cwd: root, stdio: 'ignore' });
+    const deterministicInput = { projectRoot: root, repositoryId: 'fixture', workflowPath: 'workflow.yaml', policyPath: 'policy.yaml',
+      models: [':sol'], modelAliases: { ':sol': 'openai-codex/gpt-5.6-sol' }, attempts: 1, selectedStepIds: ['prepare'] } as const;
+    const plan = await planWorkflowFromProject(deterministicInput);
+    const generated = parse(Buffer.from(plan.compiled_workflows[0]!.workflow_bytes_base64, 'base64').toString('utf8')) as { steps: Array<{ command: string[] }> };
+    expect(generated.steps[0]!.command).toEqual(['env', 'PYTHONPATH=.', 'python3', 'scripts/report.py', '--run-date', '{{ run_date }}']);
+
+    await writeFile(path.join(root, 'scripts', 'report.py'), 'print("drift")\n');
+    await expect(planWorkflowFromProject(deterministicInput)).rejects.toThrow(/tracked script drift/u);
+    await writeFile(path.join(root, 'scripts', 'report.py'), 'print("ok")\n');
+    await writeFile(path.join(root, 'policy.yaml'), JSON.stringify({ ...deterministicPolicy, deterministic_commands: [] }));
+    await expect(planWorkflowFromProject(deterministicInput)).rejects.toThrow(/exact policy binding/u);
+    await writeFile(path.join(root, 'policy.yaml'), JSON.stringify(deterministicPolicy));
+    await writeFile(path.join(root, 'workflow.yaml'), deterministicWorkflow.replace('scripts/report.py', '-c'));
+    execFileSync('git', ['add', 'workflow.yaml'], { cwd: root }); execFileSync('git', ['commit', '-m', 'bad argv'], { cwd: root, stdio: 'ignore' });
+    await expect(planWorkflowFromProject(deterministicInput)).rejects.toThrow(/tracked script drift|executable, environment, interpreter/u);
   });
 
   it('rejects unsupported YAML constructs and source-byte drift before planning', async () => {

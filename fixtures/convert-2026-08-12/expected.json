@@ -23,6 +23,10 @@
     "data_provider_crontab_logs",
     "product_analytics_conversion_behavior"
   ],
+  "deterministic_step_ids": [
+    "auth_friction",
+    "user_activity_dot_plot"
+  ],
   "injection_step_ids": [
     "purchases",
     "upgraded_users_posthog_patterns",

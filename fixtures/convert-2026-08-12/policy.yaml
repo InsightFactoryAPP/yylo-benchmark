@@ -506,5 +506,33 @@
         "retain_prompt": false
       }
     }
+  ],
+  "deterministic_commands": [
+    {
+      "step_id": "auth_friction",
+      "executable": "env",
+      "environment": [
+        {
+          "name": "PYTHONPATH",
+          "value": "."
+        }
+      ],
+      "interpreter": "python3",
+      "script": "scripts/product_analysis/posthog_auth_friction_report.py",
+      "working_directory": "."
+    },
+    {
+      "step_id": "user_activity_dot_plot",
+      "executable": "env",
+      "environment": [
+        {
+          "name": "PYTHONPATH",
+          "value": "."
+        }
+      ],
+      "interpreter": "python3",
+      "script": "scripts/product_analysis/pg_user_activity_value_excel.py",
+      "working_directory": "."
+    }
   ]
 }

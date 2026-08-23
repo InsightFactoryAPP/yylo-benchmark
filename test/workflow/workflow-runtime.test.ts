@@ -81,11 +81,12 @@ process.stdout.write(JSON.stringify(operation === 'probe' ? { schema_version: 'j
     const reviewed = await createReviewedWorkflowBoundary({ module: await realpath(module), sha256: createHash('sha256').update(source).digest('hex') });
     const execution = item.plan.execution_order[0]!; const compiled = item.plan.compiled_workflows[0]!;
     const base = { dispatch_id: `sha256:${'1'.repeat(64)}` as const, plan_id: item.plan.plan_id, model: execution.model,
-      provider: compiled.provider, attempt: execution.attempt, step_id: execution.step_id, variables: item.plan.variables, timeout_ms: 5000 };
+      provider: compiled.provider, attempt: execution.attempt, step_id: execution.step_id, variables: item.plan.variables, timeout_ms: 5000,
+      deterministic_command: null };
     for (const command of ['"bash -c hidden"', '[bash, -c, "$AGENT exec"]', '[env, bash, -c, hidden]', '[python3, -c, hidden]', '[node, -e, hidden]']) {
       const raw = Buffer.from(`schema_version: 2\nworkflow_id: rejected\nsteps:\n  - id: publish\n    command: ${command}\n`);
       const core = { ...base, workflow_sha256: `sha256:${createHash('sha256').update(raw).digest('hex')}` as const, workflow_bytes_base64: raw.toString('base64') };
-      await expect(reviewed.dispatcher.dispatch({ ...core, invocation_hash: canonicalHash(core) })).rejects.toThrow(/argument array|approved direct ordinary/u);
+      await expect(reviewed.dispatcher.dispatch({ ...core, invocation_hash: canonicalHash(core) })).rejects.toThrow(/argument array|approved direct ordinary|exact policy binding/u);
     }
     await expect(access(marker)).rejects.toMatchObject({ code: 'ENOENT' });
   });
