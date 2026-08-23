@@ -52,7 +52,7 @@ async function fixture(workflow = workflowText, sidecar: WorkflowPolicy = policy
 function input(root: string) {
   return { projectRoot: root, repositoryId: 'fixture', workflowPath: 'workflow.yaml', policyPath: 'policy.yaml',
     models: [':sol', 'zai/glm-5.2'], modelAliases: { ':sol': 'openai-codex/gpt-5.6-sol', ':mini': 'openai-codex/gpt-5.6-terra' },
-    attempts: 2, variables: { run_date: '2026-08-12' }, selectedStepIds: ['prepare', 'analyze'] } as const;
+    junoVersion: '2.1.3-test', attempts: 2, variables: { run_date: '2026-08-12' }, selectedStepIds: ['prepare', 'analyze'] } as const;
 }
 
 describe('generic immutable workflow planning', () => {
@@ -84,6 +84,20 @@ describe('generic immutable workflow planning', () => {
     expect(() => verifyWorkflowPlanBindings(plan, raw, policyRaw)).not.toThrow();
     expect(() => verifyWorkflowPlanBindings(plan, Buffer.concat([raw, Buffer.from('\n# raw drift\n')]), policyRaw)).toThrow(/raw-byte drift/u);
     expect(() => verifyWorkflowPlanBindings(plan, raw, Buffer.concat([policyRaw, Buffer.from('\n')]))).toThrow(/policy drift/u);
+  });
+
+  it('accepts arbitrary exact identities without workflowModels catalogs and rejects malformed or duplicate resolutions', async () => {
+    const root = await fixture();
+    await writeFile(path.join(root, '.juno_task', 'config.json'), '{}\n');
+    const arbitrary = { ...input(root), models: [':mini', 'zai/glm-5.3', 'new-valid-provider/new-model.2026-08'], attempts: 1 };
+    const plan = await planWorkflowFromProject(arbitrary);
+    expect(plan.models).toEqual(['openai-codex/gpt-5.6-terra', 'zai/glm-5.3', 'new-valid-provider/new-model.2026-08']);
+    expect(plan.workflow_model_policy.workflow_models).toEqual([]);
+    expect(plan.model_selectors['zai/glm-5.3']).toBe('zai/glm-5.3');
+    await expect(planWorkflowFromProject({ ...arbitrary, models: [':mini', 'openai-codex/gpt-5.6-terra'] })).rejects.toThrow(/same exact model/u);
+    for (const malformed of ['missing-provider', '/model', 'provider/', 'provider/model/extra', 'provider/:alias', 'provider/model name', `provider/model${String.fromCharCode(0)}`]) {
+      await expect(planWorkflowFromProject({ ...arbitrary, models: [malformed] })).rejects.toThrow(/exact provider\/model identity/u);
+    }
   });
 
   it('selects only stable IDs and rejects positional drift and missing consequential policy', async () => {
@@ -122,11 +136,45 @@ describe('generic immutable workflow planning', () => {
       '[./yy, pi, hidden]',
       '[yy, task, status, T1]',
     ]) {
-      expect(() => compileWorkflowOverlay(commandWorkflow(command), ['analyze'], selection, [':sol'])).toThrow(/argument array|approved direct ordinary|canonical yy pi/u);
+      expect(() => compileWorkflowOverlay(commandWorkflow(command), ['analyze'], selection, [':sol'])).toThrow(/argument array|approved direct ordinary|canonical yy pi|exact policy binding/u);
     }
     for (const command of ['[printf, safe]', '[echo, safe]']) {
       expect(() => compileWorkflowOverlay(commandWorkflow(command), ['analyze'], selection, [':sol'])).not.toThrow();
     }
+  });
+
+  it('binds narrow tracked env/python deterministic commands and rejects policy, argv, and script drift', async () => {
+    const deterministicWorkflow = `schema_version: 2
+workflow_id: deterministic
+steps:
+  - id: prepare
+    command: [env, PYTHONPATH=., python3, scripts/report.py, --run-date, "{{ run_date }}"]
+`;
+    const deterministicPolicy: WorkflowPolicy = {
+      ...policy(false),
+      deterministic_commands: [{ step_id: 'prepare', executable: 'env', environment: [{ name: 'PYTHONPATH', value: '.' }],
+        interpreter: 'python3', script: 'scripts/report.py', working_directory: '.' }],
+    };
+    const root = await fixture(deterministicWorkflow, deterministicPolicy);
+    await mkdir(path.join(root, 'scripts'), { recursive: true });
+    await writeFile(path.join(root, 'scripts', 'report.py'), 'print("ok")\n');
+    execFileSync('git', ['add', 'scripts/report.py'], { cwd: root });
+    execFileSync('git', ['commit', '--amend', '--no-edit'], { cwd: root, stdio: 'ignore' });
+    const deterministicInput = { projectRoot: root, repositoryId: 'fixture', workflowPath: 'workflow.yaml', policyPath: 'policy.yaml',
+      models: [':sol'], modelAliases: { ':sol': 'openai-codex/gpt-5.6-sol' }, junoVersion: '2.1.3-test', attempts: 1, selectedStepIds: ['prepare'] } as const;
+    const plan = await planWorkflowFromProject(deterministicInput);
+    const generated = parse(Buffer.from(plan.compiled_workflows[0]!.workflow_bytes_base64, 'base64').toString('utf8')) as { steps: Array<{ command: string[] }> };
+    expect(generated.steps[0]!.command).toEqual(['env', 'PYTHONPATH=.', 'python3', 'scripts/report.py', '--run-date', '{{ run_date }}']);
+
+    await writeFile(path.join(root, 'scripts', 'report.py'), 'print("drift")\n');
+    await expect(planWorkflowFromProject(deterministicInput)).rejects.toThrow(/tracked script drift/u);
+    await writeFile(path.join(root, 'scripts', 'report.py'), 'print("ok")\n');
+    await writeFile(path.join(root, 'policy.yaml'), JSON.stringify({ ...deterministicPolicy, deterministic_commands: [] }));
+    await expect(planWorkflowFromProject(deterministicInput)).rejects.toThrow(/exact policy binding/u);
+    await writeFile(path.join(root, 'policy.yaml'), JSON.stringify(deterministicPolicy));
+    await writeFile(path.join(root, 'workflow.yaml'), deterministicWorkflow.replace('scripts/report.py', '-c'));
+    execFileSync('git', ['add', 'workflow.yaml'], { cwd: root }); execFileSync('git', ['commit', '-m', 'bad argv'], { cwd: root, stdio: 'ignore' });
+    await expect(planWorkflowFromProject(deterministicInput)).rejects.toThrow(/tracked script drift|executable, environment, interpreter/u);
   });
 
   it('rejects unsupported YAML constructs and source-byte drift before planning', async () => {
@@ -138,7 +186,7 @@ describe('generic immutable workflow planning', () => {
   it('plans read-only through the CLI and makes --task and --workflow mutually exclusive', async () => {
     const root = await fixture(); const output: string[] = [];
     await runCli(['plan', '--workflow', 'workflow.yaml', '--steps-file', 'policy.yaml', '--models', ':sol,zai/glm-5.2', '--steps', 'prepare,analyze', '--var', 'run_date=2026-08-12', '--dry-run'], { cwd: root, stdout: (text) => output.push(text) });
-    expect(JSON.parse(output.join(''))).toMatchObject({ schema_version: 'juno_benchmark_workflow_plan.v1', attempts: 1, selected_step_ids: ['prepare', 'analyze'] });
+    expect(JSON.parse(output.join(''))).toMatchObject({ schema_version: 'juno_benchmark_workflow_plan.v2', attempts: 1, selected_step_ids: ['prepare', 'analyze'] });
     await expect(stat(path.join(root, '.juno_task', 'artifacts'))).rejects.toMatchObject({ code: 'ENOENT' });
 
     const program = createProgram().configureOutput({ writeErr: () => undefined });

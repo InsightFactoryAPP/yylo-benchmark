@@ -43,7 +43,7 @@ export interface ExecutionPlan {
 const planHash = z.string().regex(/^sha256:[0-9a-f]{64}$/u);
 export const TaskExecutionPlanSchema = z.object({
   schema_version: z.literal(PLAN_SCHEMA_VERSION), plan_id: planHash, case: EvalCaseV1Schema,
-  models: z.array(z.string().regex(/^[^:/\s]+\/[^:/\s]+$/u)).min(1), model_selectors: z.record(z.string().trim().min(1)),
+  models: z.array(z.string().max(256).regex(/^[^:/\s\x00-\x1f\x7f]+\/[^:/\s\x00-\x1f\x7f]+$/u)).min(1), model_selectors: z.record(z.string().trim().min(1)),
   attempts: z.number().int().positive(), snapshot_hash: planHash, wiki_hashes: z.record(planHash),
   tool_policy_hash: planHash, budget_hash: planHash, package_version: z.string().trim().min(1), juno_version: z.string().trim().min(1),
   spend_limits: z.object({ currency: z.literal('USD'), aggregate_max_usd: z.number().finite().positive(), per_attempt_max_usd: z.number().finite().positive() }).strict(),
@@ -51,7 +51,7 @@ export const TaskExecutionPlanSchema = z.object({
 }).strict();
 export const TaskExecutionAuthorizationSchema = z.object({
   schema_version: z.literal('juno_benchmark_task_authorization.v1'), plan_id: planHash,
-  authorization_id: z.string().trim().min(1), models: z.array(z.string().regex(/^[^:/\s]+\/[^:/\s]+$/u)).min(1),
+  authorization_id: z.string().trim().min(1), models: z.array(z.string().max(256).regex(/^[^:/\s\x00-\x1f\x7f]+\/[^:/\s\x00-\x1f\x7f]+$/u)).min(1),
   expires_at: z.string().datetime({ offset: true }), currency: z.literal('USD'),
   aggregate_max_usd: z.number().finite().positive(), per_attempt_max_usd: z.number().finite().positive(),
 }).strict();
@@ -61,7 +61,7 @@ export const BenchmarkPlanSchema = z.discriminatedUnion('schema_version', [TaskE
 export type BenchmarkPlan = ExecutionPlan | WorkflowExecutionPlan;
 export function parseBenchmarkPlan(value: unknown): BenchmarkPlan {
   const discriminated = BenchmarkPlanSchema.parse(value);
-  const plan = discriminated.schema_version === 'juno_benchmark_workflow_plan.v1'
+  const plan = discriminated.schema_version === 'juno_benchmark_workflow_plan.v2'
     ? WorkflowExecutionPlanSchema.parse(discriminated) : discriminated as BenchmarkPlan;
   const { plan_id: claimed, ...core } = plan;
   if (claimed !== canonicalHash(core)) throw new Error('execution plan hash is invalid');
@@ -81,7 +81,7 @@ function hash(value: string, label: string): asserts value is `sha256:${string}`
   if (!/^sha256:[0-9a-f]{64}$/u.test(value)) throw new Error(`invalid ${label}`);
 }
 export function validatePlanModelBindings(plan: Pick<ExecutionPlan, 'models' | 'model_selectors'>): void {
-  if (plan.models.length === 0 || plan.models.some((model) => !/^[^:/\s]+\/[^:/\s]+$/u.test(model))) {
+  if (plan.models.length === 0 || plan.models.some((model) => !/^[^:/\s\x00-\x1f\x7f]+\/[^:/\s\x00-\x1f\x7f]+$/u.test(model) || model.length > 256)) {
     throw new Error('execution plan models must be exact provider/model identities');
   }
   if (new Set(plan.models).size !== plan.models.length) throw new Error('execution plan models must be unique');
@@ -106,7 +106,7 @@ function exactCase(task: ReturnType<typeof lintBenchmarkCase>, revision: string)
 export async function planExperiment(client: PublicKanbanClient, input: PlanInputs): Promise<ExecutionPlan> {
   if (!Number.isSafeInteger(input.attempts) || input.attempts < 1) throw new Error('attempts must be a positive safe integer');
   if (input.models.length === 0 || input.models.some((model) => model.trim() === '')) throw new Error('at least one non-empty model is required');
-  if (input.models.some((model) => !/^[^:/\s]+\/[^:/\s]+$/u.test(model))) {
+  if (input.models.some((model) => !/^[^:/\s\x00-\x1f\x7f]+\/[^:/\s\x00-\x1f\x7f]+$/u.test(model) || model.length > 256)) {
     throw new Error('models must be exact provider/model identities; resolve aliases before planning');
   }
   const models = [...new Set(input.models.map((model) => model.trim()))].sort();

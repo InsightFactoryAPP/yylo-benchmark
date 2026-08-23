@@ -40,21 +40,21 @@ async function capture(root: string, args: string[]): Promise<Record<string, unk
   return JSON.parse(output.join('')) as Record<string, unknown>;
 }
 
-async function boundary(root: string): Promise<{ module: string; sha256: string }> {
+async function boundary(root: string, substitute = false): Promise<{ module: string; sha256: string }> {
 const module = path.join(root, 'reviewed-workflow-boundary.mjs');
   const source = `import { readFileSync } from 'node:fs';
 const operation = process.argv[2];
 const payload = JSON.parse(readFileSync(3, 'utf8'));
 const input = operation === 'probe' ? payload : payload.invocation;
 const terminal = () => ({ dispatch_id: input.dispatch_id, status: 'success', effect: 'completed',
-  runner_run_id: 'runner-' + input.step_id, observed_provider: input.provider, observed_model: input.model,
+  runner_run_id: 'runner-' + input.step_id, observed_provider: input.provider, observed_model: input.model, observed_juno_version: input.juno_version,
   evidence: { outer_session_id: 'outer-' + input.step_id, nested_session_ids: ['nested-' + input.step_id],
     started_at: '2026-08-12T00:00:00.000Z', ended_at: '2026-08-12T00:00:01.000Z', runtime_ms: 1000,
     cost: { completeness: 'complete', usd: 0.5 }, candidate_outcome: { status: 'success' },
     harness_validity: { status: 'valid', reason: null }, transcript: 'synthetic retained truth', artifacts: { result: 'ok' } } });
 let output;
 if (operation === 'probe') output = { schema_version: 'juno_benchmark_workflow_process_boundary.v1', providers: ['openai-codex'] };
-else if (operation === 'preflight') output = { ok: true };
+else if (operation === 'preflight') output = { ok: true, provider: input.provider, model: ${substitute ? "'substituted'" : "input.model.split('/').slice(1).join('/')"}, juno_version: input.juno_version };
 else if (operation === 'dispatch' || operation === 'resume') output = terminal();
 else if (operation === 'reconcile') output = { state: 'proven_not_dispatched' };
 else if (operation === 'judge') output = { resolved: true, evidence: 'governed synthetic judgement' };
@@ -76,7 +76,7 @@ describe('generic workflow CLI lifecycle', () => {
   it('plans, runs, recovers, and rejudges read-only with immutable zero-dispatch output', async () => {
     const root = await fixture();
     const plan = await capture(root, ['plan', '--workflow', 'workflow.yaml', '--steps-file', 'policy.yaml', '--models', ':sol', '--output', 'plan.json', '--dry-run']);
-    expect(plan).toMatchObject({ schema_version: 'juno_benchmark_workflow_plan.v1', selected_step_ids: ['analyze'] });
+    expect(plan).toMatchObject({ schema_version: 'juno_benchmark_workflow_plan.v2', selected_step_ids: ['analyze'] });
 
     const run = await capture(root, ['run', '--plan', 'plan.json', '--steps-file', 'policy.yaml', '--dry-run']);
     expect(run).toMatchObject({ schema_version: 'juno_benchmark_workflow_dry_run.v1', dispatch_count: 0,
@@ -90,16 +90,18 @@ describe('generic workflow CLI lifecycle', () => {
     const rejudge = await capture(root, ['rejudge', '--plan', 'plan.json', '--steps-file', 'policy.yaml', '--dry-run']);
     expect(rejudge).toMatchObject({ operation: 'rejudge', candidate_dispatch_count: 0, judge_dispatch_count: 0, plan_id: plan.plan_id });
     expect(await readFile(path.join(root, 'workflow.yaml'), 'utf8')).toContain('Analyze without rewriting this prompt');
+    await writeFile(path.join(root, 'yylo-benchmark.config.json'), JSON.stringify({ schema_version: 'juno_benchmark_config.v1', repository_id: 'cli-fixture', model_aliases: { ':sol': 'openai-codex/substituted' } }));
+    await expect(runCli(['run', '--plan', 'plan.json', '--steps-file', 'policy.yaml', '--dry-run'], { cwd: root })).rejects.toThrow(/model alias config drift/u);
   });
 
   it('runs, recovers, and rejudges through one hash-pinned reviewed CLI boundary', async () => {
     const root = await fixture(); const reviewed = await boundary(root);
-    const plan = await capture(root, ['plan', '--workflow', 'workflow.yaml', '--steps-file', 'policy.yaml', '--models', ':sol', '--output', 'plan.json', '--dry-run']);
     const priorModule = process.env['YYLO_BENCHMARK_WORKFLOW_BOUNDARY'];
     const priorHash = process.env['YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256'];
     process.env['YYLO_BENCHMARK_WORKFLOW_BOUNDARY'] = reviewed.module;
     process.env['YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256'] = reviewed.sha256;
     try {
+      const plan = await capture(root, ['plan', '--workflow', 'workflow.yaml', '--steps-file', 'policy.yaml', '--models', ':sol', '--output', 'plan.json', '--dry-run']);
       const run = await capture(root, ['run', '--plan', 'plan.json', '--steps-file', 'policy.yaml']);
       expect(run).toMatchObject({ plan_id: plan.plan_id, recovered: false, terminals: [{ step_id: 'analyze', result: { status: 'success' } }] });
       const recover = await capture(root, ['recover', '--plan', 'plan.json', '--steps-file', 'policy.yaml']);
@@ -111,6 +113,19 @@ describe('generic workflow CLI lifecycle', () => {
       const secondRejudge = await capture(root, ['rejudge', '--plan', 'plan.json', '--steps-file', 'policy.yaml', '--judge', ':sol']);
       expect(secondRejudge).toMatchObject({ schema_version: 'juno_benchmark_workflow_rejudge.v1', plan_id: plan.plan_id,
         candidate_dispatch_count: 0, judge_dispatch_count: 1 });
+    } finally {
+      if (priorModule === undefined) delete process.env['YYLO_BENCHMARK_WORKFLOW_BOUNDARY']; else process.env['YYLO_BENCHMARK_WORKFLOW_BOUNDARY'] = priorModule;
+      if (priorHash === undefined) delete process.env['YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256']; else process.env['YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256'] = priorHash;
+    }
+  });
+
+  it('rejects a reviewed boundary that substitutes the exact model during preflight', async () => {
+    const root = await fixture(); const reviewed = await boundary(root, true);
+    const priorModule = process.env['YYLO_BENCHMARK_WORKFLOW_BOUNDARY']; const priorHash = process.env['YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256'];
+    process.env['YYLO_BENCHMARK_WORKFLOW_BOUNDARY'] = reviewed.module; process.env['YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256'] = reviewed.sha256;
+    try {
+      await capture(root, ['plan', '--workflow', 'workflow.yaml', '--steps-file', 'policy.yaml', '--models', ':sol', '--output', 'plan.json', '--dry-run']);
+      await expect(runCli(['run', '--plan', 'plan.json', '--steps-file', 'policy.yaml'], { cwd: root })).rejects.toThrow(/substituted the exact provider\/model/u);
     } finally {
       if (priorModule === undefined) delete process.env['YYLO_BENCHMARK_WORKFLOW_BOUNDARY']; else process.env['YYLO_BENCHMARK_WORKFLOW_BOUNDARY'] = priorModule;
       if (priorHash === undefined) delete process.env['YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256']; else process.env['YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256'] = priorHash;

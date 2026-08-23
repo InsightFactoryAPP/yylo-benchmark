@@ -5,7 +5,7 @@ import { ImmutableArtifactRegistry, type ArtifactReference, type ManifestEntry }
 import type { WorkflowExecutionPlan } from './plan.js';
 
 export const WORKFLOW_CANDIDATE_TRUTH_SCHEMA_VERSION = 'juno_benchmark_workflow_candidate_truth.v1' as const;
-export const WORKFLOW_EVIDENCE_RECEIPT_SCHEMA_VERSION = 'juno_benchmark_workflow_evidence_receipt.v1' as const;
+export const WORKFLOW_EVIDENCE_RECEIPT_SCHEMA_VERSION = 'juno_benchmark_workflow_evidence_receipt.v2' as const;
 export const WORKFLOW_JUDGEMENT_SCHEMA_VERSION = 'juno_benchmark_workflow_judgement.v1' as const;
 export const WORKFLOW_REJUDGE_RECEIPT_SCHEMA_VERSION = 'juno_benchmark_workflow_rejudge_receipt.v1' as const;
 export const WORKFLOW_REPORT_SCHEMA_VERSION = 'juno_benchmark_workflow_report.v1' as const;
@@ -51,7 +51,8 @@ export interface WorkflowEvidenceReceipt {
   readonly attempt: number;
   readonly step_id: string;
   readonly scoring_id: string;
-  readonly identity: { readonly requested_provider: string; readonly requested_model: string; readonly observed_provider: string; readonly observed_model: string };
+  readonly identity: { readonly requested_selector: string; readonly requested_provider: string; readonly requested_model: string;
+    readonly observed_provider: string; readonly observed_model: string; readonly requested_juno_version: string; readonly observed_juno_version: string };
   readonly sessions: { readonly outer_session_id: string; readonly nested_session_ids: readonly string[] };
   readonly runtime: { readonly started_at: string; readonly ended_at: string; readonly runtime_ms: number };
   readonly cost: CostEvidence;
@@ -137,12 +138,12 @@ export function verifyWorkflowEvidenceReceiptValue(value: unknown): WorkflowEvid
 export async function retainAndGradeWorkflowStep(input: {
   readonly registry: ImmutableArtifactRegistry; readonly experimentId: string; readonly plan: WorkflowExecutionPlan;
   readonly dispatchId: Hash; readonly invocationHash: Hash; readonly model: string; readonly provider: string; readonly attempt: number; readonly stepId: string;
-  readonly observedProvider: string; readonly observedModel: string; readonly runnerRunId: string; readonly effect: 'none' | 'completed'; readonly recoveryCount: number; readonly recovered: boolean;
+  readonly observedProvider: string; readonly observedModel: string; readonly observedJunoVersion: string; readonly runnerRunId: string; readonly effect: 'none' | 'completed'; readonly recoveryCount: number; readonly recovered: boolean;
   readonly evidence: WorkflowCandidateEvidence; readonly judge: GovernedWorkflowJudgeRunner;
   readonly beforeJudgeDispatch: () => Promise<void>;
 }): Promise<WorkflowEvidenceReceipt> {
   validateEvidence(input.evidence);
-  if (input.observedProvider !== input.provider || input.observedModel !== input.model) throw new Error('workflow observed provider/model identity is incomplete or mismatched');
+  if (input.observedProvider !== input.provider || input.observedModel !== input.model || input.observedJunoVersion !== input.plan.runtime_binding.juno_version) throw new Error('workflow observed provider/model/Juno identity is incomplete or mismatched');
   const policy = input.plan.policy.steps.find((item) => item.step_id === input.stepId);
   if (policy === undefined) throw new Error(`workflow evidence policy missing for ${input.stepId}`);
   const configured = patterns([...input.plan.policy.redaction.secret_patterns, ...policy.redaction.patterns]); const replacements = { value: 0 };
@@ -175,7 +176,9 @@ export async function retainAndGradeWorkflowStep(input: {
   const core = { schema_version: WORKFLOW_EVIDENCE_RECEIPT_SCHEMA_VERSION, plan_id: input.plan.plan_id as Hash,
     policy_semantics_sha256: input.plan.policy_semantics_sha256 as Hash, dispatch_id: input.dispatchId, invocation_hash: input.invocationHash,
     model: input.model, attempt: input.attempt, step_id: input.stepId, scoring_id: policy.scoring_id,
-    identity: { requested_provider: input.provider, requested_model: input.model, observed_provider: input.observedProvider, observed_model: input.observedModel },
+    identity: { requested_selector: input.plan.model_selectors[input.model]!, requested_provider: input.provider, requested_model: input.model,
+      observed_provider: input.observedProvider, observed_model: input.observedModel,
+      requested_juno_version: input.plan.runtime_binding.juno_version, observed_juno_version: input.observedJunoVersion },
     sessions: { outer_session_id: input.evidence.outer_session_id, nested_session_ids: input.evidence.nested_session_ids },
     runtime: { started_at: input.evidence.started_at, ended_at: input.evidence.ended_at, runtime_ms: input.evidence.runtime_ms }, cost: input.evidence.cost,
     candidate_outcome: input.evidence.candidate_outcome, harness_validity: harnessValidity, judge_outcome: judgement,

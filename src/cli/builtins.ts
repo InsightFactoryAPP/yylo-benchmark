@@ -137,7 +137,7 @@ const run = definition(['run'], 'Execute an immutable task or workflow plan (wor
     .option('--authorization <path>', 'Explicit plan-bound execution authorization').option('--dry-run', 'Verify and render a workflow plan with zero dispatch')
     .option('--no-record').option('--non-canonical-scope <scope>').action(async (options: { plan: string; stepsFile?: string; authorization?: string; dryRun?: boolean; record: boolean; nonCanonicalScope?: string }) => {
       const absolutePlan = path.resolve(context.cwd, options.plan); const benchmarkPlan = await readBenchmarkPlan(absolutePlan);
-      if (benchmarkPlan.schema_version === 'juno_benchmark_workflow_plan.v1') {
+      if (benchmarkPlan.schema_version === 'juno_benchmark_workflow_plan.v2') {
         if (options.record === false || options.nonCanonicalScope !== undefined) throw new Error('--no-record and --non-canonical-scope apply only to task-case plans');
         if (options.stepsFile === undefined) throw new Error('--steps-file is required for workflow run binding verification');
         if (options.authorization !== undefined) throw new Error('workflow execution no longer accepts spend authorization; cost is best-effort evidence');
@@ -145,7 +145,7 @@ const run = definition(['run'], 'Execute an immutable task or workflow plan (wor
         const boundary = options.dryRun === true ? undefined : await workflowBoundary();
         const result = await executeWorkflowPlan({ plan: benchmarkPlan, projectRoot: context.cwd, policyPath: options.stepsFile,
           registry: storage.registry, locks: storage.locks,
-          ...(boundary === undefined ? { dryRun: true as const } : { dispatcher: boundary.dispatcher, judge: boundary.judge }) });
+          ...(boundary === undefined ? { dryRun: true as const } : { dispatcher: boundary.dispatcher, judge: boundary.judge, boundaryIdentity: boundary.identity }) });
         context.writeStdout(`${canonicalJson(result)}\n`); return;
       }
       if (options.dryRun === true || options.stepsFile !== undefined) throw new Error('workflow options cannot be combined with a task-case plan');
@@ -172,12 +172,12 @@ const recover = definition(['recover'], 'Recover a workflow plan from durable in
     .option('--dry-run', 'Verify recovery bindings and order with zero dispatch')
     .action(async (options: { plan: string; stepsFile: string; authorization?: string; dryRun?: boolean }) => {
       const benchmarkPlan = await readBenchmarkPlan(path.resolve(context.cwd, options.plan));
-      if (benchmarkPlan.schema_version !== 'juno_benchmark_workflow_plan.v1') throw new Error('recover supports workflow plans only; task-case recovery remains automatic in run');
+      if (benchmarkPlan.schema_version !== 'juno_benchmark_workflow_plan.v2') throw new Error('recover supports workflow plans only; task-case recovery remains automatic in run');
       const storage = workflowStorage(context); const boundary = options.dryRun === true ? undefined : await workflowBoundary();
       if (options.authorization !== undefined) throw new Error('workflow recovery no longer accepts spend authorization; cost is best-effort evidence');
       const result = await executeWorkflowPlan({ plan: benchmarkPlan, projectRoot: context.cwd,
         policyPath: options.stepsFile, registry: storage.registry, locks: storage.locks,
-        ...(boundary === undefined ? { dryRun: true as const } : { dispatcher: boundary.dispatcher, judge: boundary.judge }) });
+        ...(boundary === undefined ? { dryRun: true as const } : { dispatcher: boundary.dispatcher, judge: boundary.judge, boundaryIdentity: boundary.identity }) });
       context.writeStdout(`${canonicalJson({ operation: 'recover', ...result })}\n`);
     });
 });
@@ -188,7 +188,7 @@ const rejudgeWorkflow = definition(['rejudge'], 'Rejudge retained workflow truth
     .option('--dry-run', 'Verify immutable rejudge inputs with zero judge or candidate dispatch')
     .action(async (options: { plan: string; stepsFile: string; judge?: string; dryRun?: boolean }) => {
       const benchmarkPlan = await readBenchmarkPlan(path.resolve(context.cwd, options.plan));
-      if (benchmarkPlan.schema_version !== 'juno_benchmark_workflow_plan.v1') throw new Error('rejudge supports workflow plans only; use regrade for task-case plans');
+      if (benchmarkPlan.schema_version !== 'juno_benchmark_workflow_plan.v2') throw new Error('rejudge supports workflow plans only; use regrade for task-case plans');
       const storage = workflowStorage(context); const verified = await executeWorkflowPlan({ plan: benchmarkPlan, projectRoot: context.cwd,
         policyPath: options.stepsFile, registry: storage.registry, locks: storage.locks, dryRun: true });
       if (!('immutable_hashes' in verified)) throw new Error('workflow rejudge dry-run unexpectedly entered execution');

@@ -66,24 +66,35 @@ yylo-benchmark rejudge --plan workflow-plan.json --steps-file benchmark-policy.y
 
 `yy benchmark` accepts the identical argument tail and preserves stdout, stderr, cwd, exit
 status, and signals. Planning binds the tracked YAML's raw bytes, normalized semantics,
-Git ref/commit/tree, stable selected IDs, variables, exact selector resolutions, policy
-bytes/semantics, model allowlist, compiler version, per-model compiled bytes, and strict
-model/attempt/step order. The overlay compiler modifies only canonical `yy pi` argument
+Git ref/commit/tree, stable selected IDs, variables, exact selector resolutions and alias
+config bytes, Juno version, optional reviewed-boundary identity, policy bytes/semantics,
+compiler version, per-model compiled bytes, and strict model/attempt/step order. Any valid
+exact `provider/model` selector is accepted without `workflowModels` or a release-owned
+catalog; aliases remain optional project config. The overlay compiler modifies only canonical `yy pi` argument
 arrays. It never rewrites prompt text or deterministic commands, and rejects hidden,
 ambiguous, or conflicting selectors. Workflow commands must be explicit argument arrays:
 canonical `[yy, pi, ...]` arrays are model steps, while the deliberately minimal ordinary
-surface is limited to direct `echo` and `printf` argv. Scalar commands, shells, interpreters,
-wrappers, and every other executable are rejected instead of heuristically parsed.
+surface is limited to direct `echo` and `printf` argv. A policy may additionally bind a
+specific selected step to the exact tracked-script shape
+`[env, PYTHONPATH=., python3, scripts/<path>.py, ...]`; Benchmark verifies the policy,
+working directory, environment prefix, committed script bytes, and unchanged overlay argv
+again before dispatch. No other environment assignment, interpreter mode, absolute/untracked
+script, shell, wrapper, or inline code is accepted. Scalar commands and every other executable
+are rejected instead of heuristically parsed.
 
 Planning and every `--dry-run` are read-only and report `dispatch_count: 0`. Every canonical
 `yy pi` command is classified as a model dispatch, but workflow plans contain no spend grant,
 ceiling, or reservation. Complete and partial USD values are retained when supplied;
 `unavailable` and `not_applicable` retain `usd: null` and remain valid evidence rather than
-being converted to zero or harness failure. Reports expose complete cost, all observed cost,
+being converted to zero or harness failure. Policy estimates are optional exact
+provider/model overrides; dry-runs report per-model `available`/`unavailable`, and omit a
+total unless every selected model has an override. Reports expose complete cost, all observed cost,
 and incomplete-cost counts. The CLI reads the boundary module through a non-symlinked
 owner-matched file handle, verifies its exact digest and stable inode, and runs the pinned
 bytes with the current Node executable. A protocol probe must advertise every provider before
-preflight or dispatch. Rejudge writes a durable identity-bound intent before the governed
+preflight or dispatch. Before any durable intent, the boundary preflights every selected exact
+provider/model and returns the same provider, model, and Juno version; substitution or partial
+mixed-provider support fails before candidate dispatch. Rejudge writes a durable identity-bound intent before the governed
 call, without financial authorization. The same module implements `preflight`,
 `dispatch`, `reconcile`, `resume`, and blinded `judge`; malformed, timed-out, oversized,
 identity-mismatched, or nonzero responses fail closed. Recovery reuses retained terminals or

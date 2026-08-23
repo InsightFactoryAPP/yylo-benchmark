@@ -19,7 +19,7 @@ export const BenchmarkConfigSchema = z.object({
   }).strict().default({ arguments: [] }),
   model_aliases: z.record(
     z.string().regex(/^:[A-Za-z0-9._-]+$/u, 'expected a colon-prefixed model alias'),
-    z.string().regex(/^[^:/\s]+\/[^:/\s]+$/u, 'expected an exact provider/model identity'),
+    z.string().max(256).regex(/^[^:/\s\x00-\x1f\x7f]+\/[^:/\s\x00-\x1f\x7f]+$/u, 'expected an exact provider/model identity'),
   ).default({}),
   grader_profiles: z.record(z.string().trim().min(1), z.object({
     executable: z.string().trim().min(1),

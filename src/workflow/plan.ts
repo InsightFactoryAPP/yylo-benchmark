@@ -6,14 +6,14 @@ import { isAlias, parseDocument, stringify, visit } from 'yaml';
 import { z } from 'zod';
 import { canonicalHash, sha256Hex, type JsonValue } from '../contracts/canonical.js';
 
-export const WORKFLOW_PLAN_SCHEMA_VERSION = 'juno_benchmark_workflow_plan.v1' as const;
+export const WORKFLOW_PLAN_SCHEMA_VERSION = 'juno_benchmark_workflow_plan.v2' as const;
 export const WORKFLOW_POLICY_SCHEMA_VERSION = 'juno_benchmark_workflow_policy.v1' as const;
 export const WORKFLOW_COMPILER_VERSION = 'juno_benchmark_workflow_overlay.v1' as const;
 export const WORKFLOW_RUNNER_SCHEMA_VERSION = 'juno_workflow_runner.v2' as const;
 
 const nonEmpty = z.string().trim().min(1);
 const sha256 = z.string().regex(/^sha256:[0-9a-f]{64}$/u);
-const exactModel = z.string().regex(/^[^:/\s]+\/[^:/\s]+$/u);
+const exactModel = z.string().max(256).regex(/^[^:/\s\x00-\x1f\x7f]+\/[^:/\s\x00-\x1f\x7f]+$/u);
 const stepId = z.string().regex(/^[A-Za-z0-9_.-]+$/u);
 const jsonScalar = z.union([z.string(), z.number().finite(), z.boolean(), z.null()]);
 const resource = z.object({
@@ -37,6 +37,15 @@ export const WorkflowStepPolicySchema = z.object({
   }
 });
 
+const deterministicCommandPolicy = z.object({
+  step_id: stepId,
+  executable: z.literal('env'),
+  environment: z.array(z.object({ name: z.literal('PYTHONPATH'), value: z.literal('.') }).strict()).length(1),
+  interpreter: z.literal('python3'),
+  script: z.string().regex(/^scripts\/(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+\.py$/u),
+  working_directory: z.literal('.'),
+}).strict();
+
 export const WorkflowPolicySchema = z.object({
   schema_version: z.literal(WORKFLOW_POLICY_SCHEMA_VERSION),
   judge: z.object({ judge_id: nonEmpty, judge_version: nonEmpty, model: nonEmpty, rubric_hash: sha256 }).strict(),
@@ -46,6 +55,7 @@ export const WorkflowPolicySchema = z.object({
   estimates: z.object({ models: z.array(z.object({
     model: exactModel, candidate_usd: z.number().finite().nonnegative(), judge_usd: z.number().finite().nonnegative(), runtime_ms: z.number().int().nonnegative(),
   }).strict()).min(1) }).strict().optional(),
+  deterministic_commands: z.array(deterministicCommandPolicy).optional(),
   steps: z.array(WorkflowStepPolicySchema).min(1),
 }).strict().superRefine((value, context) => {
   const ids = value.steps.map((item) => item.step_id);
@@ -58,6 +68,10 @@ export const WorkflowPolicySchema = z.object({
   const estimatedModels = value.estimates?.models.map((item) => item.model) ?? [];
   if (new Set(estimatedModels).size !== estimatedModels.length) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['estimates', 'models'], message: 'estimated model identities must be unique' });
+  }
+  const deterministicIds = value.deterministic_commands?.map((item) => item.step_id) ?? [];
+  if (new Set(deterministicIds).size !== deterministicIds.length) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['deterministic_commands'], message: 'deterministic command policies must have unique step_id values' });
   }
 });
 
@@ -95,6 +109,8 @@ export const WorkflowExecutionPlanObjectSchema = z.object({
   model_dispatch_step_ids: z.array(stepId),
   model_selectors: z.record(nonEmpty),
   workflow_model_policy: z.object({ config_path: nonEmpty, config_sha256: sha256.nullable(), workflow_models: z.array(nonEmpty), workflow_models_sha256: sha256 }).strict(),
+  selector_config: z.object({ config_path: nonEmpty.nullable(), config_sha256: sha256.nullable(), model_aliases: z.record(exactModel), model_aliases_sha256: sha256 }).strict(),
+  runtime_binding: z.object({ juno_version: nonEmpty, boundary: z.object({ protocol: z.literal('juno_benchmark_workflow_process_boundary.v1'), sha256 }).strict().nullable() }).strict(),
   policy: WorkflowPolicySchema,
   policy_raw_sha256: sha256,
   policy_semantics_sha256: sha256,
@@ -109,10 +125,12 @@ export const WorkflowExecutionPlanSchema = WorkflowExecutionPlanObjectSchema.sup
   if (canonicalHash(value.variables) !== value.variables_hash) issue(['variables_hash'], 'variables hash is invalid');
   if (canonicalHash(value.policy) !== value.policy_semantics_sha256) issue(['policy_semantics_sha256'], 'policy semantics hash is invalid');
   if (canonicalHash(value.workflow_model_policy.workflow_models) !== value.workflow_model_policy.workflow_models_sha256) issue(['workflow_model_policy'], 'workflowModels hash is invalid');
-  if (Object.keys(value.model_selectors).length !== value.models.length || value.models.some((model) => value.model_selectors[model] === undefined)) issue(['model_selectors'], 'model selector bindings are incomplete');
-  if (value.policy.estimates !== undefined && canonicalHash(value.policy.estimates.models.map((item) => item.model)) !== canonicalHash(value.models)) {
-    issue(['policy', 'estimates'], 'model estimates must exactly match planned model order and identities');
+  if (canonicalHash(value.selector_config.model_aliases) !== value.selector_config.model_aliases_sha256) issue(['selector_config'], 'model alias hash is invalid');
+  for (const [model, selector] of Object.entries(value.model_selectors)) {
+    if (selector.startsWith(':') && value.selector_config.model_aliases[selector] !== model) issue(['model_selectors', model], 'model alias binding drifted from selector config');
+    if (!selector.startsWith(':') && selector !== model) issue(['model_selectors', model], 'exact model selector was substituted or normalized');
   }
+  if (Object.keys(value.model_selectors).length !== value.models.length || value.models.some((model) => value.model_selectors[model] === undefined)) issue(['model_selectors'], 'model selector bindings are incomplete');
   value.compiled_workflows.forEach((compiled, index) => {
     if (compiled.model !== value.models[index] || compiled.selector !== value.model_selectors[compiled.model]) issue(['compiled_workflows', index], 'compiled workflow model/selector order is invalid');
     try {
@@ -131,8 +149,11 @@ export const WorkflowExecutionPlanSchema = WorkflowExecutionPlanObjectSchema.sup
   }
   try {
     const normalizedSteps = value.normalized_workflow['steps'] as Array<Record<string, JsonValue>>;
-    const expectedModelDispatchIds = value.selected_step_ids.filter((id) => commandSelection(
-      normalizedSteps.find((item) => item['id'] === id)!['command'] ?? null, `workflow step ${id}`).canonical);
+    const expectedModelDispatchIds = value.selected_step_ids.filter((id) => {
+      const step = normalizedSteps.find((item) => item['id'] === id)!;
+      rejectHiddenExecutionChannels(step, `workflow step ${id}`);
+      return commandSelection(step['command'] ?? null, `workflow step ${id}`, deterministicPolicyFor(value.policy, id)).canonical;
+    });
     if (canonicalHash(expectedModelDispatchIds) !== canonicalHash(value.model_dispatch_step_ids)) {
       issue(['model_dispatch_step_ids'], 'model dispatch classification does not match the bound workflow commands');
     }
@@ -205,8 +226,16 @@ export function parseWorkflowPolicyBytes(rawBytes: Uint8Array): { readonly polic
 }
 
 interface Selection { readonly selector: string; readonly exact: string; readonly provider: string; readonly modelName: string }
+export type DeterministicCommandPolicy = z.infer<typeof deterministicCommandPolicy>;
 const ordinaryExecutables = new Set(['echo', 'printf']);
-function commandSelection(command: JsonValue, context: string): { readonly canonical: boolean; readonly explicit: string | null; readonly piIndex: number | null } {
+function deterministicPolicyFor(policy: WorkflowPolicy, stepId: string): DeterministicCommandPolicy | undefined {
+  return policy.deterministic_commands?.find((item) => item.step_id === stepId);
+}
+function rejectHiddenExecutionChannels(step: Record<string, JsonValue>, context: string): void {
+  const forbidden = ['argv', 'cwd', 'env', 'environment', 'executable', 'working_directory'].filter((key) => step[key] !== undefined);
+  if (forbidden.length > 0) throw new Error(`${context} contains hidden execution environment/working-directory fields: ${forbidden.join(',')}`);
+}
+function commandSelection(command: JsonValue, context: string, deterministic?: DeterministicCommandPolicy): { readonly canonical: boolean; readonly explicit: string | null; readonly piIndex: number | null } {
   if (!Array.isArray(command)) throw new Error(`${context} command must be an explicit argument array`);
   if (command.length === 0 || !command.every((item) => typeof item === 'string' && item.length > 0)) {
     throw new Error(`${context} command arrays must contain only non-empty strings`);
@@ -215,11 +244,22 @@ function commandSelection(command: JsonValue, context: string): { readonly canon
   if (parts.some((item) => /^(?:[A-Za-z_][A-Za-z0-9_]*=)?[^=]*(?:MODEL|PROVIDER|CONFIG|ADDITIONAL_ARGS)[^=]*=/iu.test(item))) throw new Error(`${context} contains a hidden model/config override channel`);
   const executable = parts[0]!;
   if (executable !== 'yy') {
+    if (executable === 'env') {
+      if (deterministic === undefined) throw new Error(`${context} deterministic env command requires an exact policy binding`);
+      const prefix = [deterministic.executable, ...deterministic.environment.map((item) => `${item.name}=${item.value}`), deterministic.interpreter, deterministic.script];
+      if (parts.length < prefix.length || prefix.some((item, index) => parts[index] !== item)) throw new Error(`${context} deterministic executable, environment, interpreter, or tracked script drifted from policy`);
+      if (parts.slice(prefix.length).some((item) => /^[A-Za-z_][A-Za-z0-9_]*=/u.test(item) || /(?:MODEL|PROVIDER|CONFIG|ADDITIONAL_ARGS)/iu.test(item))) {
+        throw new Error(`${context} deterministic arguments contain an environment/model override channel`);
+      }
+      return { canonical: false, explicit: null, piIndex: null };
+    }
+    if (deterministic !== undefined) throw new Error(`${context} deterministic command policy does not match executable ${executable}`);
     if (!ordinaryExecutables.has(executable)) {
       throw new Error(`${context} executable ${executable} is not an approved direct ordinary command or canonical yy pi`);
     }
     return { canonical: false, explicit: null, piIndex: null };
   }
+  if (deterministic !== undefined) throw new Error(`${context} canonical yy pi step must not have a deterministic command policy`);
   if (parts[1] !== 'pi') throw new Error(`${context} yy command must be the canonical yy pi argument array`);
   const piIndex = 1;
   const providers: string[] = []; const models: string[] = [];
@@ -243,21 +283,23 @@ function commandSelection(command: JsonValue, context: string): { readonly canon
   return { canonical: true, explicit: provider === undefined ? model ?? null : `${provider}/${model!}`, piIndex };
 }
 
-export function workflowStepRequiresModelDispatch(rawBytes: Uint8Array, stepId: string): boolean {
+export function workflowStepRequiresModelDispatch(rawBytes: Uint8Array, stepId: string, deterministic?: DeterministicCommandPolicy): boolean {
   const parsed = parseWorkflowBytes(rawBytes);
   const steps = parsed.semantics['steps'] as Array<Record<string, JsonValue>>;
   const step = steps.find((item) => String(item['id']) === stepId);
   if (step === undefined) throw new Error(`compiled workflow does not contain exact step ${stepId}`);
-  return commandSelection(step['command'] ?? null, `workflow step ${stepId}`).canonical;
+  rejectHiddenExecutionChannels(step, `workflow step ${stepId}`);
+  if (deterministic !== undefined && deterministic.step_id !== stepId) throw new Error(`deterministic command policy is bound to the wrong step`);
+  return commandSelection(step['command'] ?? null, `workflow step ${stepId}`, deterministic).canonical;
 }
 
 function clone<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T; }
-export function compileWorkflowOverlay(parsed: ParsedWorkflow, selectedStepIds: readonly string[], selection: Selection, workflowModels: readonly string[]): z.infer<typeof compiledWorkflow> {
-  if (!workflowModels.includes(selection.selector)) throw new Error(`model selector ${selection.selector} is not exactly allowlisted by workflowModels`);
+export function compileWorkflowOverlay(parsed: ParsedWorkflow, selectedStepIds: readonly string[], selection: Selection, _workflowModels: readonly string[], policy?: WorkflowPolicy): z.infer<typeof compiledWorkflow> {
   const workflow = clone(parsed.semantics); const steps = workflow['steps'] as Array<Record<string, JsonValue>>; const selected = new Set(selectedStepIds); const injected: string[] = [];
   for (const step of steps) {
     const id = String(step['id']); if (!selected.has(id)) continue;
-    const parsedCommand = commandSelection(step['command'] ?? null, `workflow step ${id}`);
+    rejectHiddenExecutionChannels(step, `workflow step ${id}`);
+    const parsedCommand = commandSelection(step['command'] ?? null, `workflow step ${id}`, policy === undefined ? undefined : deterministicPolicyFor(policy, id));
     if (!parsedCommand.canonical) continue;
     if (parsedCommand.explicit !== null && parsedCommand.explicit !== selection.selector) throw new Error(`workflow step ${id} selector ${parsedCommand.explicit} conflicts with experiment selector ${selection.selector}`);
     if (parsedCommand.explicit === null) {
@@ -268,7 +310,11 @@ export function compileWorkflowOverlay(parsed: ParsedWorkflow, selectedStepIds: 
   // Re-parse generated bytes with the same schema and policy checks before binding them.
   const generated = parseWorkflowBytes(bytes);
   for (const step of (generated.semantics['steps'] as Array<Record<string, JsonValue>>)) {
-    if (selected.has(String(step['id']))) commandSelection(step['command'] ?? null, `compiled workflow step ${String(step['id'])}`);
+    if (selected.has(String(step['id']))) {
+      rejectHiddenExecutionChannels(step, `compiled workflow step ${String(step['id'])}`);
+      commandSelection(step['command'] ?? null, `compiled workflow step ${String(step['id'])}`,
+        policy === undefined ? undefined : deterministicPolicyFor(policy, String(step['id'])));
+    }
   }
   return Object.freeze({ model: selection.exact, selector: selection.selector, provider: selection.provider, model_name: selection.modelName,
     workflow_sha256: prefixedHash(bytes), workflow_bytes_base64: bytes.toString('base64'), injected_step_ids: injected });
@@ -287,7 +333,8 @@ function validatePolicyCoverage(parsed: ParsedWorkflow, selected: readonly strin
   const steps = parsed.semantics['steps'] as Array<Record<string, JsonValue>>;
   for (const id of selected) {
     const step = steps.find((item) => item['id'] === id)!;
-    const launch = commandSelection(step['command'] ?? null, `workflow step ${id}`);
+    rejectHiddenExecutionChannels(step, `workflow step ${id}`);
+    const launch = commandSelection(step['command'] ?? null, `workflow step ${id}`, deterministicPolicyFor(policy, id));
     if (!policies.has(id)) {
       const reason = launch.canonical ? ' is consequential (credentialed/paid agent launch) and' : '';
       throw new Error(`workflow step ${id}${reason} requires policy with a stable scoring identity`);
@@ -296,6 +343,9 @@ function validatePolicyCoverage(parsed: ParsedWorkflow, selected: readonly strin
     void stepPolicy; // Policy metadata remains bound, but cost availability never authorizes dispatch.
   }
   for (const id of policies.keys()) if (!parsed.step_ids.includes(id)) throw new Error(`workflow policy references unknown stable step ID: ${id}`);
+  for (const commandPolicy of policy.deterministic_commands ?? []) {
+    if (!parsed.step_ids.includes(commandPolicy.step_id)) throw new Error(`deterministic command policy references unknown stable step ID: ${commandPolicy.step_id}`);
+  }
 }
 
 const execFileAsync = promisify(execFile);
@@ -318,7 +368,9 @@ export async function loadWorkflowModelPolicy(projectRoot: string): Promise<Work
 
 export async function planWorkflowFromProject(input: {
   readonly projectRoot: string; readonly repositoryId: string; readonly workflowPath: string; readonly policyPath: string;
-  readonly models: readonly string[]; readonly modelAliases: Readonly<Record<string, string>>; readonly attempts: number;
+  readonly models: readonly string[]; readonly modelAliases: Readonly<Record<string, string>>; readonly attempts: number; readonly junoVersion: string;
+  readonly selectorConfig?: { readonly configPath: string | null; readonly configSha256: `sha256:${string}` | null };
+  readonly boundaryIdentity?: { readonly protocol: 'juno_benchmark_workflow_process_boundary.v1'; readonly sha256: `sha256:${string}` };
   readonly variables?: Readonly<Record<string, string | number | boolean | null>>; readonly selectedStepIds?: readonly string[];
 }): Promise<WorkflowExecutionPlan> {
   if (!Number.isSafeInteger(input.attempts) || input.attempts < 1) throw new Error('attempts must be a positive safe integer');
@@ -335,17 +387,25 @@ export async function planWorkflowFromProject(input: {
   const seen = new Set<string>(); const selections: Selection[] = input.models.map((selector) => {
     const exact = selector.startsWith(':') ? input.modelAliases[selector] : selector;
     if (exact === undefined) throw new Error(`model alias ${selector} has no exact binding in model_aliases`);
-    if (!/^[^:/\s]+\/[^:/\s]+$/u.test(exact)) throw new Error(`model ${selector} does not resolve to an exact provider/model identity`);
+    if (!/^[^:/\s\x00-\x1f\x7f]+\/[^:/\s\x00-\x1f\x7f]+$/u.test(exact) || exact.length > 256) throw new Error(`model ${selector} does not resolve to an exact provider/model identity`);
     if (seen.has(exact)) throw new Error(`multiple selectors resolve to the same exact model: ${exact}`); seen.add(exact);
     const separator = exact.indexOf('/'); return { selector, exact, provider: exact.slice(0, separator), modelName: exact.slice(separator + 1) };
   });
   if (selections.length === 0) throw new Error('at least one model is required');
+  for (const commandPolicy of policyBinding.policy.deterministic_commands ?? []) {
+    await git(root, ['ls-files', '--error-unmatch', '--', commandPolicy.script]);
+    const [workingScript, committedScript] = await Promise.all([
+      readFile(path.join(root, commandPolicy.script)),
+      execFileAsync('git', ['-C', root, 'show', `${sourceCommit}:${commandPolicy.script}`], { encoding: 'buffer', maxBuffer: 10 * 1024 * 1024 }).then((result) => Buffer.from(result.stdout)),
+    ]);
+    if (!workingScript.equals(committedScript)) throw new Error(`deterministic tracked script drift detected: ${commandPolicy.script}`);
+  }
   const modelPolicy = await loadWorkflowModelPolicy(root);
-  const compiled = selections.map((selection) => compileWorkflowOverlay(parsed, selected, selection, modelPolicy.workflow_models));
+  const compiled = selections.map((selection) => compileWorkflowOverlay(parsed, selected, selection, modelPolicy.workflow_models, policyBinding.policy));
   const variables = Object.fromEntries(Object.entries(input.variables ?? {}).sort(([a], [b]) => a.localeCompare(b)));
   const selectedSteps = parsed.semantics['steps'] as Array<Record<string, JsonValue>>;
   const modelDispatchStepIds = selected.filter((id) => commandSelection(selectedSteps.find((item) => item['id'] === id)!['command'] ?? null,
-    `workflow step ${id}`).canonical);
+    `workflow step ${id}`, deterministicPolicyFor(policyBinding.policy, id)).canonical);
   const executionOrder = selections.flatMap((selection) => Array.from({ length: input.attempts }, (_, index) => selected.map((id) => ({ model: selection.exact, attempt: index + 1, step_id: id })))).flat();
   const core = {
     schema_version: WORKFLOW_PLAN_SCHEMA_VERSION, source: { repository_id: input.repositoryId, source_ref: sourceRef, source_commit: sourceCommit,
@@ -355,6 +415,9 @@ export async function planWorkflowFromProject(input: {
     variables, variables_hash: canonicalHash(variables), selected_step_ids: selected, execution_order: executionOrder, attempts: input.attempts,
     models: selections.map((item) => item.exact), model_dispatch_step_ids: modelDispatchStepIds,
     model_selectors: Object.fromEntries(selections.map((item) => [item.exact, item.selector])), workflow_model_policy: modelPolicy,
+    selector_config: { config_path: input.selectorConfig?.configPath ?? null, config_sha256: input.selectorConfig?.configSha256 ?? null,
+      model_aliases: input.modelAliases, model_aliases_sha256: canonicalHash(input.modelAliases) },
+    runtime_binding: { juno_version: input.junoVersion, boundary: input.boundaryIdentity ?? null },
     policy: policyBinding.policy, policy_raw_sha256: policyBinding.raw_sha256, policy_semantics_sha256: policyBinding.semantics_sha256, compiled_workflows: compiled,
   };
   const plan = { ...core, plan_id: canonicalHash(core) };
