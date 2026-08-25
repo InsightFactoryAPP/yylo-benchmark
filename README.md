@@ -16,8 +16,15 @@ node dist/bin.js plan --task TASK_ID --models :mini,:sol --attempts 3 --output p
 YYLO_BENCHMARK_REGISTRY=/private/path node dist/bin.js run --plan plan.json
 YYLO_BENCHMARK_REGISTRY=/private/path node dist/bin.js regrade --plan plan.json
 YYLO_BENCHMARK_REGISTRY=/private/path node dist/bin.js doctor EXPERIMENT_TASK_ID
+YYLO_BENCHMARK_REGISTRY=/private/path node dist/bin.js doctor workflow-PLAN_ID_HEX
 YYLO_BENCHMARK_REGISTRY=/private/path node dist/bin.js report --task TASK_ID
 ```
+
+`doctor` accepts either a Kanban experiment task ID (verified through the public
+Ledger contract) or a `workflow-<64-hex>` registry experiment identity (verified
+entirely from retained private-registry evidence, including retained
+harness-failure terminals and ambiguous dispatch intents, without any Ledger
+read).
 
 `yy benchmark ...` is a transparent delegate to an independently installed compatible
 `yylo-benchmark` executable. The standalone CLI remains canonical.
@@ -162,7 +169,19 @@ configuration's `model_aliases` map. Planning hashes both the selector and exact
 identity, and execution dispatches only the exact identity so alias drift fails closed.
 
 Execution consumes only the public `juno_execution_envelope.v1` emitted by
-`yy pi --execution-envelope`. Provider and model are separately observed and must
+`yy pi --execution-envelope`. The benchmark owns this transport request: the
+reviewed workflow boundary validates the product-owned `yy pi` argument array
+from workflow YAML (which must never carry benchmark transport flags) and then
+constructs the executed argv with exactly one `--execution-envelope` flag in
+the root/global position Juno parses, plus the canonical Juno child correlation
+environment (`YYLO_INVOCATION_CHILD`, `YYLO_WORKFLOW_RUN_ID`,
+`YYLO_WORKFLOW_STEP_ID`, `YYLO_LAUNCH_SURFACE`) so every dispatched invocation
+is directly discoverable in telemetry. A dispatched child that terminates with
+a known exit status but no valid envelope is retained as a redacted
+harness-failure terminal (exit status, bounded transcript, timestamps,
+unavailable cost/session identity) and is never redispatched; only overflow or
+timeout before child settlement remains ambiguous. Provider and model are
+separately observed and must
 normalize to the exact planned identity; candidate output cannot declare its own
 identity or resolution. Cost retains complete, partial, unavailable, not-applicable,
 and genuine-zero semantics.

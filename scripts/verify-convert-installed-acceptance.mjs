@@ -169,6 +169,153 @@ try {
       if (delegatedPlan.status !== 0) throw new Error('delegated synthetic gate plan failed');
     }
   }
+  // Installed-consumer live-stub transport gate (Jf1TaD): a recording
+  // normal-shaped `yy` stub proves the reviewed boundary requests exactly one
+  // benchmark-owned --execution-envelope in the root position and propagates
+  // the canonical child correlation; a completed child without a valid
+  // envelope yields a retained harness-failure terminal with no blind
+  // redispatch, and the exact consumer doctor command verifies the workflow
+  // experiment from retained registry evidence. Zero provider dispatch.
+  {
+    const stubProject = path.join(temporary, 'stub-project');
+    await mkdir(path.join(stubProject, '.juno_task'), { recursive: true });
+    await writeFile(path.join(stubProject, '.juno_task', 'config.json'), JSON.stringify({ workflowModels: [':mini', 'zai/glm-5.3'] }));
+    await writeFile(path.join(stubProject, 'yylo-benchmark.config.json'), JSON.stringify({
+      schema_version: 'juno_benchmark_config.v1', repository_id: 'convert_IF_chat',
+      model_aliases: { ':mini': 'openai-codex/gpt-5.6-terra' },
+    }));
+    const stubPolicyPath = path.join(stubProject, 'convert-2026-08-12.policy.yaml');
+    await cp(path.join(fixtureRoot, 'policy.yaml'), stubPolicyPath);
+    await cp(path.join(project, expected.workflow_path), path.join(stubProject, 'workflow.yaml'));
+    // Deterministic policy validation requires the tracked Python scripts the
+    // policy binds, even when only the first model step is selected.
+    const policyDocument = JSON.parse(await readFile(stubPolicyPath, 'utf8'));
+    for (const deterministic of policyDocument.deterministic_commands ?? []) {
+      const destination = path.join(stubProject, deterministic.script);
+      await mkdir(path.dirname(destination), { recursive: true });
+      await cp(path.join(project, deterministic.script), destination);
+    }
+    execute('git', ['init', '-b', 'stub-fixture'], stubProject);
+    execute('git', ['config', 'user.email', 'stub@example.test'], stubProject);
+    execute('git', ['config', 'user.name', 'Stub'], stubProject);
+    execute('git', ['add', 'workflow.yaml', 'convert-2026-08-12.policy.yaml', 'scripts'], stubProject);
+    execute('git', ['commit', '-m', 'stub fixture'], stubProject);
+    const stubYy = path.join(temporary, 'stub-yy');
+    await writeFile(stubYy, `#!/bin/sh
+if [ -n "$YY_STUB_RECORD" ]; then
+  {
+    printf 'argv:'
+    for argument in "$@"; do printf ' <%s>' "$argument"; done
+    printf '\\n'
+    printf 'correlation: child=%s run=%s step=%s surface=%s\\n' "$YYLO_INVOCATION_CHILD" "$YYLO_WORKFLOW_RUN_ID" "$YYLO_WORKFLOW_STEP_ID" "$YYLO_LAUNCH_SURFACE"
+  } >> "$YY_STUB_RECORD"
+fi
+case "$1" in
+  --version) echo "9.9.9"; exit 0 ;;
+esac
+printf 'run\\n' >> "$YY_STUB_RUNS"
+transport=""
+model=""
+prompt=""
+prev=""
+for argument in "$@"; do
+  if [ "$argument" = "--execution-envelope" ]; then transport=1; fi
+  if [ "$prev" = "--model" ]; then model="$argument"; fi
+  prompt="$argument"
+  prev="$argument"
+done
+if [ -z "$transport" ]; then printf 'Judging the blinded candidate.\\nVERDICT: PASS\\n'; exit 0; fi
+case "$YY_STUB_MODE" in
+  failure)
+    printf 'controller-resolver: retired rollback controller is read-only; run writes from the registered metadata controller\\n' >&2
+    exit 99
+    ;;
+esac
+case "$model" in :mini) model="openai-codex/gpt-5.6-terra" ;; esac
+provider="\${model%%/*}"
+name="\${model#*/}"
+printf '{"schema_version":"juno_execution_envelope.v1","status":"success","session_id":"sess-stub-1","provider":"%s","model":"%s","juno_version":"9.9.9","cost":{"completeness":"complete","usd":0.42}}\\n' "$provider" "$name"
+exit 0
+`, { mode: 0o755 });
+    const stubEnvironment = (extra = {}) => ({
+      YYLO_BENCHMARK_JUNO_EXECUTABLE: stubYy,
+      YYLO_BENCHMARK_JUNO_VERSION: '9.9.9',
+      OPENAI_CODEX_TOKEN: 'fixture-stub-token-0123456789',
+      ...extra,
+    });
+    const stubGate = (argv, registry, extra = {}) => execute(benchmark, argv, stubProject,
+      stubEnvironment({ YYLO_BENCHMARK_REGISTRY: registry, ...extra }));
+    const stubPlanArgs = ['plan', '--workflow', 'workflow.yaml', '--steps-file', path.basename(stubPolicyPath),
+      '--steps', 'purchases', '--models', ':mini', '--var', `run_date=${expected.requested_comparison_date}`,
+      '--attempts', '1', '--output', 'stub-plan.json', '--dry-run'];
+
+    // Mode A: a valid stub envelope yields a normal terminal and the executed
+    // argv proves exactly one benchmark-owned envelope flag in the root
+    // position plus the canonical child correlation identity.
+    const registryA = path.join(temporary, 'stub-registry-envelope');
+    const recordA = path.join(temporary, 'stub-record-envelope.log');
+    const runsA = path.join(temporary, 'stub-runs-envelope.log');
+    const setupA = json(stubGate(['setup'], registryA));
+    const boundaryEnvironment = {
+      YYLO_BENCHMARK_WORKFLOW_BOUNDARY: setupA.environment.YYLO_BENCHMARK_WORKFLOW_BOUNDARY,
+      YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256: setupA.environment.YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256,
+    };
+    const readinessA = json(stubGate(['readiness', '--models', ':mini'], registryA, boundaryEnvironment));
+    if (readinessA.dispatch_count !== 0) throw new Error('live-stub readiness dispatched work');
+    const stubPlan = json(stubGate(stubPlanArgs, registryA, boundaryEnvironment));
+    const dryRunA = json(stubGate(['run', '--plan', 'stub-plan.json', '--steps-file', path.basename(stubPolicyPath), '--dry-run'], registryA, boundaryEnvironment));
+    if (dryRunA.dispatch_count !== 0) throw new Error('live-stub dry-run dispatched work');
+    const runA = json(stubGate(['run', '--plan', 'stub-plan.json', '--steps-file', path.basename(stubPolicyPath)], registryA,
+      { ...boundaryEnvironment, YY_STUB_RECORD: recordA, YY_STUB_RUNS: runsA }));
+    if (runA.recovered !== false || runA.terminals.length !== 1) throw new Error('live-stub envelope run terminal contract failed');
+    if (runA.terminals[0].result.status !== 'success' || runA.terminals[0].result.observed_model !== 'openai-codex/gpt-5.6-terra') {
+      throw new Error(`live-stub envelope terminal failed: ${JSON.stringify(runA.terminals[0].result)}`);
+    }
+    const linesA = (await readFile(recordA, 'utf8')).split('\n').filter(Boolean);
+    const dispatchedArgv = linesA.filter((line) => line.startsWith('argv:') && line.includes('--model') && !line.includes('<--version>'));
+    const candidateArgv = dispatchedArgv.filter((line) => line.includes('--execution-envelope'));
+    const judgeArgv = dispatchedArgv.filter((line) => !line.includes('--execution-envelope'));
+    if (candidateArgv.length !== 1) throw new Error(`live-stub run must carry exactly one envelope-flagged candidate argv, saw ${candidateArgv.length}`);
+    if (judgeArgv.length !== 1) throw new Error(`live-stub run must judge once without the transport flag, saw ${judgeArgv.length}`);
+    const candidateArguments = candidateArgv[0].slice('argv:'.length).trim().split(' <').map((item) => item.replace(/>$/u, '').replace(/^</u, ''));
+    if (candidateArguments[0] !== '--execution-envelope' || candidateArguments[1] !== 'pi' || candidateArguments[2] !== '--model' || candidateArguments[3] !== ':mini') {
+      throw new Error(`live-stub executed argv is not the benchmark-owned root-position envelope form: ${candidateArgv[0]}`);
+    }
+    if (candidateArguments.filter((item) => item === '--execution-envelope').length !== 1) throw new Error('live-stub executed argv carries more than one envelope flag');
+    const correlation = linesA.find((line) => line.startsWith('correlation:') && line.includes(`run=${stubPlan.plan_id}`));
+    if (!correlation || !correlation.includes('child=1') || !correlation.includes('step=purchases') || !correlation.includes('surface=yylo-benchmark')) {
+      throw new Error(`live-stub child correlation identity is missing or wrong: ${correlation ?? 'none'}`);
+    }
+
+    // Mode B: a completed child without a valid envelope yields a retained
+    // harness-failure terminal; recovery never redispatches it, and the exact
+    // consumer doctor command verifies the experiment from retained evidence.
+    const registryB = path.join(temporary, 'stub-registry-failure');
+    const runsB = path.join(temporary, 'stub-runs-failure.log');
+    const setupB = json(stubGate(['setup'], registryB));
+    const boundaryB = {
+      YYLO_BENCHMARK_WORKFLOW_BOUNDARY: setupB.environment.YYLO_BENCHMARK_WORKFLOW_BOUNDARY,
+      YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256: setupB.environment.YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256,
+    };
+    const planB = json(stubGate(stubPlanArgs.filter((_, index) => stubPlanArgs[index] !== '--output' && stubPlanArgs[index - 1] !== '--output'), registryB, boundaryB));
+    if (planB.plan_id !== stubPlan.plan_id) throw new Error('live-stub plans drifted between transport modes');
+    const failureEnvironment = { ...boundaryB, YY_STUB_RUNS: runsB, YY_STUB_MODE: 'failure' };
+    const runB = json(stubGate(['run', '--plan', 'stub-plan.json', '--steps-file', path.basename(stubPolicyPath)], registryB, failureEnvironment));
+    if (runB.terminals.length !== 1 || runB.terminals[0].result.status !== 'failure' || runB.terminals[0].result.effect !== 'completed') {
+      throw new Error(`live-stub harness-failure terminal contract failed: ${JSON.stringify(runB.terminals)}`);
+    }
+    if ((await readFile(runsB, 'utf8')).split('\n').filter(Boolean).length !== 2) throw new Error('live-stub failure mode must run exactly one candidate child plus one judge child');
+    const rerunB = json(stubGate(['run', '--plan', 'stub-plan.json', '--steps-file', path.basename(stubPolicyPath)], registryB, failureEnvironment));
+    if (rerunB.recovered !== true) throw new Error('live-stub duplicate-dispatch guard failed');
+    if ((await readFile(runsB, 'utf8')).split('\n').filter(Boolean).length !== 2) throw new Error('recovery redispatched a completed harness failure');
+    const recoverB = json(stubGate(['recover', '--plan', 'stub-plan.json', '--steps-file', path.basename(stubPolicyPath)], registryB, failureEnvironment));
+    if (recoverB.recovered !== true) throw new Error('live-stub recovery without duplicate execution failed');
+    const doctorB = json(stubGate(['doctor', `workflow-${stubPlan.plan_id.slice(7)}`], registryB, boundaryB));
+    if (doctorB.ok !== true || doctorB.dispatchIntents !== 1 || doctorB.terminals !== 1
+      || doctorB.harnessFailureTerminals !== 1 || doctorB.ambiguousDispatches !== 0) {
+      throw new Error(`live-stub consumer doctor command failed its integrity contract: ${JSON.stringify(doctorB)}`);
+    }
+  }
   try { await stat(path.join(project, '.juno_task', 'artifacts')); throw new Error('read-only installed acceptance created retained artifacts'); }
   catch (error) { if (error?.code !== 'ENOENT') throw error; }
   process.stdout.write(`${JSON.stringify({ schema_version: 'juno_benchmark_convert_installed_acceptance.v1', plan_id: plan.plan_id, dispatch_count: 0, source_commit: expected.historical_source_commit })}\n`);

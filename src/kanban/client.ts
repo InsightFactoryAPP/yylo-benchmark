@@ -97,6 +97,13 @@ export class PublicKanbanClient {
     const { stdout } = await this.invoke(['--version']);
     const match = /(?:^|\s)(\d+)\.(\d+)\.(\d+)(?:rc\d+)?(?:\s|$)/u.exec(stdout);
     if (match === null || Number(match[1]) !== 0 || Number(match[2]) !== 1) {
+      // A resolved wrapper may report its own task-surface version (for
+      // example `task 2.0.7`) instead of the YYLO Ledger package version;
+      // that surface confusion is a binding problem, not a Ledger downgrade,
+      // and must not be reported as an unsupported Ledger version.
+      if (/(?:^|\s)task\s+\d+\.\d+\.\d+(?:\s|$)/u.test(stdout)) {
+        throw new Error(`resolved Kanban command reports a task surface version, not the YYLO Ledger package version: ${stdout || 'unknown'} (required >=0.1.0rc1,<0.2.0; rebind the consumer to the installed YYLO Ledger runtime)`);
+      }
       throw new Error(`unsupported YYLO Ledger version: ${stdout || 'unknown'} (required >=0.1.0rc1,<0.2.0)`);
     }
     return stdout.trim().split(/\s/u).at(-1) ?? `${match[1]}.${match[2]}.${match[3]}`;

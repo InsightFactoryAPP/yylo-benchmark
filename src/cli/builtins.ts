@@ -5,7 +5,7 @@ import { lintBenchmarkCase } from '../case/lint.js';
 import { canonicalJson } from '../contracts/canonical.js';
 import { CONFIG_FILENAME, CONFIG_SCHEMA_VERSION, loadConfig } from '../config/index.js';
 import { PublicKanbanClient } from '../kanban/client.js';
-import { doctorExperiment } from '../doctor/index.js';
+import { doctorExperiment, doctorWorkflowExperiment, isWorkflowExperimentId } from '../doctor/index.js';
 import { createJunoRunner, readExecutionPlan, regradeExperiment, runExperiment, writeExecutionPlan } from '../execution/index.js';
 import { createSnapshotPreparer } from '../execution/prepare.js';
 import { createPlanFromProject, createWorkflowPlanFromProject } from '../planning/cli.js';
@@ -20,7 +20,7 @@ import { authenticatedLauncherOptionsFromEnvironment, createAuthenticatedJunoRun
 import { createCommandGrader } from '../grading/index.js';
 import { installBenchmarkWikis } from '../wiki/index.js';
 import { generateReleaseReadinessReceipt } from '../release-readiness/index.js';
-import { generateBoundaryReadiness, installReviewedBoundary, BOUNDARY_SUPPORTED_PROVIDERS, loadBoundarySetup } from '../boundary/index.js';
+import { generateBoundaryReadiness, installReviewedBoundary, BOUNDARY_SUPPORTED_PROVIDERS, loadBoundarySetup, resolveWorkflowRegistryRoot } from '../boundary/index.js';
 import { discoverJunoVersion } from '../planning/cli.js';
 import {
   COMMAND_API_VERSION,
@@ -274,6 +274,18 @@ const regrade = definition(['regrade'], 'Regrade retained candidate evidence wit
 
 const doctor = definition(['doctor'], 'Verify retained experiment evidence', 'execution', true, (command, context) => {
   command.argument('<experiment-task-id>').action(async (taskId: string) => {
+    // `workflow-<64-hex>` is a private-registry experiment identity, not a
+    // Kanban task: verify retained workflow evidence without any Ledger read.
+    if (isWorkflowExperimentId(taskId)) {
+      const loaded = await loadConfig({ cwd: context.cwd, ...(context.configPath === undefined ? {} : { configPath: context.configPath }) });
+      const setup = await loadBoundarySetup(loaded.projectRoot).catch(() => null);
+      const configured = setup === null ? resolveWorkflowRegistryRoot(loaded.projectRoot) : setup.registry.root;
+      const ambient = resolveWorkflowRegistryRoot(loaded.projectRoot);
+      if (ambient !== configured) throw new Error(`ambient workflow registry ${ambient} does not match the setup record ${configured}; align YYLO_BENCHMARK_REGISTRY before doctor`);
+      const result = await doctorWorkflowExperiment(new ImmutableArtifactRegistry(configured), taskId);
+      context.writeStdout(`${canonicalJson(result)}\n`);
+      return;
+    }
     const loaded = await loadConfig({ cwd: context.cwd, ...(context.configPath === undefined ? {} : { configPath: context.configPath }) });
     const result = await doctorExperiment(new PublicKanbanClient(loaded), privateRegistry(), taskId);
     context.writeStdout(`${canonicalJson(result)}\n`);

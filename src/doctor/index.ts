@@ -1,7 +1,8 @@
 import { NormalizedResultV1Schema } from '../contracts/schemas.js';
 import { PublicKanbanClient } from '../kanban/client.js';
-import { ImmutableArtifactRegistry } from '../registry/index.js';
+import { ImmutableArtifactRegistry, type ManifestEntry } from '../registry/index.js';
 import { verifyRequiredGraderReceipt } from '../grading/index.js';
+import { readWorkflowEvidenceReceipts } from '../workflow/evidence.js';
 
 export interface ExperimentDoctorResult {
   readonly ok: true;
@@ -9,6 +10,59 @@ export interface ExperimentDoctorResult {
   readonly experimentId: string;
   readonly artifacts: number;
   readonly terminalAttempts: number;
+}
+
+export interface WorkflowExperimentDoctorResult {
+  readonly ok: true;
+  readonly experimentId: string;
+  readonly artifacts: number;
+  readonly dispatchIntents: number;
+  readonly terminals: number;
+  readonly evidenceReceipts: number;
+  readonly judgeIntents: number;
+  readonly reports: number;
+  readonly harnessFailureTerminals: number;
+  readonly ambiguousDispatches: number;
+}
+
+export function isWorkflowExperimentId(value: string): boolean {
+  // Registry experiment identity for workflow plans, never a Kanban task ID.
+  return /^workflow-[0-9a-f]{64}$/u.test(value);
+}
+
+/** Verify retained workflow experiment evidence from the private registry.
+ *
+ * Workflow experiment IDs address registry evidence, not the YYLO Ledger;
+ * this route performs no Ledger read and no version probe, and a completed
+ * harness-failure terminal is retained integrity truth, not a defect.
+ */
+export async function doctorWorkflowExperiment(registry: ImmutableArtifactRegistry, experimentId: string): Promise<WorkflowExperimentDoctorResult> {
+  if (!isWorkflowExperimentId(experimentId)) throw new Error(`experiment identity is invalid: ${experimentId}`);
+  await registry.doctor();
+  const entries = await registry.verifyExperiment(experimentId);
+  const readDispatchId = async (entry: ManifestEntry): Promise<string | null> => {
+    try {
+      const value = JSON.parse((await registry.read(entry)).toString('utf8')) as { dispatch_id?: unknown };
+      return typeof value.dispatch_id === 'string' ? value.dispatch_id : null;
+    } catch {
+      throw new Error(`retained ${entry.role} bytes are malformed for ${experimentId}`);
+    }
+  };
+  const dispatchIntents = entries.filter((entry) => entry.role === 'workflow-dispatch-intent');
+  const judgeIntents = entries.filter((entry) => entry.role === 'workflow-judge-intent');
+  const terminals = entries.filter((entry) => entry.role === 'workflow-step-terminal');
+  const reports = entries.filter((entry) => entry.role === 'workflow-report');
+  const receipts = await readWorkflowEvidenceReceipts(registry, experimentId);
+  const intentDispatchIds = await Promise.all(dispatchIntents.map((entry) => readDispatchId(entry)));
+  const terminalDispatchIds = new Set(await Promise.all(terminals.map((entry) => readDispatchId(entry))));
+  const ambiguousDispatches = intentDispatchIds.filter((dispatchId) => dispatchId === null || !terminalDispatchIds.has(dispatchId)).length;
+  return {
+    ok: true, experimentId, artifacts: entries.length,
+    dispatchIntents: dispatchIntents.length, terminals: terminals.length,
+    evidenceReceipts: receipts.length, judgeIntents: judgeIntents.length, reports: reports.length,
+    harnessFailureTerminals: receipts.filter((receipt) => receipt.harness_validity.status === 'invalid').length,
+    ambiguousDispatches,
+  };
 }
 
 export async function doctorExperiment(client: PublicKanbanClient, registry: ImmutableArtifactRegistry, experimentTaskId: string): Promise<ExperimentDoctorResult> {

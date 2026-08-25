@@ -86,6 +86,58 @@ printf '{"schema_version":"juno_execution_envelope.v1","status":"success","sessi
 exit 0
 `;
 
+// Recording stub: proves the executed argv (exactly one benchmark-owned
+// --execution-envelope in the root position) and the canonical Juno child
+// correlation environment, while emitting a valid stub envelope.
+const RECORDING_YY = `#!/bin/sh
+if [ -n "$YY_STUB_RECORD" ]; then
+  {
+    printf 'argv:'
+    for argument in "$@"; do printf ' <%s>' "$argument"; done
+    printf '\\n'
+    printf 'correlation: child=%s run=%s step=%s surface=%s\\n' "$YYLO_INVOCATION_CHILD" "$YYLO_WORKFLOW_RUN_ID" "$YYLO_WORKFLOW_STEP_ID" "$YYLO_LAUNCH_SURFACE"
+  } >> "$YY_STUB_RECORD"
+fi
+case "$1" in
+  --version) echo "${JUNO_VERSION}"; exit 0 ;;
+esac
+model=""
+prompt=""
+prev=""
+for argument in "$@"; do
+  if [ "$prev" = "--model" ]; then model="$argument"; fi
+  prompt="$argument"
+  prev="$argument"
+done
+case "$model" in :*) model="openai-codex/\${model#:}" ;; esac
+provider="\${model%%/*}"
+name="\${model#*/}"
+session="sess-recording-$$"
+printf '{"schema_version":"juno_execution_envelope.v1","status":"success","session_id":"%s","provider":"%s","model":"%s","juno_version":"%s","cost":{"completeness":"complete","usd":0.42}}\\n' "$session" "$provider" "$name" "${JUNO_VERSION}"
+exit 0
+`;
+
+// Live-shaped harness failure: the child terminates with a known nonzero
+// status and no envelope, exactly like the consumer's controller-resolver
+// refusal observed in live dogfood (exit 99 with a diagnostic on stderr).
+const NO_ENVELOPE_YY = `#!/bin/sh
+printf 'runs\\n' >> "$YY_STUB_RUNS"
+case "$1" in
+  --version) echo "${JUNO_VERSION}"; exit 0 ;;
+esac
+printf 'controller-resolver: retired rollback controller is read-only; run writes from the registered metadata controller\\n' >&2
+exit 99
+`;
+
+// Completed child with a well-formed envelope for the wrong identity.
+const WRONG_IDENTITY_YY = `#!/bin/sh
+case "$1" in
+  --version) echo "${JUNO_VERSION}"; exit 0 ;;
+esac
+printf '{"schema_version":"juno_execution_envelope.v1","status":"success","session_id":"sess-wrong","provider":"other-provider","model":"other-model","juno_version":"${JUNO_VERSION}","cost":{"completeness":"complete","usd":0.42}}\\n'
+exit 0
+`;
+
 interface Harness {
   readonly root: string;
   readonly module: string;
@@ -271,6 +323,74 @@ describe('reviewed workflow boundary module protocol', () => {
     expect(JSON.parse(await readFile(terminal, 'utf8'))).toMatchObject({ dispatch_id: input.dispatch_id });
   });
 
+  it('requests exactly one benchmark-owned envelope flag in the root argv position with child correlation', async () => {
+    const stub = path.join(current.root, 'recording-yy');
+    await writeFile(stub, RECORDING_YY, { mode: 0o755 });
+    const record = path.join(current.root, 'recording.log');
+    setEnv('YYLO_BENCHMARK_JUNO_EXECUTABLE', stub);
+    setEnv('YY_STUB_RECORD', record);
+    const boundary = await liveBoundary();
+    const input = current.invocation('analyze');
+    const result = await boundary.dispatcher.dispatch(input);
+    expect(result.status).toBe('success');
+    const lines = (await readFile(record, 'utf8')).split('\n').filter(Boolean);
+    const argvLine = lines.find((line) => line.startsWith('argv:'));
+    const correlationLine = lines.find((line) => line.startsWith('correlation:'));
+    expect(argvLine).toBeDefined();
+    expect(correlationLine).toBeDefined();
+    const argv = argvLine!.slice('argv:'.length).trim().split(' <').map((item) => item.replace(/>$/u, '').replace(/^</u, ''));
+    // The validated product-owned argv is [yy, pi, --model, <selector>, <prompt>];
+    // the executed argv carries exactly one benchmark-owned transport flag in
+    // the root/global position Juno parses, never after the pi alias.
+    expect(argv[0]).toBe('--execution-envelope');
+    expect(argv[1]).toBe('pi');
+    expect(argv[2]).toBe('--model');
+    expect(argv.filter((item) => item === '--execution-envelope')).toHaveLength(1);
+    expect(argvLine).not.toMatch(/pi <\/?--execution-envelope/u);
+    expect(correlationLine).toBe(`correlation: child=1 run=${input.plan_id} step=analyze surface=yylo-benchmark`);
+  });
+
+  it('retains a redacted harness-failure terminal when a completed child yields no envelope', async () => {
+    const stub = path.join(current.root, 'no-envelope-yy');
+    await writeFile(stub, NO_ENVELOPE_YY, { mode: 0o755 });
+    const runs = path.join(current.root, 'stub-runs.log');
+    setEnv('YYLO_BENCHMARK_JUNO_EXECUTABLE', stub);
+    setEnv('YY_STUB_RUNS', runs);
+    const boundary = await liveBoundary();
+    const input = current.invocation('analyze');
+    const result = await boundary.dispatcher.dispatch(input);
+    expect(result).toMatchObject({ dispatch_id: input.dispatch_id, status: 'failure', effect: 'completed',
+      observed_provider: 'openai-codex', observed_model: 'openai-codex/gpt-5.6-terra', observed_juno_version: JUNO_VERSION });
+    expect(result.evidence.harness_validity).toEqual({ status: 'invalid',
+      reason: expect.stringMatching(/produced no juno_execution_envelope\.v1 terminal identity \(exit 99\)/u) });
+    expect(result.evidence.cost).toEqual({ completeness: 'unavailable', usd: null });
+    expect(result.evidence.candidate_outcome).toEqual({ status: 'failure' });
+    expect(result.evidence.outer_session_id).toMatch(/^boundary-/u);
+    expect(result.evidence.nested_session_ids).toEqual([expect.stringMatching(/^unavailable-/u)]);
+    expect(result.evidence.transcript).toContain('retired rollback controller is read-only');
+    const { terminal } = current.journal(input.dispatch_id);
+    expect(JSON.parse(await readFile(terminal, 'utf8'))).toMatchObject({ dispatch_id: input.dispatch_id });
+    const reconciliation = await boundary.dispatcher.reconcile(input);
+    expect(reconciliation).toMatchObject({ state: 'terminal' });
+    // Recovery never redispatches a completed harness failure.
+    const redispatch = await boundary.dispatcher.dispatch(input);
+    expect(redispatch.evidence.harness_validity.status).toBe('invalid');
+    expect(await readFile(runs, 'utf8')).toBe('runs\n');
+  });
+
+  it('retains a harness-failure terminal on identity-mismatched envelope output', async () => {
+    const stub = path.join(current.root, 'wrong-identity-yy');
+    await writeFile(stub, WRONG_IDENTITY_YY, { mode: 0o755 });
+    setEnv('YYLO_BENCHMARK_JUNO_EXECUTABLE', stub);
+    const boundary = await liveBoundary();
+    const input = current.invocation('analyze');
+    const result = await boundary.dispatcher.dispatch(input);
+    expect(result.status).toBe('failure');
+    expect(result.evidence.harness_validity).toEqual({ status: 'invalid',
+      reason: expect.stringMatching(/terminal identity does not match the exact requested provider\/model\/version \(exit 0\)/u) });
+    expect(result.observed_provider).toBe('openai-codex');
+  });
+
   it('substitutes bound workflow variables and parses quoted and multiline prompts exactly', async () => {
     setEnv('YYLO_BENCHMARK_BOUNDARY_SYNTHETIC', '1');
     const boundary = await liveBoundary();
@@ -360,6 +480,41 @@ describe('reviewed workflow boundary module protocol', () => {
     expect(result.evidence.cost).toEqual({ completeness: 'not_applicable', usd: null });
     expect(result.evidence.transcript).toContain('track argv: [\'--date\', \'2026-08-19\']');
     expect(await readFile(path.join(current.root, 'track-ran.txt'), 'utf8')).toBe('ran\n');
+  });
+
+  it('rejects product-owned workflow argv carrying the benchmark transport flag before durable intent', async () => {
+    // Workflow YAML stays product-owned: a compiled command that already
+    // carries the benchmark envelope transport flag must be refused before
+    // any durable dispatch intent, leaving the step provably not dispatched.
+    const bytes = Buffer.from(`schema_version: 2
+workflow_id: boundary-fixture
+variables:
+  run_date: 1970-01-01
+steps:
+  - id: analyze
+    command:
+      - yy
+      - pi
+      - --execution-envelope
+      - --model
+      - :gpt-5.6-terra
+      - Analyze the 1970-01-01 snapshot
+`, 'utf8');
+    const input = current.invocation('analyze');
+    const { invocation_hash: _ignored, ...core } = input;
+    const forged = {
+      ...core,
+      workflow_bytes_base64: bytes.toString('base64'),
+      workflow_sha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}` as const,
+    };
+    const request = { ...forged, invocation_hash: canonicalHash(forged) };
+    const rejection = await driveModule('dispatch', request);
+    expect(rejection.status).toBe(1);
+    expect(JSON.parse(rejection.stdout)).toMatchObject({ schema_version: 'juno_benchmark_boundary_error.v1',
+      message: expect.stringMatching(/must not carry the benchmark envelope transport flag/u) });
+    await expect(readFile(current.journal(request.dispatch_id).intent, 'utf8')).rejects.toThrow(/ENOENT/u);
+    const reconcile = await driveModule('reconcile', request);
+    expect(JSON.parse(reconcile.stdout)).toEqual({ state: 'proven_not_dispatched' });
   });
 
   it('reconciles proven_not_dispatched, terminal, ambiguous, and safely_resumable exactly', async () => {

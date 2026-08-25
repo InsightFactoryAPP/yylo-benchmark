@@ -13,6 +13,20 @@ async function fixture(overrides: Partial<FakeState> = {}) {
 }
 
 describe('public Kanban control plane', () => {
+  it('distinguishes a wrapper task-surface version from the YYLO Ledger package version', async () => {
+    // Live dogfood observed a legacy controller wrapper whose `--version`
+    // reports `task 2.0.7` (the task surface), which must surface as a
+    // binding problem, never as an unsupported Ledger version claim.
+    const surfaced = await fixture({ version: 'task 2.0.7' });
+    await expect(surfaced.client.getRevisionedTask('CASE1')).rejects.toThrow(
+      /reports a task surface version, not the YYLO Ledger package version: task 2\.0\.7.*rebind the consumer/u);
+    const unsupported = await fixture({ version: 'kanban 9.9.9' });
+    await expect(unsupported.client.getRevisionedTask('CASE1')).rejects.toThrow(
+      /unsupported YYLO Ledger version: kanban 9\.9\.9/u);
+    const supported = await fixture();
+    await expect(supported.client.getRevisionedTask('CASE1')).resolves.toBeTruthy();
+  });
+
   it('uses versioned CLI JSON, exact ledger revision, closed stdin, and complete create receipt', async () => {
     const { client, revision, callsPath } = await fixture();
     const source = await client.getRevisionedTask('CASE1');

@@ -21,6 +21,12 @@
 //   resume     -> terminal result
 //   judge      -> { resolved: boolean, evidence: string }
 //
+// Model-dispatch transport: the boundary owns exactly one --execution-envelope
+// request flag (root/global position) and the canonical Juno child correlation
+// environment. A dispatched child that terminates with a known status but no
+// valid juno_execution_envelope.v1 yields a retained redacted harness-failure
+// terminal; only overflow or timeout before child settlement stays ambiguous.
+//
 // Credential ownership: provider credentials stay in this process's
 // environment (or, for OAuth providers, in the read-only Pi agent auth store
 // the dispatched child itself reads) and are routed only to the exact
@@ -51,6 +57,18 @@ import path from 'node:path';
 
 const PROTOCOL = 'juno_benchmark_workflow_process_boundary.v1';
 const ENVELOPE_SCHEMA = 'juno_execution_envelope.v1';
+// The benchmark owns the machine-output transport request: workflow YAML is
+// product-owned and never carries benchmark transport flags, while the
+// executed argv carries exactly one flag in the root/global position Juno
+// parses (options after the `pi` alias command are silently dropped by
+// Commander's allowUnknownOption passthrough).
+const ENVELOPE_FLAG = '--execution-envelope';
+// Canonical Juno child correlation contract (juno-code invocation lifecycle):
+// an explicit child marks its benchmark workflow run/step and launch surface
+// so the invocation is directly discoverable in telemetry without time-window
+// inference. Values must satisfy Juno's bounded correlation token shape.
+const CHILD_CORRELATION_LAUNCH_SURFACE = 'yylo-benchmark';
+const CHILD_CORRELATION_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/u;
 const JOURNAL_INTENT_SCHEMA = 'juno_benchmark_boundary_dispatch_intent.v1';
 const JOURNAL_TERMINAL_SCHEMA = 'juno_benchmark_boundary_dispatch_terminal.v1';
 const OPERATIONS = new Set(['probe', 'preflight', 'dispatch', 'reconcile', 'resume', 'judge']);
@@ -565,6 +583,19 @@ function boundedTranscript(stdout, stderr) {
   return parts.join('');
 }
 
+function childCorrelationEnvironment(invocation) {
+  // Bind the dispatched child to the benchmark's canonical workflow
+  // run/step identity. Invalid correlation tokens are skipped rather than
+  // weakening the child contract Juno validates independently.
+  const values = [
+    ['YYLO_INVOCATION_CHILD', '1'],
+    ['YYLO_WORKFLOW_RUN_ID', invocation.plan_id],
+    ['YYLO_WORKFLOW_STEP_ID', invocation.step_id],
+    ['YYLO_LAUNCH_SURFACE', CHILD_CORRELATION_LAUNCH_SURFACE],
+  ];
+  return Object.fromEntries(values.filter(([, value]) => typeof value === 'string' && CHILD_CORRELATION_TOKEN.test(value)));
+}
+
 function validatedStepFor(invocation) {
   // Every no-spawn validation of the exact compiled workflow, its resolved
   // argument array, and the deterministic policy prefix happens here, before
@@ -580,6 +611,8 @@ function validatedStepFor(invocation) {
     }
   } else if (step.command[0] !== 'yy' || step.command[1] !== 'pi') {
     fail('model dispatch workflow command must be the canonical yy pi argument array');
+  } else if (step.command.includes(ENVELOPE_FLAG)) {
+    fail('model dispatch workflow command must not carry the benchmark envelope transport flag');
   }
   return step;
 }
@@ -608,8 +641,13 @@ function executeStep(invocation, step) {
     };
   }
 
-  const argv = [resolveExecutable(step.command[0]), ...step.command.slice(1)];
-  const extraEnvironment = deterministicPolicy === null ? {} : Object.fromEntries(deterministicPolicy.environment.map((item) => [item.name, item.value]));
+  const argv = deterministicPolicy === null
+    // Benchmark-owned transport: exactly one envelope request flag in the
+    // root/global position, added to the validated product-owned argv.
+    ? [resolveExecutable(step.command[0]), ENVELOPE_FLAG, ...step.command.slice(1)]
+    : [resolveExecutable(step.command[0]), ...step.command.slice(1)];
+  const extraEnvironment = deterministicPolicy === null ? childCorrelationEnvironment(invocation)
+    : Object.fromEntries(deterministicPolicy.environment.map((item) => [item.name, item.value]));
   const execution = runChild(argv, { timeoutMs: invocation.timeout_ms, extraEnvironment });
   return execution.then(({ outcome, stdout, stderr, overflow, timedOut }) => {
     const endedAt = new Date();
@@ -634,15 +672,32 @@ function executeStep(invocation, step) {
       };
     }
     const envelope = envelopeOf(stdout);
-    if (envelope === null) fail(`workflow step ${step.id} produced no ${ENVELOPE_SCHEMA} terminal identity`);
     const separator = invocation.model.indexOf('/');
     const provider = separator > 0 ? invocation.model.slice(0, separator) : '';
     const modelName = separator > 0 ? invocation.model.slice(separator + 1) : '';
+    const exitLabel = `exit ${outcome.code ?? outcome.signal ?? 'unknown'}`;
+    // A child that terminated with a known status but produced no valid
+    // envelope is a terminal harness failure with retained redacted evidence,
+    // never an intent-only ambiguous external effect: the child provably
+    // completed, so recovery must reuse this terminal rather than redispatch.
+    const harnessFailure = (reason) => ({
+      dispatch_id: invocation.dispatch_id, status: 'failure', effect: 'completed', runner_run_id: runId,
+      observed_provider: invocation.provider, observed_model: invocation.model, observed_juno_version: invocation.juno_version,
+      evidence: {
+        outer_session_id: `boundary-${runId}`, nested_session_ids: [`unavailable-${runId}`],
+        started_at: startedAt.toISOString(), ended_at: endedAt.toISOString(), runtime_ms: runtimeMs,
+        cost: { completeness: 'unavailable', usd: null },
+        candidate_outcome: { status: 'failure' },
+        harness_validity: { status: 'invalid', reason: `${reason} (${exitLabel})` },
+        transcript, artifacts: {},
+      },
+    });
+    if (envelope === null) return harnessFailure(`workflow step ${step.id} produced no ${ENVELOPE_SCHEMA} terminal identity`);
     if (envelope.provider !== provider || envelope.model !== modelName || envelope.juno_version !== invocation.juno_version) {
-      fail(`workflow step ${step.id} terminal identity does not match the exact requested provider/model/version`);
+      return harnessFailure(`workflow step ${step.id} terminal identity does not match the exact requested provider/model/version`);
     }
     if (envelope.session_id === null || typeof envelope.session_id !== 'string' || envelope.session_id.trim() === '') {
-      fail(`workflow step ${step.id} reported no single provable session identity`);
+      return harnessFailure(`workflow step ${step.id} reported no single provable session identity`);
     }
     const cost = envelope.cost !== undefined && envelope.cost !== null
       && ['complete', 'partial', 'unavailable', 'not_applicable'].includes(envelope.cost.completeness)
