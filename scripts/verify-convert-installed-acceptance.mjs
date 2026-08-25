@@ -24,10 +24,11 @@ const temporary = await mkdtemp(path.join(tmpdir(), 'yylo-benchmark-convert-acce
 const project = path.join(temporary, 'project');
 const planPath = path.join(project, 'historical-plan.json');
 
-function execute(executable, commandArgs, cwd = project) {
+function execute(executable, commandArgs, cwd = project, extraEnvironment = {}) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
     !/^YYLO_BENCHMARK_(?:AUTH|REGISTRY|WORK_ROOT)/u.test(key) && !/(?:API_KEY|TOKEN|SECRET|PASSWORD)$/u.test(key)));
   env.PATH = `${path.dirname(path.resolve(benchmark))}${path.delimiter}${env.PATH ?? ''}`;
+  Object.assign(env, extraEnvironment);
   const result = spawnSync(executable, commandArgs, { cwd, env, encoding: 'utf8', input: '', timeout: 120_000, maxBuffer: 32 * 1024 * 1024 });
   if (result.error || result.status !== 0 || result.signal !== null) {
     throw new Error(`${executable} ${commandArgs.join(' ')} failed (${result.error?.message ?? result.status ?? result.signal}): ${result.stderr || result.stdout}`);
@@ -126,6 +127,48 @@ try {
     workflow_semantics: expected.workflow_semantics_sha256, policy_raw: plan.policy_raw_sha256,
     policy_semantics: plan.policy_semantics_sha256, variables: plan.variables_hash }, 'immutable hashes');
   if (json(standalone[1]).dispatch_count !== 0 || json(standalone[2]).candidate_dispatch_count !== 0 || json(standalone[2]).judge_dispatch_count !== 0) throw new Error('recover/rejudge dry-run dispatched work');
+
+  // Installed-consumer dogfood gate (D0tTNr): the tracked Convert Daily Ops
+  // workflow, all 13 stable steps, normal `yy` identity probing, and synthetic
+  // transport prove setup -> readiness -> plan -> dry-run -> first dispatch ->
+  // terminal -> recover with zero provider dispatch and no ambiguity. The
+  // registry is isolated under the temporary root so the read-only assertions
+  // above stay exact.
+  {
+    const registry = path.join(temporary, 'synthetic-registry');
+    const gateEnvironment = extra => ({ YYLO_BENCHMARK_REGISTRY: registry, ...extra });
+    const gate = (argv, extra = {}) => execute(benchmark, argv, project, gateEnvironment(extra));
+    const delegatedGate = (argv, extra = {}) => execute(delegate, ['benchmark', ...argv], project, gateEnvironment(extra));
+    const setup = json(gate(['setup', '--synthetic']));
+    const boundaryEnvironment = {
+      YYLO_BENCHMARK_WORKFLOW_BOUNDARY: setup.environment.YYLO_BENCHMARK_WORKFLOW_BOUNDARY,
+      YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256: setup.environment.YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256,
+    };
+    const readiness = json(gate(['readiness', '--models', ':mini,zai/glm-5.3'], boundaryEnvironment));
+    if (readiness.dispatch_count !== 0) throw new Error('synthetic readiness dispatched work');
+    if (readiness.yylo.executable !== 'yy') throw new Error(`synthetic readiness must probe the normal yy launcher, saw ${readiness.yylo.executable}`);
+    const gatePlanArgs = ['plan', '--workflow', expected.workflow_path, '--steps-file', path.basename(policyPath),
+      '--steps', expected.selected_step_ids.join(','), '--models', ':mini,zai/glm-5.3', '--var', `run_date=${expected.requested_comparison_date}`, '--attempts', '1', '--output', 'synthetic-plan.json', '--dry-run'];
+    const gatePlan = json(gate(gatePlanArgs, boundaryEnvironment));
+    if (gatePlan.selected_step_ids.length !== expected.selected_step_ids.length) throw new Error('synthetic gate must select the full 13-step tracked workflow');
+    const gateDryRun = json(gate(['run', '--plan', 'synthetic-plan.json', '--steps-file', path.basename(policyPath), '--dry-run'], boundaryEnvironment));
+    if (gateDryRun.dispatch_count !== 0) throw new Error('synthetic gate dry-run dispatched work');
+    const gateRun = json(gate(['run', '--plan', 'synthetic-plan.json', '--steps-file', path.basename(policyPath)], boundaryEnvironment));
+    if (gateRun.recovered !== false || gateRun.terminals.length !== expected.selected_step_ids.length * expected.requested_comparison_models.length) {
+      throw new Error(`synthetic gate run terminal contract failed (recovered ${gateRun.recovered}, terminals ${gateRun.terminals.length})`);
+    }
+    for (const terminal of gateRun.terminals) {
+      if (!terminal.result.runner_run_id.startsWith('synthetic-run-')) throw new Error('synthetic gate dispatched a real provider child');
+    }
+    const gateRerun = json(gate(['run', '--plan', 'synthetic-plan.json', '--steps-file', path.basename(policyPath)], boundaryEnvironment));
+    if (gateRerun.recovered !== true) throw new Error('synthetic gate duplicate-dispatch guard failed');
+    const gateRecover = json(gate(['recover', '--plan', 'synthetic-plan.json', '--steps-file', path.basename(policyPath)], boundaryEnvironment));
+    if (gateRecover.recovered !== true) throw new Error('synthetic gate recovery without duplicate execution failed');
+    if (delegate) {
+      const delegatedPlan = delegatedGate(gatePlanArgs.filter((_, index) => gatePlanArgs[index] !== '--output' && gatePlanArgs[index - 1] !== '--output'), boundaryEnvironment);
+      if (delegatedPlan.status !== 0) throw new Error('delegated synthetic gate plan failed');
+    }
+  }
   try { await stat(path.join(project, '.juno_task', 'artifacts')); throw new Error('read-only installed acceptance created retained artifacts'); }
   catch (error) { if (error?.code !== 'ENOENT') throw error; }
   process.stdout.write(`${JSON.stringify({ schema_version: 'juno_benchmark_convert_installed_acceptance.v1', plan_id: plan.plan_id, dispatch_count: 0, source_commit: expected.historical_source_commit })}\n`);

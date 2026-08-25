@@ -137,19 +137,34 @@ function parseScalarFromToken(token) {
     return token.slice(1, -1).replace(/''/gu, "'");
   }
   if (token.startsWith('[') || token.startsWith('{')) throw new Error('flow collections are not part of the compiled workflow form');
+  if (token.includes('\t')) throw new Error('workflow bytes contain a tab outside a block scalar');
   return token;
 }
 
 function parseWorkflowSteps(text) {
+  // Blank lines are structurally insignificant but are retained verbatim
+  // because literal block scalars own them as content: the canonical planner
+  // emits multiline prompt scalars whose blank lines, deeper indentation, and
+  // explicit indentation indicators must round-trip exactly.
   const lines = [];
-  for (const rawLine of text.split(/\r?\n/u)) {
-    if (rawLine.includes('\t')) throw new Error('workflow bytes contain a tab');
-    if (rawLine.trim() === '') continue;
-    const indent = rawLine.length - rawLine.trimStart().length;
-    if (rawLine.slice(0, indent).includes('\t')) throw new Error('workflow bytes contain a tab indent');
-    lines.push({ indent, content: rawLine.trim() });
+  const rawLines = text.split(/\r?\n/u);
+  // A document's final line terminator is not an extra empty line; dropping
+  // exactly one trailing split artifact keeps `|+` chomping byte-exact.
+  if (rawLines.length > 0 && rawLines[rawLines.length - 1] === '') rawLines.pop();
+  for (const rawLine of rawLines) {
+    const blank = rawLine.trim() === '';
+    const indent = /^ */u.exec(rawLine)?.[0].length ?? 0;
+    const tabIndent = !blank && rawLine[indent] === '\t';
+    lines.push({ indent, raw: rawLine, content: blank ? '' : rawLine.trim(), blank, tabIndent });
   }
   let position = 0;
+
+  const skipBlanks = () => {
+    while (position < lines.length && lines[position].blank) position += 1;
+    // Blank lines are legal block-scalar content, but a structural line must
+    // never begin with a tab; this check runs only on structural paths.
+    if (position < lines.length && lines[position].tabIndent) throw new Error('workflow bytes contain a tab indent');
+  };
 
   const splitKey = (content) => {
     const separator = content.indexOf(':');
@@ -160,29 +175,50 @@ function parseWorkflowSteps(text) {
     return { key, rest: rest.trim() === '' ? null : rest.trim() };
   };
 
+  // Block scalar headers the canonical `yaml` emitter produces: `|`, `|-`,
+  // `|+`, plus an optional explicit indentation indicator in either order
+  // (`|2-`, `|-2`) used when the first content line begins with a space.
+  function blockScalarHeader(header) {
+    const rest = header.slice(1);
+    if (!/^(?:[1-9](?:[-+])?|[-+]?[1-9]?)$/u.test(rest)) throw new Error(`unsupported block scalar header: ${header}`);
+    const chomp = rest.includes('-') ? 'strip' : rest.includes('+') ? 'keep' : 'clip';
+    const indicator = /[1-9]/u.exec(rest)?.[0];
+    return { chomp, indicator: indicator === undefined ? null : Number(indicator) };
+  }
+  const isBlockScalarHeader = (token) => token.startsWith('|');
+
   function readBlockScalar(header, lineIndent) {
-    if (!/^\|(?:-|\+)?$/u.test(header)) throw new Error(`unsupported block scalar header: ${header}`);
-    const chomp = header.endsWith('-') ? 'strip' : header.endsWith('+') ? 'keep' : 'clip';
+    if (!isBlockScalarHeader(header)) throw new Error(`unsupported block scalar header: ${header}`);
+    const { chomp, indicator } = blockScalarHeader(header);
     const collected = [];
-    let blockIndent = null;
+    let blockIndent = indicator === null ? null : lineIndent + indicator;
     while (position < lines.length) {
       const line = lines[position];
+      // A blank line is owned by the open scalar (it survives as content or is
+      // consumed by chomping); only a non-blank dedent closes the scalar.
+      if (line.blank) {
+        collected.push(blockIndent === null || line.raw.length < blockIndent ? '' : line.raw.slice(blockIndent));
+        position += 1;
+        continue;
+      }
       if (line.indent <= lineIndent) break;
       if (blockIndent === null) blockIndent = line.indent;
-      if (line.indent !== blockIndent) throw new Error('block scalar indentation is inconsistent');
-      collected.push(line.content);
+      if (line.indent < blockIndent) break;
+      collected.push(line.raw.slice(blockIndent));
       position += 1;
     }
     if (blockIndent === null) throw new Error('block scalar has no content');
-    let value = collected.join('\n');
-    if (chomp === 'clip') value += '\n';
-    else if (chomp === 'keep') value += '\n\n';
+    let value = collected.map((lineText) => `${lineText}\n`).join('');
+    if (chomp === 'strip') value = value.replace(/\n+$/u, '');
+    else if (chomp === 'clip') value = value.replace(/\n+$/u, '\n');
     return value;
   }
 
   function readSequence(indent) {
     const items = [];
     while (position < lines.length) {
+      skipBlanks();
+      if (position >= lines.length) break;
       const line = lines[position];
       if (line.indent !== indent || !(line.content === '-' || line.content.startsWith('- '))) {
         if (line.indent >= indent) throw new Error('workflow sequence indentation is inconsistent');
@@ -191,13 +227,14 @@ function parseWorkflowSteps(text) {
       const rest = line.content === '-' ? '' : line.content.slice(2).trim();
       position += 1;
       if (rest === '') {
+        skipBlanks();
         if (position >= lines.length || lines[position].indent <= indent) throw new Error('workflow sequence item is empty');
         items.push(readNode(lines[position].indent));
       } else if (/^[^:]+:/u.test(rest) && !rest.startsWith('"') && !rest.startsWith("'")) {
         // Mapping whose first entry shares the dash line.
         const entryIndent = indent + 2;
         items.push(readMapping(entryIndent, [rest]));
-      } else if (/^\|(?:-|\+)?$/u.test(rest)) {
+      } else if (isBlockScalarHeader(rest)) {
         items.push(readBlockScalar(rest, indent));
       } else {
         items.push(parseScalarFromToken(rest));
@@ -212,7 +249,10 @@ function parseWorkflowSteps(text) {
       const { key, rest } = splitKey(content);
       if (entries.has(key)) throw new Error('workflow mapping has duplicate keys');
       if (rest === null) {
+        const saved = position;
+        skipBlanks();
         const next = lines[position];
+        position = saved;
         if (next === undefined) throw new Error('workflow mapping value is missing');
         if (next.indent === indent && (next.content === '-' || next.content.startsWith('- '))) {
           entries.set(key, readSequence(indent));
@@ -221,7 +261,7 @@ function parseWorkflowSteps(text) {
         } else {
           entries.set(key, null);
         }
-      } else if (/^\|(?:-|\+)?$/u.test(rest)) {
+      } else if (isBlockScalarHeader(rest)) {
         entries.set(key, readBlockScalar(rest, indent));
       } else {
         entries.set(key, parseScalarFromToken(rest));
@@ -229,6 +269,8 @@ function parseWorkflowSteps(text) {
     };
     for (const content of carried) consume(content);
     while (position < lines.length) {
+      skipBlanks();
+      if (position >= lines.length) break;
       const line = lines[position];
       if (line.indent !== indent) {
         if (line.indent > indent) throw new Error('workflow mapping indentation is inconsistent');
@@ -242,13 +284,17 @@ function parseWorkflowSteps(text) {
   }
 
   function readNode(indent) {
+    skipBlanks();
     const line = lines[position];
+    if (line === undefined) throw new Error('workflow node is missing');
     if (line.content === '-' || line.content.startsWith('- ')) return readSequence(indent);
     return readMapping(indent, []);
   }
 
-  if (lines.length === 0 || lines[0].indent !== 0) throw new Error('workflow document must start at column zero');
+  skipBlanks();
+  if (position >= lines.length || lines[position].indent !== 0) throw new Error('workflow document must start at column zero');
   const document = readNode(0);
+  skipBlanks();
   if (position !== lines.length) throw new Error('workflow document has trailing unconsumed content');
   const steps = document instanceof Map ? document.get('steps') : undefined;
   if (!Array.isArray(steps)) throw new Error('workflow document has no steps sequence');
@@ -465,7 +511,11 @@ function boundedTranscript(stdout, stderr) {
   return parts.join('');
 }
 
-function executeStep(invocation) {
+function validatedStepFor(invocation) {
+  // Every no-spawn validation of the exact compiled workflow, its resolved
+  // argument array, and the deterministic policy prefix happens here, before
+  // any durable dispatch intent exists: a rejected request must remain
+  // provably not dispatched and recoverable without deleting evidence.
   const step = compiledStepFor(invocation);
   const deterministicPolicy = step.deterministic;
   if (deterministicPolicy !== null) {
@@ -477,6 +527,11 @@ function executeStep(invocation) {
   } else if (step.command[0] !== 'yy' || step.command[1] !== 'pi') {
     fail('model dispatch workflow command must be the canonical yy pi argument array');
   }
+  return step;
+}
+
+function executeStep(invocation, step) {
+  const deterministicPolicy = step.deterministic;
   const runId = `${synthetic ? 'synthetic-run' : 'run'}-${String(invocation.dispatch_id).replace(/^sha256:/u, '').slice(0, 16)}`;
   const startedAt = new Date();
   const monotonic = process.hrtime.bigint();
@@ -605,13 +660,16 @@ async function main() {
     if (!Number.isInteger(invocation.timeout_ms) || invocation.timeout_ms <= 0) fail('dispatch invocation timeout is invalid');
     const priorTerminal = readTerminal(invocation);
     if (priorTerminal !== null) { process.stdout.write(JSON.stringify(priorTerminal)); return; }
+    // Resolve and fully validate the compiled workflow command before any
+    // durable intent: validation rejection stays proven_not_dispatched.
+    const step = validatedStepFor(invocation);
     const recorded = recordIntent(invocation);
     if (recorded === 'terminal') { process.stdout.write(JSON.stringify(readTerminal(invocation))); return; }
     if (recorded === 'intent') {
       if (operation === 'dispatch') fail('a prior dispatch intent exists without terminal evidence; reconcile before any re-dispatch');
       // resume falls through: reconcile already proved the step safely resumable.
     }
-    const result = await executeStep(invocation);
+    const result = await executeStep(invocation, step);
     recordTerminal(invocation, result);
     process.stdout.write(JSON.stringify(result));
     return;

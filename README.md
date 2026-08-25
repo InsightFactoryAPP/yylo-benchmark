@@ -75,7 +75,13 @@ reviewed module answers model dispatch and judge operations deterministically, s
 step children, and labels every synthetic terminal, so release tests and consumers without
 credentials can exercise the complete lifecycle with zero provider dispatch. The packaged
 `scripts/verify-installed-boundary-acceptance.mjs` runs that full gate against an installed
-`yylo-benchmark` executable. Live preflight fails closed when a provider credential
+`yylo-benchmark` executable; `--normal-yy 1` additionally proves the identity surface against
+the real PATH-resolved `yy` wrapper instead of the stand-in, and asserts that hash-consistent
+but unparsable compiled bytes are rejected before any durable intent with a
+`proven_not_dispatched` reconciliation. `scripts/verify-convert-installed-acceptance.mjs`
+runs the tracked Convert Daily Ops workflow through setup -> readiness -> plan -> dry-run ->
+synthetic first dispatch -> terminal -> recover with normal `yy` identity probing and zero
+provider dispatch. Live preflight fails closed when a provider credential
 (`OPENAI_CODEX_TOKEN`, `ZAI_API_KEY`), the exact model identity, or the exact YYLO version
 is missing before any durable dispatch intent exists, and the boundary keeps a private
 dispatch journal so recovery reconciles exact truth instead of guessing.
@@ -117,7 +123,10 @@ identity-mismatched, or nonzero responses fail closed. Recovery reuses retained 
 asks the boundary to reconcile durable intent before a policy-permitted resume. Rejudge reads
 the complete content-addressed receipt set, dispatches no candidate, and appends a new governed
 judgement generation plus report.
-The public runtime writes durable intent before dispatch, takes persistent typed locks,
+The public runtime fully validates the compiled workflow bytes, resolves the exact
+command, and checks the deterministic policy prefix before writing any durable dispatch
+intent, so a rejected request stays provably not dispatched and recoverable without
+deleting evidence. It takes persistent typed locks,
 keeps production model experiments sequential, and makes ambiguous external effects
 manual. Recovery reconciles retained intent/terminal evidence before any safe resume.
 Rejudge uses retained blinded candidate truth and never accepts a candidate dispatcher.

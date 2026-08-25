@@ -9,7 +9,8 @@
 // usage: node verify-installed-boundary-acceptance.mjs --benchmark <installed yylo-benchmark> [--delegate <installed yy>]
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile, chmod } from 'node:fs/promises';
+import { closeSync, openSync } from 'node:fs';
+import { mkdtemp, mkdir, readdir, readFile, rm, stat, writeFile, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,9 +20,10 @@ const args = new Map();
 for (let index = 2; index < process.argv.length; index += 2) args.set(process.argv[index], process.argv[index + 1]);
 const benchmark = args.get('--benchmark');
 const delegate = args.get('--delegate');
+const normalYy = args.get('--normal-yy') === '1';
 const junoVersion = args.get('--juno-version') ?? '0.0.0-acceptance';
 if (!benchmark) {
-  process.stderr.write('usage: node verify-installed-boundary-acceptance.mjs --benchmark <installed yylo-benchmark> [--delegate <installed yy>] [--juno-version <version>]\n');
+  process.stderr.write('usage: node verify-installed-boundary-acceptance.mjs --benchmark <installed yylo-benchmark> [--delegate <installed yy>] [--normal-yy 1] [--juno-version <version>]\n');
   process.exit(2);
 }
 
@@ -56,7 +58,20 @@ printf 'unexpected invocation: %s\\n' "$*"
 exit 3
 `);
 await chmod(fakeYy, 0o755);
-const identityEnvironment = { YYLO_BENCHMARK_JUNO_EXECUTABLE: fakeYy, YYLO_BENCHMARK_JUNO_VERSION: junoVersion };
+// --normal-yy proves the identity surface against the real installed wrapper
+// (PATH-resolved `yy`) instead of the stand-in: the boundary must probe the
+// normal launcher successfully under the benchmark parent's environment.
+let identityExecutable = fakeYy;
+let identityVersion = junoVersion;
+if (normalYy) {
+  const resolved = spawnSync('sh', ['-c', 'command -v yy'], { encoding: 'utf8' });
+  if (resolved.status !== 0 || !resolved.stdout.trim()) throw new Error('--normal-yy 1 requires a real `yy` executable on PATH');
+  identityExecutable = resolved.stdout.trim();
+  const probed = spawnSync(identityExecutable, ['--version'], { encoding: 'utf8', timeout: 60_000 });
+  if (probed.status !== 0 || !/^\d+\.\d+\.\d+/.test(probed.stdout.trim())) throw new Error(`normal yy identity probe failed (${probed.status}): ${probed.stderr}`);
+  identityVersion = probed.stdout.trim();
+}
+const identityEnvironment = { YYLO_BENCHMARK_JUNO_EXECUTABLE: identityExecutable, YYLO_BENCHMARK_JUNO_VERSION: identityVersion };
 
 try {
   await mkdir(project, { recursive: true });
@@ -76,7 +91,16 @@ variables:
   run_date: '1970-01-01'
 steps:
   - id: analyze
-    command: [yy, pi, "Analyze the $(run_date) snapshot without rewriting this prompt"]
+    command:
+      - yy
+      - pi
+      - |
+        Analyze the $(run_date) snapshot without rewriting this prompt
+
+        Context:
+        - multiline prompt with blank lines
+          and deeper continuation indentation
+        Finish with one line.
   - id: compute
     command: [env, PYTHONPATH=., python3, scripts/track.py, "--date", "$(run_date)"]
 `);
@@ -110,7 +134,7 @@ steps:
   same(readiness.transport ?? readiness.boundary.transport, 'synthetic', 'readiness transport');
   same(readiness.providers, ['openai-codex', 'zai'], 'readiness providers');
   same(readiness.models.map((item) => item.model), ['openai-codex/gpt-5.6-terra', 'zai/glm-5.3'], 'readiness exact models');
-  same(readiness.yylo.version, junoVersion, 'readiness YYLO version binding');
+  same(readiness.yylo.version, identityVersion, 'readiness YYLO version binding');
   if (JSON.stringify(readiness).includes('TOKEN') || JSON.stringify(readiness).includes('API_KEY')) throw new Error('readiness receipt leaked credential-shaped material');
 
   const planArgs = ['plan', '--workflow', 'workflow.yaml', '--steps-file', 'policy.yaml', '--models', ':mini,zai/glm-5.3', '--var', 'run_date=2026-08-19', '--output', 'plan.json', '--dry-run'];
@@ -124,7 +148,7 @@ steps:
   }
   same(plan.selected_step_ids, ['analyze', 'compute'], 'selected steps');
   same(plan.models, ['openai-codex/gpt-5.6-terra', 'zai/glm-5.3'], 'exact models');
-  same(plan.runtime_binding.juno_version, junoVersion, 'plan YYLO version');
+  same(plan.runtime_binding.juno_version, identityVersion, 'plan YYLO version');
   same(plan.runtime_binding.boundary.sha256, `sha256:${boundaryEnvironment.YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256}`, 'plan boundary binding');
 
   const dryRun = json(execute(benchmark, ['run', '--plan', 'plan.json', '--steps-file', 'policy.yaml', '--dry-run'], project, { ...identityEnvironment, ...boundaryEnvironment }));
@@ -148,6 +172,44 @@ steps:
   same(rejudge.candidate_dispatch_count, 0, 'rejudge candidate dispatch');
   same(rejudge.judge_dispatch_count, 4, 'rejudge governed judge count');
   same(rejudge.boundary.sha256, `sha256:${boundaryEnvironment.YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256}`, 'rejudge boundary identity');
+
+  // A hash-consistent but unparsable compiled workflow must be rejected by the
+  // boundary's own reader before any durable dispatch intent: no journal file
+  // may exist and reconcile must report proven_not_dispatched, so a validation
+  // failure before child spawn never becomes ambiguous manual recovery.
+  {
+    const stateRoot = path.join(project, '.juno_task', 'artifacts', 'yylo-benchmark', 'boundary-state');
+    const bytes = Buffer.from('steps: [ {id: broken\n', 'utf8');
+    const invalidInvocation = {
+      dispatch_id: `sha256:${'e'.repeat(64)}`, invocation_hash: `sha256:${'f'.repeat(64)}`,
+      plan_id: `sha256:${'1'.repeat(64)}`, model: 'openai-codex/gpt-5.6-terra', provider: 'openai-codex',
+      attempt: 1, step_id: 'analyze', workflow_sha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+      workflow_bytes_base64: bytes.toString('base64'), variables: {}, timeout_ms: 10_000,
+      deterministic_command: null, juno_version: identityVersion,
+    };
+    const driveBoundary = async (operation, invocation) => {
+      const requestFile = path.join(temporary, `invalid-${operation}-request.json`);
+      await writeFile(requestFile, `${JSON.stringify({ invocation })}\n`, { mode: 0o600 });
+      const descriptor = openSync(requestFile, 'r');
+      try {
+        return spawnSync(process.execPath, ['--input-type=module', '-', operation, '--protocol', 'juno_benchmark_workflow_process_boundary.v1'],
+          { input: installedBytes, env: { ...process.env, ...boundaryEnvironment, YYLO_BENCHMARK_BOUNDARY_STATE_ROOT: stateRoot }, stdio: ['pipe', 'pipe', 'pipe', descriptor], timeout: 60_000 });
+      } finally { closeSync(descriptor); }
+    };
+    const rejection = await driveBoundary('dispatch', invalidInvocation);
+    if (rejection.status !== 1) throw new Error(`unparsable compiled bytes were not rejected (exit ${rejection.status})`);
+    const rejectionDocument = JSON.parse(rejection.stdout.toString());
+    if (rejectionDocument.schema_version !== 'juno_benchmark_boundary_error.v1' || !/cannot be parsed/u.test(rejectionDocument.message)) {
+      throw new Error(`unparsable compiled bytes rejection was not the parser contract: ${rejection.stdout}`);
+    }
+    const journals = await readdir(stateRoot).catch(() => []);
+    const invalidHex = 'e'.repeat(64);
+    if (journals.includes(`dispatch-${invalidHex}.intent.json`)) throw new Error('validation rejection left a durable dispatch intent for the rejected dispatch identity');
+    const reconcile = await driveBoundary('reconcile', invalidInvocation);
+    if (reconcile.status !== 0 || JSON.parse(reconcile.stdout.toString()).state !== 'proven_not_dispatched') {
+      throw new Error(`validation rejection did not reconcile as proven_not_dispatched: ${reconcile.stdout}`);
+    }
+  }
 
   // Synthetic transport spawned no step children: the deterministic tracked
   // script never executed, proving zero external effect.

@@ -1,8 +1,10 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { closeSync, openSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { parse as parseYaml } from 'yaml';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { canonicalHash } from '../../src/contracts/canonical.js';
 import { compileWorkflowOverlay, parseWorkflowBytes, type DeterministicCommandPolicy, type WorkflowPolicy } from '../../src/workflow/plan.js';
@@ -24,7 +26,11 @@ steps:
       - pi
       - |
         Summarize line one
-        line two with: colon and "quotes"
+
+        Context:
+        - with: colon and "quotes"
+          deeper continuation line
+        line two
   - id: compute
     command: [env, PYTHONPATH=., python3, scripts/track.py, --date, "$(run_date)"]
 `;
@@ -72,6 +78,10 @@ esac
 provider="\${model%%/*}"
 name="\${model#*/}"
 session="sess-$(echo "$model" | tr -c 'A-Za-z0-9._-' '-')-$$"
+# Echo the exact final prompt argument on stderr so byte-level argv parity
+# with the canonical planner is provable from retained terminal evidence.
+for argument in "$@"; do :; done
+printf '%s' "$argument" >&2
 printf '{"schema_version":"juno_execution_envelope.v1","status":"success","session_id":"%s","provider":"%s","model":"%s","juno_version":"%s","cost":{"completeness":"complete","usd":0.42}}\\n' "$session" "$provider" "$name" "${JUNO_VERSION}"
 exit 0
 `;
@@ -83,6 +93,7 @@ interface Harness {
   readonly stateRoot: string;
   compiled(model: string): ReturnType<typeof compileWorkflowOverlay>;
   invocation(stepId: string, overrides?: Partial<Record<string, unknown>>): WorkflowRuntimeInvocation;
+  invocationFor(compiled: ReturnType<typeof compileWorkflowOverlay>, stepId: string): WorkflowRuntimeInvocation;
   journal(dispatchId: string): { intent: string; terminal: string };
 }
 
@@ -115,8 +126,17 @@ async function harness(): Promise<Harness> {
       deterministic_command: stepId === 'compute' ? DETERMINISTIC : null, juno_version: JUNO_VERSION };
     return Object.freeze({ ...invocationCore, ...(overrides ?? {}), invocation_hash: canonicalHash({ ...invocationCore, ...(overrides ?? {}) }) }) as WorkflowRuntimeInvocation;
   };
+  const invocationFor = (compiledItem: ReturnType<typeof compileWorkflowOverlay>, stepId: string): WorkflowRuntimeInvocation => {
+    const core = { plan_id: 'sha256:' + '1'.repeat(64), model: compiledItem.model, provider: compiledItem.provider, attempt: 1, step_id: stepId,
+      workflow_sha256: compiledItem.workflow_sha256, variables_hash: canonicalHash({}), policy_sha256: 'sha256:' + '2'.repeat(64) };
+    const dispatchId = canonicalHash(core);
+    const invocationCore = { dispatch_id: dispatchId, plan_id: core.plan_id, model: compiledItem.model, provider: compiledItem.provider,
+      attempt: 1, step_id: stepId, workflow_sha256: compiledItem.workflow_sha256, workflow_bytes_base64: compiledItem.workflow_bytes_base64,
+      variables: {}, timeout_ms: 10_000, deterministic_command: null, juno_version: JUNO_VERSION };
+    return Object.freeze({ ...invocationCore, invocation_hash: canonicalHash(invocationCore) }) as WorkflowRuntimeInvocation;
+  };
   return {
-    root, module: packagedBoundaryModulePath(), sha256: boundarySha256Hex(await packagedBoundaryBytes()), stateRoot, compiled, invocation,
+    root, module: packagedBoundaryModulePath(), sha256: boundarySha256Hex(await packagedBoundaryBytes()), stateRoot, compiled, invocation, invocationFor,
     journal: (dispatchId: string) => {
       const hex = dispatchId.replace(/^sha256:/u, '');
       return { intent: path.join(stateRoot, `dispatch-${hex}.intent.json`), terminal: path.join(stateRoot, `dispatch-${hex}.terminal.json`) };
@@ -151,6 +171,26 @@ afterEach(async () => {
 
 async function liveBoundary(): Promise<ReviewedWorkflowBoundary> {
   return createReviewedWorkflowBoundary({ module: current.module, sha256: current.sha256 });
+}
+
+// Drive the reviewed module exactly as the runtime spawns it: module bytes on
+// stdin, one JSON request on descriptor 3. Used where the public runtime's own
+// pre-validation would otherwise shadow the boundary's independent contract.
+async function driveModule(operation: string, invocation: unknown): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  const requestFile = path.join(current.root, `boundary-request-${Math.random().toString(16).slice(2)}.json`);
+  await writeFile(requestFile, `${JSON.stringify(operation === 'reconcile' ? { invocation } : { invocation })}\n`, { mode: 0o600 });
+  const descriptor = openSync(requestFile, 'r');
+  try {
+    const result = spawnSync(process.execPath, ['--input-type=module', '-', operation, '--protocol', 'juno_benchmark_workflow_process_boundary.v1'], {
+      input: await readFile(current.module),
+      env: { ...process.env },
+      stdio: ['pipe', 'pipe', 'pipe', descriptor],
+      timeout: 30_000,
+    });
+    return { status: result.status, stdout: result.stdout?.toString() ?? '', stderr: result.stderr?.toString() ?? '' };
+  } finally {
+    closeSync(descriptor);
+  }
 }
 
 describe('reviewed workflow boundary module protocol', () => {
@@ -204,9 +244,79 @@ describe('reviewed workflow boundary module protocol', () => {
     const analyze = await boundary.dispatcher.dispatch(current.invocation('analyze'));
     expect(analyze.evidence.transcript).toContain('Analyze the 2026-08-19 snapshot');
     const summarize = await boundary.dispatcher.dispatch(current.invocation('summarize'));
-    expect(summarize.evidence.transcript).toContain('Summarize line one\nline two with: colon and "quotes"');
+    expect(summarize.evidence.transcript).toContain('Summarize line one\n\nContext:\n- with: colon and "quotes"\n  deeper continuation line\nline two\n');
     const compute = await boundary.dispatcher.dispatch(current.invocation('compute'));
     expect(compute.evidence.transcript).toContain('--date 2026-08-19');
+  });
+
+  it('round-trips every canonical planner block-scalar form through the exact dispatched argv', async () => {
+    // The Convert Daily Ops planner emits multiline prompt scalars with blank
+    // lines, deeper content indentation, trailing-newline variants, explicit
+    // indentation indicators, and tabs inside content; the boundary reader
+    // must accept each byte stream the same compiler produces, exactly.
+    const prompts = [
+      'clip line\nsecond line\n',
+      'strip line\nsecond line',
+      'keep line\nsecond line\n\n',
+      'blank\n\ninterior\n\nlines\n',
+      'deeper\n  indented continuation\nback\n',
+      'spaces on blank\n   \nline\n',
+      '  leading space first\nsecond\n',
+      'tab\n\tcontent\nline\n',
+      '%ralph-loop Do the thing.\n\nContext:\n- item: one\n  deeper: two\n\nFinish with:\n  AGENT_RESPONSE_ONE_LINE: <one sentence>\n',
+    ];
+    const boundary = await liveBoundary();
+    for (const [index, prompt] of prompts.entries()) {
+      const source = `schema_version: 2\nworkflow_id: boundary-fixture-${index}\nvariables:\n  run_date: '1970-01-01'\nsteps:\n  - id: prompt_step\n    command: [yy, pi, ${JSON.stringify(prompt)}]\n`;
+      const parsed = parseWorkflowBytes(Buffer.from(source, 'utf8'));
+      const compiled = compileWorkflowOverlay(parsed, ['prompt_step'], {
+        selector: ':gpt-5.6-terra', exact: 'openai-codex/gpt-5.6-terra', provider: 'openai-codex', modelName: 'gpt-5.6-terra',
+      }, [], POLICY);
+      const text = Buffer.from(compiled.workflow_bytes_base64, 'base64').toString('utf8');
+      const canonical = (parseYaml(text) as { steps: Array<{ command: string[] }> }).steps[0]!.command;
+      expect(canonical[canonical.length - 1]).toBe(prompt);
+      const invocation = current.invocationFor(compiled, 'prompt_step');
+      const result = await boundary.dispatcher.dispatch(invocation);
+      expect(result.status).toBe('success');
+      expect(result.evidence.transcript).toContain(`[stderr]\n${prompt}`);
+      const { intent } = current.journal(invocation.dispatch_id);
+      expect(JSON.parse(await readFile(intent, 'utf8'))).toMatchObject({ dispatch_id: invocation.dispatch_id, transport: 'live' });
+    }
+  });
+
+  it('rejects unparsable compiled workflow bytes inside the boundary before any durable dispatch intent', async () => {
+    // The public runtime re-parses with its own YAML stack, so this proof
+    // drives the reviewed module directly: hash-consistent garbage bytes must
+    // be rejected by the boundary's own reader with no intent journal, leaving
+    // reconcile to report proven_not_dispatched.
+    const input = current.invocation('analyze');
+    const bytes = Buffer.from('steps: [ {id: broken\n', 'utf8');
+    const { invocation_hash: _ignored, ...core } = input;
+    const forged = {
+      ...core,
+      workflow_bytes_base64: bytes.toString('base64'),
+      workflow_sha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}` as const,
+    };
+    const invocationHash = canonicalHash(forged);
+    const request = { ...forged, invocation_hash: invocationHash };
+    const rejection = await driveModule('dispatch', request);
+    expect(rejection.status).toBe(1);
+    expect(JSON.parse(rejection.stdout)).toMatchObject({ schema_version: 'juno_benchmark_boundary_error.v1', message: expect.stringMatching(/cannot be parsed/u) });
+    await expect(readFile(current.journal(request.dispatch_id).intent, 'utf8')).rejects.toThrow(/ENOENT/u);
+    const reconcile = await driveModule('reconcile', request);
+    expect(reconcile.status).toBe(0);
+    expect(JSON.parse(reconcile.stdout)).toEqual({ state: 'proven_not_dispatched' });
+  });
+
+  it('rejects deterministic policy drift inside the boundary before any durable dispatch intent', async () => {
+    const drifted = current.invocation('compute', { deterministic_command: { ...DETERMINISTIC, script: 'scripts/other.py' } });
+    const rejection = await driveModule('dispatch', drifted);
+    expect(rejection.status).toBe(1);
+    expect(JSON.parse(rejection.stdout)).toMatchObject({ schema_version: 'juno_benchmark_boundary_error.v1', message: expect.stringMatching(/drifted from the exact policy binding/u) });
+    await expect(readFile(current.journal(drifted.dispatch_id).intent, 'utf8')).rejects.toThrow(/ENOENT/u);
+    const reconcile = await driveModule('reconcile', drifted);
+    expect(reconcile.status).toBe(0);
+    expect(JSON.parse(reconcile.stdout)).toEqual({ state: 'proven_not_dispatched' });
   });
 
   it('dispatches a live deterministic step through its exact tracked script', async () => {
