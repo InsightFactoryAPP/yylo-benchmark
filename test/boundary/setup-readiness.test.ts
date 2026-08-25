@@ -65,13 +65,16 @@ beforeEach(async () => {
   fakeYy = path.join(root, 'fake-yy');
   await writeFile(fakeYy, FAKE_YY, { mode: 0o755 });
   await chmod(fakeYy, 0o755);
-  for (const name of ['YYLO_BENCHMARK_JUNO_EXECUTABLE', 'YYLO_BENCHMARK_JUNO_VERSION', 'YYLO_BENCHMARK_REGISTRY', 'YYLO_BENCHMARK_WORKFLOW_BOUNDARY', 'YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256', 'YYLO_BENCHMARK_BOUNDARY_SYNTHETIC', 'OPENAI_CODEX_TOKEN', 'ZAI_API_KEY']) {
+  for (const name of ['YYLO_BENCHMARK_JUNO_EXECUTABLE', 'YYLO_BENCHMARK_JUNO_VERSION', 'YYLO_BENCHMARK_REGISTRY', 'YYLO_BENCHMARK_WORKFLOW_BOUNDARY', 'YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256', 'YYLO_BENCHMARK_BOUNDARY_SYNTHETIC', 'YYLO_BENCHMARK_BOUNDARY_PI_AUTH_PATH', 'OPENAI_CODEX_TOKEN', 'ZAI_API_KEY']) {
     saved[name] = process.env[name];
   }
   setEnv('YYLO_BENCHMARK_JUNO_EXECUTABLE', fakeYy);
   setEnv('YYLO_BENCHMARK_JUNO_VERSION', JUNO_VERSION);
   setEnv('YYLO_BENCHMARK_REGISTRY', undefined);
   setEnv('YYLO_BENCHMARK_BOUNDARY_SYNTHETIC', undefined);
+  // Pin the auth-store probe to an absent fixture path so "live credentials
+  // are absent" stays deterministic on hosts holding a real Pi auth store.
+  setEnv('YYLO_BENCHMARK_BOUNDARY_PI_AUTH_PATH', path.join(root, 'absent-auth-store.json'));
   setEnv('OPENAI_CODEX_TOKEN', undefined);
   setEnv('ZAI_API_KEY', undefined);
 });
@@ -139,6 +142,16 @@ describe('boundary setup and readiness', () => {
   it('fails closed when live credentials are absent and stays honest about transport', async () => {
     await capture(root, ['setup']);
     await expect(runCli(['readiness', '--models', ':mini'], { cwd: root })).rejects.toThrow(/OPENAI_CODEX_TOKEN/u);
+  });
+
+  it('authenticates live readiness from a valid Pi agent auth store entry without an environment credential', async () => {
+    await capture(root, ['setup']);
+    const store = path.join(root, 'agent-auth.json');
+    await writeFile(store, `${JSON.stringify({ 'openai-codex': { type: 'oauth', access: 'fixture-access', refresh: 'fixture-refresh', expires: Date.now() + 3_600_000 } })}\n`, { mode: 0o600 });
+    setEnv('YYLO_BENCHMARK_BOUNDARY_PI_AUTH_PATH', store);
+    const receipt = await capture(root, ['readiness', '--models', ':mini']);
+    expect(receipt).toMatchObject({ dispatch_count: 0, boundary: { transport: 'live' }, models: [{ selector: ':mini', model: 'openai-codex/gpt-5.6-terra', provider: 'openai-codex', authenticated: true }] });
+    expect(JSON.stringify(receipt)).not.toMatch(/TOKEN|SECRET|PASSWORD|API_KEY|credential/u);
   });
 
   it('fails closed when the installed boundary bytes drift', async () => {

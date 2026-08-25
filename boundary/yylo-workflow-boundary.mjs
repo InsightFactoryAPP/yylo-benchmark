@@ -22,9 +22,10 @@
 //   judge      -> { resolved: boolean, evidence: string }
 //
 // Credential ownership: provider credentials stay in this process's
-// environment and are routed only to the exact requested child argv. The
-// benchmark planner, plans, receipts, and reports only ever see provider
-// names, never credential material.
+// environment (or, for OAuth providers, in the read-only Pi agent auth store
+// the dispatched child itself reads) and are routed only to the exact
+// requested child argv. The benchmark planner, plans, receipts, and reports
+// only ever see provider names, never credential material.
 //
 // Durable ambiguity-safe recovery: before any consequential child spawn the
 // boundary writes a private dispatch journal intent bound to the exact
@@ -45,6 +46,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { closeSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs';
+import { homedir } from 'node:os';
 import path from 'node:path';
 
 const PROTOCOL = 'juno_benchmark_workflow_process_boundary.v1';
@@ -58,6 +60,15 @@ const PROVIDER_CREDENTIALS = Object.freeze({
 });
 const MAX_CREDENTIAL_BYTES = 64 * 1024;
 const SAFE_CREDENTIAL_TOKEN = /^[A-Za-z0-9._~-]+$/u;
+// The dispatched `yy pi` child authenticates OAuth providers from the Pi
+// agent auth store (populated by `yy auth import-codex` from the Codex native
+// store). A valid unexpired entry there is authoritative credential proof:
+// preflight must not demand a second copy of an existing credential in the
+// boundary environment. The override exists only for module tests and
+// harnesses; it is owner-controlled and never workflow-controlled.
+const PI_AUTH_STORE_MAX_BYTES = 256 * 1024;
+const CREDENTIAL_EXPIRY_SKEW_MS = 60_000;
+const PI_AUTH_STORE_PROVIDERS = new Set(['openai-codex']);
 const MAX_CAPTURE_BYTES = 8 * 1024 * 1024;
 const MAX_TRANSCRIPT_BYTES = 1024 * 1024;
 const VERSION_TIMEOUT_MS = 10_000;
@@ -354,15 +365,58 @@ function probeJunoVersion() {
   return match[1];
 }
 
+function piAgentAuthStorePath() {
+  const declared = (environment.YYLO_BENCHMARK_BOUNDARY_PI_AUTH_PATH ?? '').trim();
+  if (declared !== '') return declared;
+  return path.join(homedir(), '.pi', 'agent', 'auth.json');
+}
+
+// Read-only probe of the exact credential store the dispatched `yy pi` child
+// will read. Never returns or logs credential material; only route identity.
+function validPiAgentAuthCredential(provider) {
+  const storePath = piAgentAuthStorePath();
+  let bytes;
+  try { bytes = readFileSync(storePath); }
+  catch { fail(`provider ${provider} credential is unavailable: set the boundary environment credential or refresh the Pi agent auth store with yy auth import-codex`); }
+  if (bytes.length === 0 || bytes.length > PI_AUTH_STORE_MAX_BYTES) fail('Pi agent auth store is empty or oversized');
+  let parsed;
+  try { parsed = JSON.parse(bytes.toString('utf8')); }
+  catch { fail('Pi agent auth store is malformed'); }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) fail('Pi agent auth store is malformed');
+  const entry = parsed[provider];
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+    fail(`Pi agent auth store has no ${provider} credential; refresh it with yy auth import-codex`);
+  }
+  if (entry.type !== 'oauth' || typeof entry.access !== 'string' || entry.access === ''
+      || typeof entry.refresh !== 'string' || entry.refresh === '') {
+    fail(`Pi agent auth store ${provider} credential is not a complete OAuth entry; refresh it with yy auth import-codex`);
+  }
+  const expires = entry.expires;
+  if (typeof expires !== 'number' || !Number.isFinite(expires) || expires <= Date.now() + CREDENTIAL_EXPIRY_SKEW_MS) {
+    fail(`Pi agent auth store ${provider} credential is missing or expired; refresh it with yy auth import-codex`);
+  }
+  return true;
+}
+
 function credentialFor(provider) {
   const name = PROVIDER_CREDENTIALS[provider];
   if (name === undefined) fail(`provider ${provider} has no credential route`);
   if (synthetic) return null;
   const value = environment[name];
-  if (value === undefined || value === '') fail(`provider ${provider} requires ${name} to be set in the boundary environment`);
-  const bytes = Buffer.byteLength(value, 'utf8');
-  if (bytes === 0 || bytes > MAX_CREDENTIAL_BYTES || !SAFE_CREDENTIAL_TOKEN.test(value)) fail(`provider ${provider} credential ${name} is missing, oversized, or malformed`);
-  return name;
+  if (value !== undefined && value !== '') {
+    const bytes = Buffer.byteLength(value, 'utf8');
+    if (bytes === 0 || bytes > MAX_CREDENTIAL_BYTES || !SAFE_CREDENTIAL_TOKEN.test(value)) fail(`provider ${provider} credential ${name} is missing, oversized, or malformed`);
+    return name;
+  }
+  if (PI_AUTH_STORE_PROVIDERS.has(provider)) {
+    const storePath = piAgentAuthStorePath();
+    if (existsSync(storePath)) {
+      validPiAgentAuthCredential(provider);
+      return 'pi-agent-auth-store';
+    }
+    fail(`provider ${provider} requires ${name} to be set in the boundary environment or a valid unexpired ${provider} credential in the Pi agent auth store`);
+  }
+  fail(`provider ${provider} requires ${name} to be set in the boundary environment`);
 }
 
 // ---------------------------------------------------------------------------

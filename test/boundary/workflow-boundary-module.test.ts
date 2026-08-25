@@ -153,12 +153,15 @@ let current: Harness;
 
 beforeEach(async () => {
   current = await harness();
-  for (const name of ['YYLO_BENCHMARK_BOUNDARY_STATE_ROOT', 'YYLO_BENCHMARK_JUNO_EXECUTABLE', 'OPENAI_CODEX_TOKEN', 'ZAI_API_KEY', 'YYLO_BENCHMARK_BOUNDARY_SYNTHETIC', 'YYLO_BENCHMARK_BOUNDARY_PROJECT_ROOT']) {
+  for (const name of ['YYLO_BENCHMARK_BOUNDARY_STATE_ROOT', 'YYLO_BENCHMARK_JUNO_EXECUTABLE', 'OPENAI_CODEX_TOKEN', 'ZAI_API_KEY', 'YYLO_BENCHMARK_BOUNDARY_SYNTHETIC', 'YYLO_BENCHMARK_BOUNDARY_PROJECT_ROOT', 'YYLO_BENCHMARK_BOUNDARY_PI_AUTH_PATH']) {
     saved[name] = process.env[name];
   }
   setEnv('YYLO_BENCHMARK_BOUNDARY_STATE_ROOT', current.stateRoot);
   setEnv('YYLO_BENCHMARK_JUNO_EXECUTABLE', path.join(current.root, 'fake-yy'));
   setEnv('YYLO_BENCHMARK_BOUNDARY_PROJECT_ROOT', current.root);
+  // Pin the auth-store probe to an absent fixture path so credential tests
+  // stay deterministic even on hosts that hold a real Pi agent auth store.
+  setEnv('YYLO_BENCHMARK_BOUNDARY_PI_AUTH_PATH', path.join(current.root, 'absent-auth-store.json'));
   setEnv('OPENAI_CODEX_TOKEN', 'fixture-token-0123456789abcdef');
   setEnv('ZAI_API_KEY', undefined);
   setEnv('YYLO_BENCHMARK_BOUNDARY_SYNTHETIC', undefined);
@@ -221,6 +224,36 @@ describe('reviewed workflow boundary module protocol', () => {
     setEnv('OPENAI_CODEX_TOKEN', 'bad token with spaces');
     await expect(probe.preflightIdentity({ provider: 'openai-codex', model: 'openai-codex/gpt-5.6-terra', junoVersion: JUNO_VERSION }))
       .rejects.toThrow(/malformed/u);
+  });
+
+  it('authenticates openai-codex from the Pi agent auth store without an environment credential', async () => {
+    setEnv('OPENAI_CODEX_TOKEN', undefined);
+    await writeFile(path.join(current.root, 'agent-auth.json'), `${JSON.stringify({
+      'openai-codex': { type: 'oauth', access: 'fixture-access', refresh: 'fixture-refresh', expires: Date.now() + 3_600_000, accountId: 'fixture-account' },
+    })}\n`, { mode: 0o600 });
+    setEnv('YYLO_BENCHMARK_BOUNDARY_PI_AUTH_PATH', path.join(current.root, 'agent-auth.json'));
+    const probe = await createReviewedBoundaryReadinessProbe({ module: current.module, sha256: current.sha256 });
+    await expect(probe.preflightIdentity({ provider: 'openai-codex', model: 'openai-codex/gpt-5.6-terra', junoVersion: JUNO_VERSION })).resolves.toBeUndefined();
+  });
+
+  it('fails closed when the Pi agent auth store credential is expired, incomplete, or malformed', async () => {
+    setEnv('OPENAI_CODEX_TOKEN', undefined);
+    const probe = await createReviewedBoundaryReadinessProbe({ module: current.module, sha256: current.sha256 });
+    const preflight = () => probe.preflightIdentity({ provider: 'openai-codex', model: 'openai-codex/gpt-5.6-terra', junoVersion: JUNO_VERSION });
+    const store = async (document: unknown) => {
+      await writeFile(path.join(current.root, 'agent-auth.json'), `${typeof document === 'string' ? document : JSON.stringify(document)}\n`, { mode: 0o600 });
+      setEnv('YYLO_BENCHMARK_BOUNDARY_PI_AUTH_PATH', path.join(current.root, 'agent-auth.json'));
+    };
+    await store({ 'openai-codex': { type: 'oauth', access: 'fixture-access', refresh: 'fixture-refresh', expires: Date.now() - 1_000 } });
+    await expect(preflight()).rejects.toThrow(/expired.*import-codex/us);
+    await store({ 'openai-codex': { type: 'oauth', refresh: 'fixture-refresh', expires: Date.now() + 3_600_000 } });
+    await expect(preflight()).rejects.toThrow(/complete OAuth entry/u);
+    await store({ 'zai': { type: 'oauth', access: 'a', refresh: 'r', expires: Date.now() + 3_600_000 } });
+    await expect(preflight()).rejects.toThrow(/has no openai-codex credential/u);
+    await store('{ not json');
+    await expect(preflight()).rejects.toThrow(/malformed/u);
+    setEnv('YYLO_BENCHMARK_BOUNDARY_PI_AUTH_PATH', path.join(current.root, 'absent-auth-store.json'));
+    await expect(preflight()).rejects.toThrow(/OPENAI_CODEX_TOKEN/u);
   });
 
   it('dispatches a live model step through the exact YYLO envelope identity', async () => {

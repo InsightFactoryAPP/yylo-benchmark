@@ -81,10 +81,16 @@ but unparsable compiled bytes are rejected before any durable intent with a
 `proven_not_dispatched` reconciliation. `scripts/verify-convert-installed-acceptance.mjs`
 runs the tracked Convert Daily Ops workflow through setup -> readiness -> plan -> dry-run ->
 synthetic first dispatch -> terminal -> recover with normal `yy` identity probing and zero
-provider dispatch. Live preflight fails closed when a provider credential
-(`OPENAI_CODEX_TOKEN`, `ZAI_API_KEY`), the exact model identity, or the exact YYLO version
-is missing before any durable dispatch intent exists, and the boundary keeps a private
-dispatch journal so recovery reconciles exact truth instead of guessing.
+provider dispatch. Live preflight fails closed before any durable dispatch intent exists
+when a provider credential, the exact model identity, or the exact YYLO version is missing.
+Credential routes: `zai` requires `ZAI_API_KEY` in the boundary environment; `openai-codex`
+accepts either `OPENAI_CODEX_TOKEN` in the boundary environment or a valid unexpired OAuth
+entry in the Pi agent auth store (`~/.pi/agent/auth.json`, refreshed via `yy auth import-codex`)
+— the exact store the dispatched `yy pi` child reads, so an imported credential needs no
+second environment copy. Module tests and harnesses may pin the probe with
+`YYLO_BENCHMARK_BOUNDARY_PI_AUTH_PATH`; the boundary never accepts a workflow-controlled path.
+The boundary keeps a private dispatch journal so recovery reconciles exact truth instead of
+guessing.
 
 `yy benchmark` accepts the identical argument tail and preserves stdout, stderr, cwd, exit
 status, and signals. Planning binds the tracked YAML's raw bytes, normalized semantics,
