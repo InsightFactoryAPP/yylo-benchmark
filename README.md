@@ -50,19 +50,35 @@ yylo-benchmark rejudge --plan workflow-plan.json --steps-file benchmark-policy.y
 ```
 
 Live execution uses one separately reviewed, hash-pinned JavaScript boundary module. The
+package ships that reviewed module; `yylo-benchmark setup` installs its exact bytes into the
+project and records the boundary digest, providers, and private registry binding without
+copying or retaining credentials. `yylo-benchmark readiness` then proves exact
+provider/model/YYLO identities with zero dispatch and retains the bounded receipt. The
 module owns Workflow Runner/Juno credentials and external reconciliation. Candidate
 operations receive only the immutable invocation. Judge operations receive only the blinded
 request; they never receive candidate credentials or unblinded identity. Cost returned by the
 runner is retained as best-effort evidence and never acts as dispatch authorization:
 
 ```bash
-export YYLO_BENCHMARK_WORKFLOW_BOUNDARY=/absolute/path/reviewed-workflow-boundary.mjs
+yylo-benchmark setup                       # installs .juno_task/boundary/yylo-workflow-boundary.mjs
+yylo-benchmark readiness --models :mini,zai/glm-5.3
+# Export the exact identities the setup receipt printed before planning a live run:
+export YYLO_BENCHMARK_WORKFLOW_BOUNDARY=<installed-absolute-module-path>
 export YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256=<lowercase-sha256-of-exact-module-bytes>
-export YYLO_BENCHMARK_REGISTRY=/private/path
 yylo-benchmark run --plan workflow-plan.json --steps-file benchmark-policy.yaml
 yylo-benchmark recover --plan workflow-plan.json --steps-file benchmark-policy.yaml
 yylo-benchmark rejudge --plan workflow-plan.json --steps-file benchmark-policy.yaml --judge :sol
 ```
+
+`setup --synthetic` records synthetic transport intent for installed-CLI acceptance: the
+reviewed module answers model dispatch and judge operations deterministically, spawns no
+step children, and labels every synthetic terminal, so release tests and consumers without
+credentials can exercise the complete lifecycle with zero provider dispatch. The packaged
+`scripts/verify-installed-boundary-acceptance.mjs` runs that full gate against an installed
+`yylo-benchmark` executable. Live preflight fails closed when a provider credential
+(`OPENAI_CODEX_TOKEN`, `ZAI_API_KEY`), the exact model identity, or the exact YYLO version
+is missing before any durable dispatch intent exists, and the boundary keeps a private
+dispatch journal so recovery reconciles exact truth instead of guessing.
 
 `yy benchmark` accepts the identical argument tail and preserves stdout, stderr, cwd, exit
 status, and signals. Planning binds the tracked YAML's raw bytes, normalized semantics,

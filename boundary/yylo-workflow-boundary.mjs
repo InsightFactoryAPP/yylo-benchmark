@@ -1,0 +1,666 @@
+#!/usr/bin/env node
+// YYLO Benchmark reviewed workflow boundary
+//
+// Protocol: juno_benchmark_workflow_process_boundary.v1
+//
+// This module is the hash-pinned, project-installable credential boundary for
+// live YYLO Benchmark workflow execution. The benchmark runtime spawns it as
+//
+//   node --input-type=module - <operation> --protocol <protocol>
+//
+// with the exact module bytes on stdin and one JSON request document on file
+// descriptor 3. It answers with exactly one JSON document on stdout and a
+// canonical exit code. It never writes credentials, credential values, or its
+// own stderr to stdout, receipts, journals, or transcripts.
+//
+// Operations:
+//   probe      -> { schema_version, providers: string[] }
+//   preflight  -> { ok, provider, model, juno_version }
+//   dispatch   -> terminal result (see terminalResult in the runtime)
+//   reconcile  -> { state: 'terminal' | 'safely_resumable' | 'proven_not_dispatched' | 'ambiguous' }
+//   resume     -> terminal result
+//   judge      -> { resolved: boolean, evidence: string }
+//
+// Credential ownership: provider credentials stay in this process's
+// environment and are routed only to the exact requested child argv. The
+// benchmark planner, plans, receipts, and reports only ever see provider
+// names, never credential material.
+//
+// Durable ambiguity-safe recovery: before any consequential child spawn the
+// boundary writes a private dispatch journal intent bound to the exact
+// dispatch identity; after the child closes it appends the terminal result.
+// reconcile reads that journal and reports exact truth:
+//   - no intent                     -> proven_not_dispatched
+//   - intent + terminal             -> terminal
+//   - intent only, live model step  -> ambiguous (paid external effect possible)
+//   - intent only, otherwise        -> safely_resumable
+//
+// Synthetic transport: setting YYLO_BENCHMARK_BOUNDARY_SYNTHETIC=1 answers
+// model dispatch and judge operations deterministically without spawning any
+// provider child, for installed-public-CLI acceptance and release tests.
+// Synthetic terminals and run identities are explicitly labeled. The only
+// child process synthetic mode may spawn is the read-only `yy --version`
+// identity probe.
+
+import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { closeSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs';
+import path from 'node:path';
+
+const PROTOCOL = 'juno_benchmark_workflow_process_boundary.v1';
+const ENVELOPE_SCHEMA = 'juno_execution_envelope.v1';
+const JOURNAL_INTENT_SCHEMA = 'juno_benchmark_boundary_dispatch_intent.v1';
+const JOURNAL_TERMINAL_SCHEMA = 'juno_benchmark_boundary_dispatch_terminal.v1';
+const OPERATIONS = new Set(['probe', 'preflight', 'dispatch', 'reconcile', 'resume', 'judge']);
+const PROVIDER_CREDENTIALS = Object.freeze({
+  'openai-codex': 'OPENAI_CODEX_TOKEN',
+  zai: 'ZAI_API_KEY',
+});
+const MAX_CREDENTIAL_BYTES = 64 * 1024;
+const SAFE_CREDENTIAL_TOKEN = /^[A-Za-z0-9._~-]+$/u;
+const MAX_CAPTURE_BYTES = 8 * 1024 * 1024;
+const MAX_TRANSCRIPT_BYTES = 1024 * 1024;
+const VERSION_TIMEOUT_MS = 10_000;
+const KILL_GRACE_MS = 1_000;
+
+function fail(message) {
+  // Boundary stderr and error documents never carry credential material:
+  // messages are static or identity-shaped only. The structured stdout
+  // document lets the runtime surface an actionable reason while the free-form
+  // stderr stays private to the spawning process.
+  process.stderr.write(`workflow-boundary: ${message}\n`);
+  try { process.stdout.write(JSON.stringify({ schema_version: 'juno_benchmark_boundary_error.v1', message: message.slice(0, 512) })); } catch { /* stdout closed */ }
+  process.exit(1);
+}
+
+const argument = process.argv[2] ?? '';
+if (!OPERATIONS.has(argument)) fail(`unsupported operation ${argument || '<missing>'}`);
+if (process.argv[3] !== '--protocol' || process.argv[4] !== PROTOCOL) fail('protocol selection is invalid');
+const operation = argument;
+
+let request;
+try {
+  const raw = readFileSync(3, 'utf8');
+  request = JSON.parse(raw);
+} catch {
+  fail('request document on descriptor 3 is missing or malformed');
+}
+if (request === null || typeof request !== 'object' || Array.isArray(request)) fail('request document must be an object');
+
+const environment = process.env;
+const synthetic = environment.YYLO_BENCHMARK_BOUNDARY_SYNTHETIC === '1';
+const junoExecutable = (environment.YYLO_BENCHMARK_JUNO_EXECUTABLE ?? '').trim() || 'yy';
+const registryRoot = (environment.YYLO_BENCHMARK_REGISTRY ?? '').trim()
+  || path.join(process.cwd(), '.juno_task', 'artifacts', 'yylo-benchmark');
+const stateRoot = (environment.YYLO_BENCHMARK_BOUNDARY_STATE_ROOT ?? '').trim()
+  || path.join(registryRoot, 'boundary-state');
+
+const isHash = (value) => typeof value === 'string' && /^sha256:[0-9a-f]{64}$/u.test(value);
+const isNonEmpty = (value) => typeof value === 'string' && value.trim() !== '';
+
+// Owner-controlled project root binding: the benchmark CLI spawns the boundary
+// from the consumer project, so the inherited working directory is the exact
+// workflow working directory. The explicit override exists for harnesses that
+// must pin it; it is never workflow-controlled.
+const projectRoot = (() => {
+  const declared = (environment.YYLO_BENCHMARK_BOUNDARY_PROJECT_ROOT ?? '').trim();
+  return declared === '' ? process.cwd() : declared;
+})();
+
+function sha256Hex(bytes) { return createHash('sha256').update(bytes).digest('hex'); }
+
+function invocationOf(request) {
+  const invocation = request.invocation;
+  if (invocation === null || typeof invocation !== 'object' || Array.isArray(invocation)) fail('invocation is missing');
+  return invocation;
+}
+
+// ---------------------------------------------------------------------------
+// Minimal strict YAML-subset reader for compiled workflow bytes.
+//
+// Compiled workflow bytes are always produced by the benchmark planner's
+// canonical `yaml.stringify(semantics, { lineWidth: 0, sortMapEntries: false })`
+// overlay, which emits exactly: block mappings, block sequences, plain
+// scalars, double-quoted (JSON escape) scalars, single-quoted scalars, and
+// block literal (`|` family) scalars. Anything else fails closed. Only the
+// `steps[].id` and `steps[].command` positions are extracted; other fields are
+// structurally skipped without interpretation.
+// ---------------------------------------------------------------------------
+
+function parseScalarFromToken(token) {
+  if (token.startsWith('"')) {
+    if (!token.endsWith('"') || token.length < 2) throw new Error('malformed double-quoted scalar');
+    try { return JSON.parse(token); } catch { throw new Error('malformed double-quoted scalar escape'); }
+  }
+  if (token.startsWith("'")) {
+    if (!token.endsWith("'") || token.length < 2) throw new Error('malformed single-quoted scalar');
+    return token.slice(1, -1).replace(/''/gu, "'");
+  }
+  if (token.startsWith('[') || token.startsWith('{')) throw new Error('flow collections are not part of the compiled workflow form');
+  return token;
+}
+
+function parseWorkflowSteps(text) {
+  const lines = [];
+  for (const rawLine of text.split(/\r?\n/u)) {
+    if (rawLine.includes('\t')) throw new Error('workflow bytes contain a tab');
+    if (rawLine.trim() === '') continue;
+    const indent = rawLine.length - rawLine.trimStart().length;
+    if (rawLine.slice(0, indent).includes('\t')) throw new Error('workflow bytes contain a tab indent');
+    lines.push({ indent, content: rawLine.trim() });
+  }
+  let position = 0;
+
+  const splitKey = (content) => {
+    const separator = content.indexOf(':');
+    if (separator <= 0) throw new Error('workflow mapping entry is malformed');
+    const key = content.slice(0, separator);
+    if (/["'[{]/u.test(key)) throw new Error('workflow mapping keys must be plain');
+    const rest = content.slice(separator + 1);
+    return { key, rest: rest.trim() === '' ? null : rest.trim() };
+  };
+
+  function readBlockScalar(header, lineIndent) {
+    if (!/^\|(?:-|\+)?$/u.test(header)) throw new Error(`unsupported block scalar header: ${header}`);
+    const chomp = header.endsWith('-') ? 'strip' : header.endsWith('+') ? 'keep' : 'clip';
+    const collected = [];
+    let blockIndent = null;
+    while (position < lines.length) {
+      const line = lines[position];
+      if (line.indent <= lineIndent) break;
+      if (blockIndent === null) blockIndent = line.indent;
+      if (line.indent !== blockIndent) throw new Error('block scalar indentation is inconsistent');
+      collected.push(line.content);
+      position += 1;
+    }
+    if (blockIndent === null) throw new Error('block scalar has no content');
+    let value = collected.join('\n');
+    if (chomp === 'clip') value += '\n';
+    else if (chomp === 'keep') value += '\n\n';
+    return value;
+  }
+
+  function readSequence(indent) {
+    const items = [];
+    while (position < lines.length) {
+      const line = lines[position];
+      if (line.indent !== indent || !(line.content === '-' || line.content.startsWith('- '))) {
+        if (line.indent >= indent) throw new Error('workflow sequence indentation is inconsistent');
+        break;
+      }
+      const rest = line.content === '-' ? '' : line.content.slice(2).trim();
+      position += 1;
+      if (rest === '') {
+        if (position >= lines.length || lines[position].indent <= indent) throw new Error('workflow sequence item is empty');
+        items.push(readNode(lines[position].indent));
+      } else if (/^[^:]+:/u.test(rest) && !rest.startsWith('"') && !rest.startsWith("'")) {
+        // Mapping whose first entry shares the dash line.
+        const entryIndent = indent + 2;
+        items.push(readMapping(entryIndent, [rest]));
+      } else if (/^\|(?:-|\+)?$/u.test(rest)) {
+        items.push(readBlockScalar(rest, indent));
+      } else {
+        items.push(parseScalarFromToken(rest));
+      }
+    }
+    return items;
+  }
+
+  function readMapping(indent, carried) {
+    const entries = new Map();
+    const consume = (content) => {
+      const { key, rest } = splitKey(content);
+      if (entries.has(key)) throw new Error('workflow mapping has duplicate keys');
+      if (rest === null) {
+        const next = lines[position];
+        if (next === undefined) throw new Error('workflow mapping value is missing');
+        if (next.indent === indent && (next.content === '-' || next.content.startsWith('- '))) {
+          entries.set(key, readSequence(indent));
+        } else if (next.indent > indent) {
+          entries.set(key, readNode(next.indent));
+        } else {
+          entries.set(key, null);
+        }
+      } else if (/^\|(?:-|\+)?$/u.test(rest)) {
+        entries.set(key, readBlockScalar(rest, indent));
+      } else {
+        entries.set(key, parseScalarFromToken(rest));
+      }
+    };
+    for (const content of carried) consume(content);
+    while (position < lines.length) {
+      const line = lines[position];
+      if (line.indent !== indent) {
+        if (line.indent > indent) throw new Error('workflow mapping indentation is inconsistent');
+        break;
+      }
+      if (line.content.startsWith('- ') || line.content === '-') throw new Error('unexpected sequence entry in mapping position');
+      position += 1;
+      consume(line.content);
+    }
+    return entries;
+  }
+
+  function readNode(indent) {
+    const line = lines[position];
+    if (line.content === '-' || line.content.startsWith('- ')) return readSequence(indent);
+    return readMapping(indent, []);
+  }
+
+  if (lines.length === 0 || lines[0].indent !== 0) throw new Error('workflow document must start at column zero');
+  const document = readNode(0);
+  if (position !== lines.length) throw new Error('workflow document has trailing unconsumed content');
+  const steps = document instanceof Map ? document.get('steps') : undefined;
+  if (!Array.isArray(steps)) throw new Error('workflow document has no steps sequence');
+  const extracted = [];
+  for (const step of steps) {
+    if (!(step instanceof Map)) throw new Error('workflow step must be a mapping');
+    const id = step.get('id');
+    const command = step.get('command');
+    if (typeof id !== 'string' || id.trim() === '') throw new Error('workflow step id must be a non-empty string');
+    if (!Array.isArray(command) || command.length === 0 || !command.every((item) => typeof item === 'string' && item !== '')) {
+      throw new Error(`workflow step ${id} command must be a non-empty explicit argument array`);
+    }
+    extracted.push({ id, command: [...command] });
+  }
+  return extracted;
+}
+
+function compiledStepFor(invocation) {
+  if (typeof invocation.workflow_bytes_base64 !== 'string' || invocation.workflow_bytes_base64 === '') fail('invocation has no compiled workflow bytes');
+  if (!isHash(invocation.workflow_sha256)) fail('invocation workflow hash is invalid');
+  const bytes = Buffer.from(invocation.workflow_bytes_base64, 'base64');
+  if (bytes.toString('base64') !== invocation.workflow_bytes_base64 || `sha256:${sha256Hex(bytes)}` !== invocation.workflow_sha256) {
+    fail('compiled workflow bytes do not match their exact invocation identity');
+  }
+  let steps;
+  try { steps = parseWorkflowSteps(bytes.toString('utf8')); }
+  catch (error) { fail(`compiled workflow bytes cannot be parsed: ${error instanceof Error ? error.message : String(error)}`); }
+  const step = steps.find((item) => item.id === invocation.step_id);
+  if (step === undefined) fail(`compiled workflow does not contain exact step ${invocation.step_id}`);
+  const variables = invocation.variables;
+  if (variables !== undefined && (variables === null || typeof variables !== 'object' || Array.isArray(variables))) fail('invocation variables are invalid');
+  const substitute = (text) => {
+    const resolved = text.replace(/\$\(([A-Za-z0-9_.-]+)\)/gu, (whole, name) => {
+      const value = variables?.[name];
+      if (value === undefined || value === null) fail(`workflow variable ${name} is not bound for this invocation`);
+      return String(value);
+    });
+    if (resolved.includes('$(')) fail('workflow command contains an unresolved variable reference');
+    return resolved;
+  };
+  return { id: step.id, command: step.command.map(substitute), deterministic: invocation.deterministic_command ?? null };
+}
+
+// ---------------------------------------------------------------------------
+// YYLO executable identity probe (read-only).
+// ---------------------------------------------------------------------------
+
+function probeJunoVersion() {
+  const env = { ...environment };
+  delete env.YYLO_BENCHMARK_WORKFLOW_BOUNDARY;
+  delete env.YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256;
+  const result = spawnSync(junoExecutable, ['--version'], { encoding: 'utf8', timeout: VERSION_TIMEOUT_MS, maxBuffer: 64 * 1024, env });
+  if (result.error || result.status !== 0 || result.signal !== null) fail(`YYLO identity probe failed (${result.error?.message ?? result.status ?? result.signal ?? 'unknown'})`);
+  const output = (result.stdout ?? '').trim();
+  const match = /^(?:(?:yylo|juno-code)\s+)?v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$/u.exec(output);
+  if (match?.[1] === undefined) fail('YYLO identity probe returned an invalid version');
+  return match[1];
+}
+
+function credentialFor(provider) {
+  const name = PROVIDER_CREDENTIALS[provider];
+  if (name === undefined) fail(`provider ${provider} has no credential route`);
+  if (synthetic) return null;
+  const value = environment[name];
+  if (value === undefined || value === '') fail(`provider ${provider} requires ${name} to be set in the boundary environment`);
+  const bytes = Buffer.byteLength(value, 'utf8');
+  if (bytes === 0 || bytes > MAX_CREDENTIAL_BYTES || !SAFE_CREDENTIAL_TOKEN.test(value)) fail(`provider ${provider} credential ${name} is missing, oversized, or malformed`);
+  return name;
+}
+
+// ---------------------------------------------------------------------------
+// Durable dispatch journal.
+// ---------------------------------------------------------------------------
+
+function journalPaths(dispatchId) {
+  const hex = dispatchId.replace(/^sha256:/u, '');
+  return {
+    intent: path.join(stateRoot, `dispatch-${hex}.intent.json`),
+    terminal: path.join(stateRoot, `dispatch-${hex}.terminal.json`),
+  };
+}
+
+function writePrivate(destination, value) {
+  const serialized = `${JSON.stringify(value)}\n`;
+  const temporary = `${destination}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`;
+  const handle = openSync(temporary, 'w', 0o600);
+  try { writeSync(handle, serialized); fsyncSync(handle); } finally { closeSync(handle); }
+  try { renameSync(temporary, destination); } catch (error) { unlinkSync(temporary); throw error; }
+}
+
+function ensureStateRoot() {
+  mkdirSync(stateRoot, { recursive: true, mode: 0o700 });
+  const metadata = statSync(stateRoot);
+  if (!metadata.isDirectory()) fail('boundary state root is not a directory');
+}
+
+function readJsonFile(destination, schema) {
+  let parsed;
+  try { parsed = JSON.parse(readFileSync(destination, 'utf8')); }
+  catch { fail(`boundary journal document is missing or malformed: ${path.basename(destination)}`); }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed) || parsed.schema_version !== schema) {
+    fail(`boundary journal document schema is invalid: ${path.basename(destination)}`);
+  }
+  return parsed;
+}
+
+function recordIntent(invocation) {
+  ensureStateRoot();
+  const paths = journalPaths(invocation.dispatch_id);
+  if (existsSync(paths.terminal)) return 'terminal';
+  if (existsSync(paths.intent)) return 'intent';
+  const serialized = `${JSON.stringify({
+    schema_version: JOURNAL_INTENT_SCHEMA, dispatch_id: invocation.dispatch_id, invocation_hash: invocation.invocation_hash,
+    plan_id: invocation.plan_id, step_id: invocation.step_id, model: invocation.model, provider: invocation.provider,
+    transport: synthetic ? 'synthetic' : 'live', started_at: new Date().toISOString(),
+  })}\n`;
+  const temporary = `${paths.intent}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`;
+  const handle = openSync(temporary, 'w', 0o600);
+  try { writeSync(handle, serialized); fsyncSync(handle); } finally { closeSync(handle); }
+  try {
+    try { linkSync(temporary, paths.intent); return 'started'; } catch (error) {
+      if ((error).code !== 'EEXIST') throw error;
+      return 'intent';
+    }
+  } finally { try { unlinkSync(temporary); } catch { /* consumed by the exclusive link */ } }
+}
+
+function readIntent(invocation) {
+  const paths = journalPaths(invocation.dispatch_id);
+  if (!existsSync(paths.intent)) return null;
+  const intent = readJsonFile(paths.intent, JOURNAL_INTENT_SCHEMA);
+  if (intent.dispatch_id !== invocation.dispatch_id || intent.invocation_hash !== invocation.invocation_hash
+      || intent.step_id !== invocation.step_id || intent.model !== invocation.model || intent.provider !== invocation.provider) {
+    fail('boundary journal intent does not bind the exact requested dispatch identity');
+  }
+  return intent;
+}
+
+function readTerminal(invocation) {
+  const paths = journalPaths(invocation.dispatch_id);
+  if (!existsSync(paths.terminal)) return null;
+  const document = readJsonFile(paths.terminal, JOURNAL_TERMINAL_SCHEMA);
+  if (document.dispatch_id !== invocation.dispatch_id || document.invocation_hash !== invocation.invocation_hash) {
+    fail('boundary journal terminal does not bind the exact requested dispatch identity');
+  }
+  const result = document.result;
+  if (result === null || typeof result !== 'object' || result.dispatch_id !== invocation.dispatch_id) fail('boundary journal terminal result is invalid');
+  return result;
+}
+
+function recordTerminal(invocation, result) {
+  ensureStateRoot();
+  writePrivate(journalPaths(invocation.dispatch_id).terminal, {
+    schema_version: JOURNAL_TERMINAL_SCHEMA, dispatch_id: invocation.dispatch_id, invocation_hash: invocation.invocation_hash,
+    recorded_at: new Date().toISOString(), result,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Child execution.
+// ---------------------------------------------------------------------------
+
+function runChild(argv, { timeoutMs, extraEnvironment = {} }) {
+  const child = spawn(argv[0], argv.slice(1), { cwd: projectRoot, env: { ...environment, ...extraEnvironment }, stdio: ['ignore', 'pipe', 'pipe'], shell: false });
+  const stdout = []; const stderr = []; let captured = 0; let overflow = false;
+  const collect = (target) => (chunk) => {
+    captured += chunk.length;
+    if (captured > MAX_CAPTURE_BYTES) { overflow = true; child.kill('SIGKILL'); } else target.push(chunk);
+  };
+  child.stdout.on('data', collect(stdout)); child.stderr.on('data', collect(stderr));
+  let timedOut = false; let force = undefined;
+  const timeout = setTimeout(() => { timedOut = true; child.kill('SIGTERM'); force = setTimeout(() => child.kill('SIGKILL'), KILL_GRACE_MS); }, timeoutMs);
+  const closed = awaitClose(child).finally(() => { clearTimeout(timeout); if (force !== undefined) clearTimeout(force); });
+  return closed.then((outcome) => ({ outcome, stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr), overflow, timedOut }));
+}
+
+function awaitClose(child) {
+  return new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', (code, signal) => resolve({ code, signal }));
+  });
+}
+
+function finalStructuredObject(text) {
+  const lines = text.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    try {
+      const parsed = JSON.parse(lines[index]);
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+    } catch { /* an ordinary progress line */ }
+  }
+  return null;
+}
+
+function envelopeOf(stdout) {
+  const envelope = finalStructuredObject(stdout.toString('utf8'));
+  if (envelope === null || envelope.schema_version !== ENVELOPE_SCHEMA) return null;
+  return envelope;
+}
+
+function resolveExecutable(name) {
+  if (name === 'yy') return junoExecutable;
+  return name;
+}
+
+function boundedTranscript(stdout, stderr) {
+  const parts = [];
+  const out = stdout.toString('utf8');
+  parts.push(out.length > MAX_TRANSCRIPT_BYTES ? `${out.slice(0, MAX_TRANSCRIPT_BYTES)}\n[truncated]` : out);
+  if (stderr.length > 0) {
+    const err = stderr.toString('utf8');
+    parts.push(`\n[stderr]\n${err.length > MAX_TRANSCRIPT_BYTES ? `${err.slice(0, MAX_TRANSCRIPT_BYTES)}\n[truncated]` : err}`);
+  }
+  return parts.join('');
+}
+
+function executeStep(invocation) {
+  const step = compiledStepFor(invocation);
+  const deterministicPolicy = step.deterministic;
+  if (deterministicPolicy !== null) {
+    if (deterministicPolicy.step_id !== step.id) fail('deterministic command policy is bound to the wrong step');
+    const prefix = [deterministicPolicy.executable, ...deterministicPolicy.environment.map((item) => `${item.name}=${item.value}`), deterministicPolicy.interpreter, deterministicPolicy.script];
+    if (step.command.length < prefix.length || prefix.some((item, index) => step.command[index] !== item)) {
+      fail('deterministic workflow command drifted from the exact policy binding');
+    }
+  } else if (step.command[0] !== 'yy' || step.command[1] !== 'pi') {
+    fail('model dispatch workflow command must be the canonical yy pi argument array');
+  }
+  const runId = `${synthetic ? 'synthetic-run' : 'run'}-${String(invocation.dispatch_id).replace(/^sha256:/u, '').slice(0, 16)}`;
+  const startedAt = new Date();
+  const monotonic = process.hrtime.bigint();
+
+  if (synthetic) {
+    const endedAt = new Date();
+    const runtimeMs = Number((process.hrtime.bigint() - monotonic) / 1_000_000n);
+    return {
+      dispatch_id: invocation.dispatch_id, status: 'success', effect: 'completed', runner_run_id: runId,
+      observed_provider: invocation.provider, observed_model: invocation.model, observed_juno_version: invocation.juno_version,
+      evidence: {
+        outer_session_id: `synthetic-session-${String(invocation.dispatch_id).replace(/^sha256:/u, '').slice(0, 16)}`,
+        nested_session_ids: [`synthetic-nested-${String(invocation.dispatch_id).replace(/^sha256:/u, '').slice(0, 16)}`],
+        started_at: startedAt.toISOString(), ended_at: endedAt.toISOString(), runtime_ms: runtimeMs,
+        cost: { completeness: 'not_applicable', usd: null },
+        candidate_outcome: { status: 'success' }, harness_validity: { status: 'valid', reason: null },
+        transcript: `synthetic transport: no provider child was spawned\nstep: ${step.id}\nmodel: ${invocation.model}\nargv: ${step.command.map((item) => (item.length > 96 ? `${item.slice(0, 96)}…` : item)).join(' ')}`,
+        artifacts: {},
+      },
+    };
+  }
+
+  const argv = [resolveExecutable(step.command[0]), ...step.command.slice(1)];
+  const extraEnvironment = deterministicPolicy === null ? {} : Object.fromEntries(deterministicPolicy.environment.map((item) => [item.name, item.value]));
+  const execution = runChild(argv, { timeoutMs: invocation.timeout_ms, extraEnvironment });
+  return execution.then(({ outcome, stdout, stderr, overflow, timedOut }) => {
+    const endedAt = new Date();
+    const runtimeMs = Number((process.hrtime.bigint() - monotonic) / 1_000_000n);
+    if (overflow) fail('workflow step output exceeded the bounded capture limit');
+    if (timedOut) fail(`workflow step ${step.id} timed out before terminal evidence`);
+    if (outcome.code === null && outcome.signal === null) fail(`workflow step ${step.id} closed without a terminal outcome`);
+    const transcript = boundedTranscript(stdout, stderr);
+    if (deterministicPolicy !== null) {
+      const success = outcome.code === 0;
+      return {
+        dispatch_id: invocation.dispatch_id, status: success ? 'success' : 'failure', effect: 'completed', runner_run_id: runId,
+        observed_provider: invocation.provider, observed_model: invocation.model, observed_juno_version: invocation.juno_version,
+        evidence: {
+          outer_session_id: `boundary-${runId}`, nested_session_ids: [`process-${process.pid}`],
+          started_at: startedAt.toISOString(), ended_at: endedAt.toISOString(), runtime_ms: runtimeMs,
+          cost: { completeness: 'not_applicable', usd: null },
+          candidate_outcome: { status: success ? 'success' : 'failure' },
+          harness_validity: { status: 'valid', reason: null },
+          transcript, artifacts: {},
+        },
+      };
+    }
+    const envelope = envelopeOf(stdout);
+    if (envelope === null) fail(`workflow step ${step.id} produced no ${ENVELOPE_SCHEMA} terminal identity`);
+    const separator = invocation.model.indexOf('/');
+    const provider = separator > 0 ? invocation.model.slice(0, separator) : '';
+    const modelName = separator > 0 ? invocation.model.slice(separator + 1) : '';
+    if (envelope.provider !== provider || envelope.model !== modelName || envelope.juno_version !== invocation.juno_version) {
+      fail(`workflow step ${step.id} terminal identity does not match the exact requested provider/model/version`);
+    }
+    if (envelope.session_id === null || typeof envelope.session_id !== 'string' || envelope.session_id.trim() === '') {
+      fail(`workflow step ${step.id} reported no single provable session identity`);
+    }
+    const cost = envelope.cost !== undefined && envelope.cost !== null
+      && ['complete', 'partial', 'unavailable', 'not_applicable'].includes(envelope.cost.completeness)
+      ? envelope.cost : { completeness: 'unavailable', usd: null };
+    const success = outcome.code === 0 && envelope.status === 'success';
+    return {
+      dispatch_id: invocation.dispatch_id, status: success ? 'success' : 'failure', effect: 'completed', runner_run_id: runId,
+      observed_provider: provider, observed_model: invocation.model, observed_juno_version: envelope.juno_version,
+      evidence: {
+        outer_session_id: envelope.session_id, nested_session_ids: [envelope.session_id],
+        started_at: startedAt.toISOString(), ended_at: endedAt.toISOString(), runtime_ms: runtimeMs,
+        cost, candidate_outcome: { status: success ? 'success' : 'failure' },
+        harness_validity: { status: 'valid', reason: null }, transcript, artifacts: {},
+      },
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Protocol operations.
+// ---------------------------------------------------------------------------
+
+async function main() {
+  if (operation === 'probe') {
+    if (Object.keys(request).some((key) => key !== 'schema_version') || request.schema_version !== PROTOCOL) fail('probe request is invalid');
+    process.stdout.write(JSON.stringify({ schema_version: PROTOCOL, providers: Object.keys(PROVIDER_CREDENTIALS) }));
+    return;
+  }
+
+  if (operation === 'preflight') {
+    const invocation = invocationOf(request);
+    const provider = invocation.provider;
+    const model = invocation.model;
+    const junoVersion = invocation.juno_version;
+    if (!isNonEmpty(provider) || !isNonEmpty(model) || !isNonEmpty(junoVersion)) fail('preflight identity is incomplete');
+    if (model.includes('/')) {
+      const separator = model.indexOf('/');
+      if (model.slice(0, separator) !== provider) fail('preflight provider does not match the exact model identity');
+    }
+    credentialFor(provider);
+    const observed = probeJunoVersion();
+    if (observed !== junoVersion) fail(`YYLO version mismatch: invocation requires ${junoVersion}, executable reports ${observed}`);
+    process.stdout.write(JSON.stringify({ ok: true, provider, model: model.includes('/') ? model.slice(model.indexOf('/') + 1) : model, juno_version: observed }));
+    return;
+  }
+
+  if (operation === 'reconcile') {
+    const invocation = invocationOf(request);
+    for (const field of ['dispatch_id', 'invocation_hash', 'plan_id', 'step_id', 'model', 'provider', 'attempt']) {
+      if (invocation[field] === undefined) fail(`reconcile invocation is missing ${field}`);
+    }
+    if (!isHash(invocation.dispatch_id) || !isHash(invocation.invocation_hash)) fail('reconcile invocation identity is invalid');
+    const intent = readIntent(invocation);
+    if (intent === null) { process.stdout.write(JSON.stringify({ state: 'proven_not_dispatched' })); return; }
+    const terminal = readTerminal(invocation);
+    if (terminal !== null) { process.stdout.write(JSON.stringify({ state: 'terminal', result: terminal })); return; }
+    const deterministic = invocation.deterministic_command ?? null;
+    const resumable = deterministic !== null || synthetic;
+    process.stdout.write(JSON.stringify({ state: resumable ? 'safely_resumable' : 'ambiguous' }));
+    return;
+  }
+
+  if (operation === 'dispatch' || operation === 'resume') {
+    const invocation = invocationOf(request);
+    for (const field of ['dispatch_id', 'invocation_hash', 'plan_id', 'model', 'provider', 'attempt', 'step_id', 'workflow_sha256', 'workflow_bytes_base64', 'timeout_ms', 'juno_version']) {
+      if (invocation[field] === undefined) fail(`dispatch invocation is missing ${field}`);
+    }
+    if (!isHash(invocation.dispatch_id) || !isHash(invocation.invocation_hash) || !isHash(invocation.workflow_sha256)) fail('dispatch invocation identity is invalid');
+    if (!Number.isInteger(invocation.timeout_ms) || invocation.timeout_ms <= 0) fail('dispatch invocation timeout is invalid');
+    const priorTerminal = readTerminal(invocation);
+    if (priorTerminal !== null) { process.stdout.write(JSON.stringify(priorTerminal)); return; }
+    const recorded = recordIntent(invocation);
+    if (recorded === 'terminal') { process.stdout.write(JSON.stringify(readTerminal(invocation))); return; }
+    if (recorded === 'intent') {
+      if (operation === 'dispatch') fail('a prior dispatch intent exists without terminal evidence; reconcile before any re-dispatch');
+      // resume falls through: reconcile already proved the step safely resumable.
+    }
+    const result = await executeStep(invocation);
+    recordTerminal(invocation, result);
+    process.stdout.write(JSON.stringify(result));
+    return;
+  }
+
+  if (operation === 'judge') {
+    const invocation = invocationOf(request);
+    const judge = invocation.judge;
+    const scoringId = invocation.scoring_id;
+    const blinded = invocation.blinded_candidate;
+    if (judge === null || typeof judge !== 'object' || !isNonEmpty(judge.model) || !isNonEmpty(scoringId) || !isNonEmpty(blinded)) {
+      fail('judge invocation is incomplete');
+    }
+    if (blinded.length > MAX_TRANSCRIPT_BYTES) fail('blinded candidate exceeds the bounded judgement input');
+    const separator = judge.model.indexOf('/');
+    const provider = separator > 0 ? judge.model.slice(0, separator) : 'governed';
+    credentialFor(provider === 'governed' ? judge.model : provider);
+    if (synthetic) {
+      process.stdout.write(JSON.stringify({
+        resolved: true,
+        evidence: `synthetic governed judgement for ${scoringId} (judge ${judge.judge_id ?? 'governed'} v${judge.judge_version ?? '1'}, blinded digest sha256:${sha256Hex(Buffer.from(blinded, 'utf8'))})`,
+      }));
+      return;
+    }
+    const prompt = [
+      'You are the governed YYLO Benchmark judge for one blinded candidate step.',
+      'Judge only the retained candidate evidence below. Do not attempt to identify the producing model, provider, or candidate run.',
+      `Scoring identity: ${scoringId}.`,
+      `Judge policy: judge_id=${judge.judge_id ?? 'governed'} judge_version=${judge.judge_version ?? '1'} rubric_hash=${judge.rubric_hash ?? 'unspecified'}.`,
+      'Reply with a short factual justification, then end your reply with exactly one final line that is either VERDICT: PASS or VERDICT: FAIL.',
+      'Blinded candidate evidence follows:',
+      blinded,
+    ].join('\n');
+    const execution = runChild([junoExecutable, 'pi', '--model', judge.model, prompt], { timeoutMs: Number(environment.YYLO_BENCHMARK_BOUNDARY_JUDGE_TIMEOUT_MS ?? 0) > 0 ? Number(environment.YYLO_BENCHMARK_BOUNDARY_JUDGE_TIMEOUT_MS) : 600_000 });
+    const { outcome, stdout, stderr, overflow, timedOut } = await execution;
+    if (overflow) fail('judge output exceeded the bounded capture limit');
+    if (timedOut) fail('judge dispatch timed out before terminal evidence');
+    const text = boundedTranscript(stdout, stderr);
+    const verdicts = text.split(/\r?\n/u).map((line) => line.trim()).filter((line) => line === 'VERDICT: PASS' || line === 'VERDICT: FAIL');
+    const verdict = verdicts.at(-1);
+    if (verdict === undefined || outcome.code !== 0) {
+      process.stdout.write(JSON.stringify({ resolved: false, evidence: `governed judge produced no strict verdict (exit ${outcome.code ?? outcome.signal ?? 'unknown'}); retained tail: ${text.slice(-2048)}` }));
+      return;
+    }
+    process.stdout.write(JSON.stringify({ resolved: verdict === 'VERDICT: PASS', evidence: `governed judge verdict ${verdict} for ${scoringId}; retained tail: ${text.slice(-2048)}` }));
+    return;
+  }
+
+  fail(`unhandled operation ${operation}`);
+}
+
+main().catch((error) => { fail(error instanceof Error ? error.message : String(error)); });

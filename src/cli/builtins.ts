@@ -20,6 +20,8 @@ import { authenticatedLauncherOptionsFromEnvironment, createAuthenticatedJunoRun
 import { createCommandGrader } from '../grading/index.js';
 import { installBenchmarkWikis } from '../wiki/index.js';
 import { generateReleaseReadinessReceipt } from '../release-readiness/index.js';
+import { generateBoundaryReadiness, installReviewedBoundary, BOUNDARY_SUPPORTED_PROVIDERS, loadBoundarySetup } from '../boundary/index.js';
+import { discoverJunoVersion } from '../planning/cli.js';
 import {
   COMMAND_API_VERSION,
   type CommandContext,
@@ -65,6 +67,37 @@ const caseLint = definition(['case', 'lint'], 'Validate an explicitly opted-in K
   });
 });
 
+const setup = definition(['setup'], 'Install the reviewed hash-pinned workflow boundary and bind the private registry', 'foundation', true, (command, context) => {
+  command.option('--providers <names>', `Comma-separated boundary providers (default: ${BOUNDARY_SUPPORTED_PROVIDERS.join(',')})`)
+    .option('--synthetic', 'Record synthetic transport intent for installed-CLI acceptance without credentials')
+    .action(async (options: { providers?: string; synthetic?: boolean }) => {
+      const loaded = await loadConfig({ cwd: context.cwd, ...(context.configPath === undefined ? {} : { configPath: context.configPath }) });
+      const providers = (options.providers === undefined ? [...BOUNDARY_SUPPORTED_PROVIDERS] : options.providers.split(',').map((item) => item.trim()).filter(Boolean));
+      const receipt = await installReviewedBoundary({ projectRoot: loaded.projectRoot, providers, synthetic: options.synthetic === true });
+      context.writeStdout(`${canonicalJson(receipt)}\n`);
+    });
+});
+
+const readiness = definition(['readiness'], 'Emit a retained zero-dispatch boundary readiness receipt for exact models', 'control-plane', true, (command, context) => {
+  command.requiredOption('--models <selectors>', 'Comma-separated model selectors, resolved through model_aliases like planning')
+    .action(async (options: { models: string }) => {
+      const loaded = await loadConfig({ cwd: context.cwd, ...(context.configPath === undefined ? {} : { configPath: context.configPath }) });
+      const selections = options.models.split(',').map((item) => item.trim()).filter(Boolean).map((selector) => {
+        const exact = selector.startsWith(':') ? loaded.config.model_aliases[selector] : selector;
+        if (exact === undefined) throw new Error(`model alias ${selector} has no exact binding in model_aliases`);
+        if (!/^[^:/\s\x00-\x1f\x7f]+\/[^:/\s\x00-\x1f\x7f]+$/u.test(exact)) throw new Error(`model ${selector} does not resolve to an exact provider/model identity`);
+        const separator = exact.indexOf('/');
+        return { selector, model: exact, provider: exact.slice(0, separator) };
+      });
+      if (selections.length === 0) throw new Error('at least one model selector is required');
+      if (new Set(selections.map((item) => item.model)).size !== selections.length) throw new Error('model selectors must resolve to distinct exact models');
+      const executable = process.env['YYLO_BENCHMARK_JUNO_EXECUTABLE']?.trim() || 'yy';
+      const junoVersion = await discoverJunoVersion(loaded.projectRoot);
+      const { receipt } = await generateBoundaryReadiness({ projectRoot: loaded.projectRoot, models: selections, junoVersion, junoExecutable: executable });
+      context.writeStdout(`${canonicalJson(receipt)}\n`);
+    });
+});
+
 function privateRegistry(): ImmutableArtifactRegistry {
   const root = process.env['YYLO_BENCHMARK_REGISTRY']?.trim();
   if (root === undefined || root === '') throw new Error('YYLO_BENCHMARK_REGISTRY must select the private artifact registry');
@@ -91,9 +124,18 @@ function workflowStorage(context: CommandContext): { registry: ImmutableArtifact
   const root = process.env['YYLO_BENCHMARK_REGISTRY']?.trim() || path.join(context.cwd, '.juno_task', 'artifacts', 'yylo-benchmark');
   return { registry: new ImmutableArtifactRegistry(root), locks: new PersistentTypedResourceLocks({ root: path.join(root, 'locks') }) };
 }
-async function workflowBoundary() {
+async function workflowBoundary(context: CommandContext) {
   const options = workflowBoundaryOptionsFromEnvironment();
   if (options === null) throw new Error('live workflow execution requires YYLO_BENCHMARK_WORKFLOW_BOUNDARY and YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256');
+  // When the reviewed module is the one this project installed, the setup
+  // record owns transport selection so synthetic acceptance can never be
+  // mistaken for live provider evidence and vice versa.
+  const setup = await loadBoundarySetup(context.cwd).catch(() => null);
+  if (setup !== null && setup.boundary.path === options.module) {
+    const ambient = process.env['YYLO_BENCHMARK_BOUNDARY_SYNTHETIC'] === '1';
+    if (setup.synthetic && !ambient) process.env['YYLO_BENCHMARK_BOUNDARY_SYNTHETIC'] = '1';
+    if (!setup.synthetic && ambient) throw new Error('synthetic transport is ambient but the setup record binds live transport; rerun setup --synthetic explicitly');
+  }
   return createReviewedWorkflowBoundary(options);
 }
 function variables(values: readonly string[]): Record<string, string> {
@@ -142,7 +184,7 @@ const run = definition(['run'], 'Execute an immutable task or workflow plan (wor
         if (options.stepsFile === undefined) throw new Error('--steps-file is required for workflow run binding verification');
         if (options.authorization !== undefined) throw new Error('workflow execution no longer accepts spend authorization; cost is best-effort evidence');
         const storage = workflowStorage(context);
-        const boundary = options.dryRun === true ? undefined : await workflowBoundary();
+        const boundary = options.dryRun === true ? undefined : await workflowBoundary(context);
         const result = await executeWorkflowPlan({ plan: benchmarkPlan, projectRoot: context.cwd, policyPath: options.stepsFile,
           registry: storage.registry, locks: storage.locks,
           ...(boundary === undefined ? { dryRun: true as const } : { dispatcher: boundary.dispatcher, judge: boundary.judge, boundaryIdentity: boundary.identity }) });
@@ -173,7 +215,7 @@ const recover = definition(['recover'], 'Recover a workflow plan from durable in
     .action(async (options: { plan: string; stepsFile: string; authorization?: string; dryRun?: boolean }) => {
       const benchmarkPlan = await readBenchmarkPlan(path.resolve(context.cwd, options.plan));
       if (benchmarkPlan.schema_version !== 'juno_benchmark_workflow_plan.v2') throw new Error('recover supports workflow plans only; task-case recovery remains automatic in run');
-      const storage = workflowStorage(context); const boundary = options.dryRun === true ? undefined : await workflowBoundary();
+      const storage = workflowStorage(context); const boundary = options.dryRun === true ? undefined : await workflowBoundary(context);
       if (options.authorization !== undefined) throw new Error('workflow recovery no longer accepts spend authorization; cost is best-effort evidence');
       const result = await executeWorkflowPlan({ plan: benchmarkPlan, projectRoot: context.cwd,
         policyPath: options.stepsFile, registry: storage.registry, locks: storage.locks,
@@ -202,7 +244,7 @@ const rejudgeWorkflow = definition(['rejudge'], 'Rejudge retained workflow truth
           requested_judge: requestedJudge, retained_candidate_receipts_expected: benchmarkPlan.execution_order.length,
           policy_semantics_sha256: benchmarkPlan.policy_semantics_sha256, immutable_hashes: verified.immutable_hashes })}\n`); return;
       }
-      const boundary = await workflowBoundary(); const experimentId = `workflow-${benchmarkPlan.plan_id.slice(7)}`;
+      const boundary = await workflowBoundary(context); const experimentId = `workflow-${benchmarkPlan.plan_id.slice(7)}`;
       const receipts = await readWorkflowEvidenceReceipts(storage.registry, experimentId);
       if (receipts.length !== benchmarkPlan.execution_order.length) throw new Error('workflow rejudge requires a complete retained receipt set');
       const judgements = [];
@@ -266,6 +308,8 @@ const investigate = definition(['investigate'], 'Investigate bounded retained ev
 export const BUILTIN_COMMANDS: readonly CommandDefinition[] = Object.freeze([
   init,
   caseLint,
+  setup,
+  readiness,
   plan,
   run,
   recover,

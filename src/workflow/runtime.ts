@@ -324,6 +324,8 @@ const MAX_BOUNDARY_OUTPUT_BYTES = 8 * 1024 * 1024;
 const DEFAULT_BOUNDARY_TIMEOUT_MS = 120_000;
 const boundaryProbeResult = z.object({ schema_version: z.literal(WORKFLOW_PROCESS_BOUNDARY_PROTOCOL), providers: z.array(z.string().trim().min(1)).min(1) }).strict();
 const boundaryPreflightResult = z.object({ ok: z.literal(true), provider: z.string().trim().min(1), model: z.string().trim().min(1), juno_version: z.string().trim().min(1) }).strict();
+const boundaryErrorDocument = z.object({ schema_version: z.literal('juno_benchmark_boundary_error.v1'),
+  message: z.string().min(1).max(512).refine((value) => !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/u.test(value), 'control characters') }).strict();
 const boundaryReconciliation = z.discriminatedUnion('state', [
   z.object({ state: z.literal('terminal'), result: terminalResult }).strict(),
   z.object({ state: z.enum(['safely_resumable', 'proven_not_dispatched', 'ambiguous']) }).strict(),
@@ -387,7 +389,15 @@ async function invokeReviewedBoundary(
   if (timedOut) throw boundaryError(`${operation} timed out`);
   // The reviewed module owns credentials that Benchmark deliberately cannot
   // inspect or scrub. Never reflect its stderr into public errors or receipts.
-  if (closed.code !== 0 || closed.signal !== null) throw boundaryError(`${operation} failed with a nonzero or signalled terminal outcome`);
+  // A strictly-shaped structured error document on stdout is the only allowed
+  // actionable reason channel; everything else stays opaque.
+  if (closed.code !== 0 || closed.signal !== null) {
+    const document = boundaryErrorDocument.safeParse(((): unknown => {
+      try { return JSON.parse(Buffer.concat(stdout).toString('utf8')) as unknown; } catch { return null; }
+    })());
+    if (document.success) throw boundaryError(document.data.message);
+    throw boundaryError(`${operation} failed with a nonzero or signalled terminal outcome`);
+  }
   try { return JSON.parse(Buffer.concat(stdout).toString('utf8')) as unknown; }
   catch { throw boundaryError(`${operation} returned malformed JSON`); }
 }
@@ -407,8 +417,7 @@ export function workflowBoundaryOptionsFromEnvironment(environment: NodeJS.Proce
 }
 
 export async function createReviewedWorkflowBoundary(options: ReviewedWorkflowBoundaryOptions): Promise<ReviewedWorkflowBoundary> {
-  const bytes = await reviewedBoundaryModule(options); const timeoutMs = options.timeoutMs ?? DEFAULT_BOUNDARY_TIMEOUT_MS;
-  const probe = boundaryProbeResult.parse(await invokeReviewedBoundary(bytes, 'probe', { schema_version: WORKFLOW_PROCESS_BOUNDARY_PROTOCOL }, timeoutMs));
+  const bytes = await reviewedBoundaryModule(options); const timeoutMs = options.timeoutMs ?? DEFAULT_BOUNDARY_TIMEOUT_MS;  const probe = boundaryProbeResult.parse(await invokeReviewedBoundary(bytes, 'probe', { schema_version: WORKFLOW_PROCESS_BOUNDARY_PROTOCOL }, timeoutMs));
   const providers = new Set(probe.providers);
   const operation = async <T>(name: 'preflight' | 'dispatch' | 'reconcile' | 'resume', input: WorkflowRuntimeInvocation,
     schema: z.ZodType<T>): Promise<T> => {
@@ -443,4 +452,33 @@ export async function createReviewedWorkflowBoundary(options: ReviewedWorkflowBo
   );
   return Object.freeze({ dispatcher, judge, identity: { protocol: WORKFLOW_PROCESS_BOUNDARY_PROTOCOL,
     sha256: `sha256:${options.sha256}` as `sha256:${string}` } });
+}
+
+export interface ReviewedBoundaryReadinessProbe {
+  readonly identity: { readonly protocol: typeof WORKFLOW_PROCESS_BOUNDARY_PROTOCOL; readonly sha256: `sha256:${string}` };
+  readonly providers: readonly string[];
+  /** Zero-dispatch provider/model/Juno identity proof for an exact model selector. */
+  preflightIdentity(input: { readonly provider: string; readonly model: string; readonly junoVersion: string }): Promise<void>;
+}
+
+/**
+ * Load and probe a reviewed boundary for readiness without any dispatch. The
+ * boundary's preflight operation only consumes provider/model/juno_version, so
+ * a reduced invocation is exact for this proof.
+ */
+export async function createReviewedBoundaryReadinessProbe(options: ReviewedWorkflowBoundaryOptions): Promise<ReviewedBoundaryReadinessProbe> {
+  const bytes = await reviewedBoundaryModule(options); const timeoutMs = options.timeoutMs ?? DEFAULT_BOUNDARY_TIMEOUT_MS;
+  const probe = boundaryProbeResult.parse(await invokeReviewedBoundary(bytes, 'probe', { schema_version: WORKFLOW_PROCESS_BOUNDARY_PROTOCOL }, timeoutMs));
+  return Object.freeze({
+    identity: { protocol: WORKFLOW_PROCESS_BOUNDARY_PROTOCOL, sha256: `sha256:${options.sha256}` as `sha256:${string}` },
+    providers: Object.freeze([...probe.providers]),
+    preflightIdentity: async (input: { readonly provider: string; readonly model: string; readonly junoVersion: string }): Promise<void> => {
+      const result = boundaryPreflightResult.parse(await invokeReviewedBoundary(bytes, 'preflight', {
+        invocation: { provider: input.provider, model: input.model, juno_version: input.junoVersion },
+      }, timeoutMs));
+      if (result.provider !== input.provider || `${result.provider}/${result.model}` !== input.model || result.juno_version !== input.junoVersion) {
+        throw boundaryError('preflight substituted the exact provider/model or Juno version');
+      }
+    },
+  });
 }

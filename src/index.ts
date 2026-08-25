@@ -24,3 +24,4 @@ export * from './workflow/index.js';
 export * from './workflow/evidence.js';
 export * from './workflow/plan.js';
 export * from './workflow/runtime.js';
+export * from './boundary/index.js';
