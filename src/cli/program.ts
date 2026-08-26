@@ -2,7 +2,17 @@ import { Command } from 'commander';
 import { registerBuiltinCommands } from './builtins.js';
 import { CommandRegistry, type BenchmarkPlugin, type CommandContext } from './registry.js';
 
-export const PACKAGE_VERSION = '0.1.0-rc.5';
+// The package version is injected at build time from package.json by tsup
+// (`define`) and by vitest for source-run tests. The fallback is deliberately
+// not a plausible release number: an unbuilt import must fail the CLI's
+// benchmark-pair compatibility probe loudly instead of masquerading as a real
+// version. juno-benchmark/test/package-version.test.ts guards the wiring.
+declare const __YYLO_BENCHMARK_PACKAGE_VERSION__: string | undefined;
+
+export const PACKAGE_VERSION: string =
+  typeof __YYLO_BENCHMARK_PACKAGE_VERSION__ === 'string' && __YYLO_BENCHMARK_PACKAGE_VERSION__.length > 0
+    ? __YYLO_BENCHMARK_PACKAGE_VERSION__
+    : '0.0.0-unbuilt';
 
 export interface ProgramOptions {
   readonly cwd?: string;
