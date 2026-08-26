@@ -5,6 +5,14 @@ YYLO Benchmark is the longitudinal evaluation and immutable-evidence system for 
 The private, independent package owns case validation, isolated snapshots, shadow
 boards, execution reconciliation, recovery, reports, and bounded investigations.
 
+<p align="center">
+  <img src="./assets/yylo-logo-square-neon-green.png" alt="YYLO Benchmark coding-agent evaluation logo" width="180" />
+</p>
+
+<p align="center">
+  <img src="./assets/yylo-benchmark-coding-agent-evaluation-infographic.png" alt="YYLO Benchmark coding-agent evaluation pipeline, evidence controls, examples, and facts" width="960" />
+</p>
+
 ```bash
 npm install
 npm test
