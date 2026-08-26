@@ -1,7 +1,13 @@
+import { readFileSync } from 'node:fs';
 import { defineConfig } from 'vitest/config';
 import { contentionBudgetMs } from './test/support/contention.js';
 
+const packageVersion = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version as string;
+
 export default defineConfig({
+  // Keep source-run tests on the same build-time version identity as dist so
+  // the package-version guard proves the real published pipeline.
+  define: { __YYLO_BENCHMARK_PACKAGE_VERSION__: JSON.stringify(packageVersion) },
   test: {
     // Real-Git acceptance cases can exceed Vitest's five-second default under
     // shared-host contention, turning ambient load into phantom candidate
