@@ -1,6 +1,6 @@
 {
   "name": "@yylo/benchmark",
-  "version": "0.1.0-rc.6",
+  "version": "0.1.0-rc.7",
   "description": "YYLO Benchmark: immutable task-case and workflow evaluation contracts and CLI",
   "type": "module",
   "main": "./dist/index.js",
