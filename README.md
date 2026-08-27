@@ -1,5 +1,17 @@
 # YYLO Benchmark
 
+<p align="center">
+  <a href="https://yylo.dev"><strong>yylo.dev</strong></a> ·
+  <a href="https://github.com/yylo-dev/yylo">YYLO CLI</a> ·
+  <a href="https://github.com/yylo-dev/yylo-ledger">YYLO Ledger</a> ·
+  <a href="https://www.npmjs.com/package/%40yylo%2Fbenchmark">npm</a>
+</p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/%40yylo%2Fbenchmark"><img src="https://img.shields.io/npm/v/%40yylo%2Fbenchmark.svg" alt="npm version" /></a>
+  <a href="https://github.com/yylo-dev/yylo-benchmark"><img src="https://img.shields.io/github/stars/yylo-dev/yylo-benchmark?style=social" alt="GitHub stars" /></a>
+</p>
+
 YYLO Benchmark is the longitudinal evaluation and immutable-evidence system for agent runs. It invokes [YYLO](https://github.com/yylo-dev/yylo), the AI coding-agent orchestration CLI, and uses [YYLO Ledger](https://github.com/yylo-dev/yylo-ledger), the Git-native task and workflow ledger, through its public JSON/receipt CLI contract.
 
 The private, independent package owns case validation, isolated snapshots, shadow
