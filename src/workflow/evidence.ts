@@ -21,6 +21,7 @@ export interface WorkflowCandidateEvidence {
   readonly candidate_outcome: { readonly status: 'success' | 'failure' };
   readonly harness_validity: { readonly status: 'valid' | 'invalid'; readonly reason: string | null };
   readonly transcript: string;
+  readonly candidate_response?: string;
   readonly artifacts: Readonly<Record<string, string>>;
 }
 export interface GovernedWorkflowJudgeDecision { readonly resolved: boolean; readonly evidence: string }

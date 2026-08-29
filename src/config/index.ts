@@ -10,6 +10,10 @@ export const CONFIG_FILENAME = 'yylo-benchmark.config.json';
 /** Bounded read-only migration input; new configuration always uses CONFIG_FILENAME. */
 export const LEGACY_CONFIG_FILENAME = 'juno-benchmark.config.json';
 
+const projectRelativePath = z.string().trim().min(1).refine((value) =>
+  !path.isAbsolute(value) && !value.split(/[\\/]/u).includes('..') && !value.includes('\0'),
+  'expected a project-relative path without parent traversal');
+
 export const BenchmarkConfigSchema = z.object({
   schema_version: z.literal(CONFIG_SCHEMA_VERSION),
   repository_id: z.string().trim().min(1).default('root'),
@@ -21,6 +25,17 @@ export const BenchmarkConfigSchema = z.object({
     z.string().regex(/^:[A-Za-z0-9._-]+$/u, 'expected a colon-prefixed model alias'),
     z.string().max(256).regex(/^[^:/\s\x00-\x1f\x7f]+\/[^:/\s\x00-\x1f\x7f]+$/u, 'expected an exact provider/model identity'),
   ).default({}),
+  environment: z.object({
+    env_file: z.literal('.env.yylo').default('.env.yylo'),
+    legacy_env_file: z.literal('.env.juno').default('.env.juno'),
+    python: z.object({
+      bootstrap: projectRelativePath.default('python3'),
+      venv: projectRelativePath,
+      requirements: z.array(projectRelativePath).min(1),
+      packages: z.array(z.string().regex(/^[A-Za-z0-9_.-]+==[A-Za-z0-9_.+-]+$/u, 'expected an exact name==version package pin')).default([]),
+      imports: z.array(z.string().regex(/^[A-Za-z_][A-Za-z0-9_.]*$/u)).default([]),
+    }).strict().optional(),
+  }).strict().default({ env_file: '.env.yylo', legacy_env_file: '.env.juno' }),
   grader_profiles: z.record(z.string().trim().min(1), z.object({
     executable: z.string().trim().min(1),
     arguments: z.array(z.string()).default([]),

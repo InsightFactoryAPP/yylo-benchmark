@@ -22,6 +22,7 @@ import { installBenchmarkWikis } from '../wiki/index.js';
 import { generateReleaseReadinessReceipt } from '../release-readiness/index.js';
 import { generateBoundaryReadiness, installReviewedBoundary, BOUNDARY_SUPPORTED_PROVIDERS, loadBoundarySetup, resolveWorkflowRegistryRoot } from '../boundary/index.js';
 import { discoverJunoVersion } from '../planning/cli.js';
+import { loadBenchmarkEnvironment, prepareBenchmarkEnvironment, verifyBenchmarkEnvironment } from '../environment/index.js';
 import {
   COMMAND_API_VERSION,
   type CommandContext,
@@ -47,6 +48,7 @@ const init = definition(['init'], 'Initialize benchmark configuration and manage
       repository_id: 'root',
       kanban: { arguments: [] },
       model_aliases: {},
+      environment: { env_file: '.env.yylo', legacy_env_file: '.env.juno' },
     })}\n`;
     if (options.stdout === true) {
       context.writeStdout(contents);
@@ -67,21 +69,42 @@ const caseLint = definition(['case', 'lint'], 'Validate an explicitly opted-in K
   });
 });
 
+async function loadedPreparedConfig(context: CommandContext) {
+  const loaded = await loadConfig({ cwd: context.cwd, ...(context.configPath === undefined ? {} : { configPath: context.configPath }) });
+  if (loaded.config.environment.python !== undefined) {
+    await verifyBenchmarkEnvironment(loaded);
+    await loadBenchmarkEnvironment(loaded);
+  } else {
+    await loadBenchmarkEnvironment(loaded).catch((error) => {
+      if (!(error instanceof Error) || !error.message.includes('canonical .env.yylo is missing')) throw error;
+    });
+  }
+  return loaded;
+}
+
+const prepare = definition(['prepare'], 'Prepare canonical project environment and install declared benchmark requirements', 'foundation', true, (command, context) => {
+  command.action(async () => {
+    const loaded = await loadConfig({ cwd: context.cwd, ...(context.configPath === undefined ? {} : { configPath: context.configPath }) });
+    context.writeStdout(`${canonicalJson(await prepareBenchmarkEnvironment(loaded))}\n`);
+  });
+});
+
 const setup = definition(['setup'], 'Install the reviewed hash-pinned workflow boundary and bind the private registry', 'foundation', true, (command, context) => {
   command.option('--providers <names>', `Comma-separated boundary providers (default: ${BOUNDARY_SUPPORTED_PROVIDERS.join(',')})`)
     .option('--synthetic', 'Record synthetic transport intent for installed-CLI acceptance without credentials')
     .action(async (options: { providers?: string; synthetic?: boolean }) => {
       const loaded = await loadConfig({ cwd: context.cwd, ...(context.configPath === undefined ? {} : { configPath: context.configPath }) });
+      const preparation = await prepareBenchmarkEnvironment(loaded);
       const providers = (options.providers === undefined ? [...BOUNDARY_SUPPORTED_PROVIDERS] : options.providers.split(',').map((item) => item.trim()).filter(Boolean));
       const receipt = await installReviewedBoundary({ projectRoot: loaded.projectRoot, providers, synthetic: options.synthetic === true });
-      context.writeStdout(`${canonicalJson(receipt)}\n`);
+      context.writeStdout(`${canonicalJson({ ...receipt, preparation })}\n`);
     });
 });
 
 const readiness = definition(['readiness'], 'Emit a retained zero-dispatch boundary readiness receipt for exact models', 'control-plane', true, (command, context) => {
   command.requiredOption('--models <selectors>', 'Comma-separated model selectors, resolved through model_aliases like planning')
     .action(async (options: { models: string }) => {
-      const loaded = await loadConfig({ cwd: context.cwd, ...(context.configPath === undefined ? {} : { configPath: context.configPath }) });
+      const loaded = await loadedPreparedConfig(context);
       const selections = options.models.split(',').map((item) => item.trim()).filter(Boolean).map((selector) => {
         const exact = selector.startsWith(':') ? loaded.config.model_aliases[selector] : selector;
         if (exact === undefined) throw new Error(`model alias ${selector} has no exact binding in model_aliases`);
@@ -156,6 +179,7 @@ const plan = definition(['plan'], 'Create a deterministic execution plan', 'cont
     .option('--max-usd <amount>', 'Immutable aggregate spend ceiling in USD (default: 20)')
     .option('--attempts <count>', 'Attempts per model', '1').option('--output <path>').option('--dry-run', 'Explicitly affirm read-only planning')
     .action(async (options: { task?: string; workflow?: string; models: string; stepsFile?: string; steps?: string; var: string[]; maxUsd?: string; attempts: string; output?: string }) => {
+      await loadedPreparedConfig(context);
       if ((options.task === undefined) === (options.workflow === undefined)) throw new Error('exactly one of --task or --workflow is required');
       if (options.workflow !== undefined && options.maxUsd !== undefined) throw new Error('--max-usd applies only to legacy task-case plans; workflow cost is best-effort evidence');
       const attempts = Number(options.attempts); const models = options.models.split(',').map((item) => item.trim()).filter(Boolean);
@@ -178,6 +202,7 @@ const run = definition(['run'], 'Execute an immutable task or workflow plan (wor
   command.requiredOption('--plan <path>').option('--steps-file <path>', 'Workflow policy sidecar used for immediate hash verification')
     .option('--authorization <path>', 'Explicit plan-bound execution authorization').option('--dry-run', 'Verify and render a workflow plan with zero dispatch')
     .option('--no-record').option('--non-canonical-scope <scope>').action(async (options: { plan: string; stepsFile?: string; authorization?: string; dryRun?: boolean; record: boolean; nonCanonicalScope?: string }) => {
+      await loadedPreparedConfig(context);
       const absolutePlan = path.resolve(context.cwd, options.plan); const benchmarkPlan = await readBenchmarkPlan(absolutePlan);
       if (benchmarkPlan.schema_version === 'juno_benchmark_workflow_plan.v2') {
         if (options.record === false || options.nonCanonicalScope !== undefined) throw new Error('--no-record and --non-canonical-scope apply only to task-case plans');
@@ -213,12 +238,13 @@ const recover = definition(['recover'], 'Recover a workflow plan from durable in
     .option('--authorization <path>', 'Explicit plan-bound workflow execution authorization')
     .option('--dry-run', 'Verify recovery bindings and order with zero dispatch')
     .action(async (options: { plan: string; stepsFile: string; authorization?: string; dryRun?: boolean }) => {
+      await loadedPreparedConfig(context);
       const benchmarkPlan = await readBenchmarkPlan(path.resolve(context.cwd, options.plan));
       if (benchmarkPlan.schema_version !== 'juno_benchmark_workflow_plan.v2') throw new Error('recover supports workflow plans only; task-case recovery remains automatic in run');
       const storage = workflowStorage(context); const boundary = options.dryRun === true ? undefined : await workflowBoundary(context);
       if (options.authorization !== undefined) throw new Error('workflow recovery no longer accepts spend authorization; cost is best-effort evidence');
       const result = await executeWorkflowPlan({ plan: benchmarkPlan, projectRoot: context.cwd,
-        policyPath: options.stepsFile, registry: storage.registry, locks: storage.locks,
+        policyPath: options.stepsFile, registry: storage.registry, locks: storage.locks, recovery: true,
         ...(boundary === undefined ? { dryRun: true as const } : { dispatcher: boundary.dispatcher, judge: boundary.judge, boundaryIdentity: boundary.identity }) });
       context.writeStdout(`${canonicalJson({ operation: 'recover', ...result })}\n`);
     });
@@ -229,6 +255,7 @@ const rejudgeWorkflow = definition(['rejudge'], 'Rejudge retained workflow truth
     .option('--judge <selector>', 'Requested governed judge selector')
     .option('--dry-run', 'Verify immutable rejudge inputs with zero judge or candidate dispatch')
     .action(async (options: { plan: string; stepsFile: string; judge?: string; dryRun?: boolean }) => {
+      await loadedPreparedConfig(context);
       const benchmarkPlan = await readBenchmarkPlan(path.resolve(context.cwd, options.plan));
       if (benchmarkPlan.schema_version !== 'juno_benchmark_workflow_plan.v2') throw new Error('rejudge supports workflow plans only; use regrade for task-case plans');
       const storage = workflowStorage(context); const verified = await executeWorkflowPlan({ plan: benchmarkPlan, projectRoot: context.cwd,
@@ -277,7 +304,7 @@ const doctor = definition(['doctor'], 'Verify retained experiment evidence', 'ex
     // `workflow-<64-hex>` is a private-registry experiment identity, not a
     // Kanban task: verify retained workflow evidence without any Ledger read.
     if (isWorkflowExperimentId(taskId)) {
-      const loaded = await loadConfig({ cwd: context.cwd, ...(context.configPath === undefined ? {} : { configPath: context.configPath }) });
+      const loaded = await loadedPreparedConfig(context);
       const setup = await loadBoundarySetup(loaded.projectRoot).catch(() => null);
       const configured = setup === null ? resolveWorkflowRegistryRoot(loaded.projectRoot) : setup.registry.root;
       const ambient = resolveWorkflowRegistryRoot(loaded.projectRoot);
@@ -320,6 +347,7 @@ const investigate = definition(['investigate'], 'Investigate bounded retained ev
 export const BUILTIN_COMMANDS: readonly CommandDefinition[] = Object.freeze([
   init,
   caseLint,
+  prepare,
   setup,
   readiness,
   plan,

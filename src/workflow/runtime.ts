@@ -31,7 +31,7 @@ const candidateEvidence = z.object({
   started_at: z.string().datetime({ offset: true }), ended_at: z.string().datetime({ offset: true }), runtime_ms: z.number().int().nonnegative(),
   cost: CostEvidenceSchema, candidate_outcome: z.object({ status: z.enum(['success', 'failure']) }).strict(),
   harness_validity: z.object({ status: z.enum(['valid', 'invalid']), reason: z.string().trim().min(1).nullable() }).strict(),
-  transcript: z.string(), artifacts: z.record(z.string()),
+  transcript: z.string(), candidate_response: z.string().optional(), artifacts: z.record(z.string()),
 }).strict();
 const terminalSummary = z.object({
   dispatch_id: hash, status: z.enum(['success', 'failure']), effect: z.enum(['none', 'completed']),
@@ -51,10 +51,10 @@ export type WorkflowReconciliation =
 export interface TrustedWorkflowDispatcher {
   readonly protocol: typeof AUTH_LAUNCHER_PROTOCOL;
   readonly providers: ReadonlySet<string>;
-  preflight(input: WorkflowRuntimeInvocation): Promise<void>;
-  dispatch(input: WorkflowRuntimeInvocation): Promise<WorkflowRuntimeTerminalResult>;
+  preflight(input: WorkflowRuntimeInvocation, runtimeVariables?: Readonly<Record<string, string>>, allowStepReferences?: boolean): Promise<void>;
+  dispatch(input: WorkflowRuntimeInvocation, runtimeVariables?: Readonly<Record<string, string>>): Promise<WorkflowRuntimeTerminalResult>;
   reconcile(input: WorkflowRuntimeInvocation): Promise<WorkflowReconciliation>;
-  resume(input: WorkflowRuntimeInvocation): Promise<WorkflowRuntimeTerminalResult>;
+  resume(input: WorkflowRuntimeInvocation, runtimeVariables?: Readonly<Record<string, string>>): Promise<WorkflowRuntimeTerminalResult>;
 }
 
 const intentSchema = z.object({
@@ -97,6 +97,7 @@ export interface WorkflowRuntimeOptions {
   readonly plan: WorkflowExecutionPlan; readonly projectRoot: string; readonly policyPath: string;
   readonly registry: ImmutableArtifactRegistry; readonly locks: PersistentTypedResourceLocks; readonly dispatcher?: TrustedWorkflowDispatcher;
   readonly judge?: GovernedWorkflowJudgeRunner; readonly dryRun?: boolean;
+  readonly recovery?: boolean;
   readonly boundaryIdentity?: { readonly protocol: typeof WORKFLOW_PROCESS_BOUNDARY_PROTOCOL; readonly sha256: `sha256:${string}` };
 }
 
@@ -120,7 +121,12 @@ async function verifyImmediateBindings(options: WorkflowRuntimeOptions): Promise
   if (!workflowRaw.equals(committedRaw)) throw new Error('workflow working bytes drifted from the bound source commit');
   verifyWorkflowPlanBindings(plan, workflowRaw, policyRaw);
   if (sourceTree !== plan.snapshot.source_tree || canonicalHash({ repository_id: plan.source.repository_id, source_commit: plan.source.source_commit, source_tree: sourceTree }) !== plan.snapshot.identity) throw new Error('workflow snapshot binding drift detected');
-  if (!plan.source.source_ref.startsWith('detached@') && await git(root, ['rev-parse', plan.source.source_ref]) !== plan.source.source_commit) throw new Error('workflow source ref drift detected');
+  // A production workflow may legitimately advance its branch while creating
+  // tasks or other controller metadata. Recovery executes the already-bound
+  // source commit and compiled bytes, so branch movement is not evidence drift.
+  // Fresh run and dry-run retain the stricter planning/execution ref gate.
+  if (options.recovery !== true && !plan.source.source_ref.startsWith('detached@')
+      && await git(root, ['rev-parse', plan.source.source_ref]) !== plan.source.source_commit) throw new Error('workflow source ref drift detected');
   const configPath = inside(root, plan.workflow_model_policy.config_path, 'workflow model policy path'); let configRaw: Buffer | null = null;
   try { configRaw = await readFile(configPath); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   if ((configRaw === null ? null : prefixed(configRaw)) !== plan.workflow_model_policy.config_sha256) throw new Error('workflow model policy bytes drift detected');
@@ -248,7 +254,7 @@ export async function executeWorkflowPlan(options: WorkflowRuntimeOptions): Prom
       || canonicalHash(plan.runtime_binding.boundary) !== canonicalHash(options.boundaryIdentity)) throw new Error('workflow execution requires the exact plan-bound reviewed boundary identity');
   const judge = options.judge; if (judge === undefined) throw new Error('workflow execution requires the plan-bound governed judge');
   if (plan.compiled_workflows.some((item) => !dispatcher.providers.has(item.provider))) throw new Error('trusted launcher has no credential route for every exact provider');
-  for (const input of invocations) await dispatcher.preflight(input); // Confirm every exact identity before any durable intent or candidate dispatch.
+  for (const input of invocations) await dispatcher.preflight(input, {}, true); // Validate identities, workflow defaults, and dependency references before any durable intent.
   const terminals: WorkflowStepTerminal[] = []; let recovered = false; const experiment = experimentId(plan);
   const groups = new Map<string, WorkflowRuntimeInvocation[]>(); for (const item of invocations) { const key = `${item.model}\0${item.attempt}`; groups.set(key, [...(groups.get(key) ?? []), item]); }
   // A plan identity has one process owner at a time. This closes the no-resource
@@ -256,6 +262,7 @@ export async function executeWorkflowPlan(options: WorkflowRuntimeOptions): Prom
   // cross-plan exclusion for shared production resources.
   const planLease = await options.locks.acquire([{ type: 'workflow_plan', id: plan.plan_id }]);
   try { for (const group of groups.values()) {
+    const runtimeVariables: Record<string, string> = {};
     const production = group.some((item) => plan.policy.steps.find((policy) => policy.step_id === item.step_id)!.side_effect === 'production');
     const experimentResources: TypedResource[] = production ? [{ type: 'production', id: 'yylo-benchmark-model-experiment' }] : [];
     await options.locks.withResources(experimentResources, async () => {
@@ -278,11 +285,12 @@ export async function executeWorkflowPlan(options: WorkflowRuntimeOptions): Prom
           let recoveryCount = current.recoveryAttempts.get(input.dispatch_id) ?? 0;
           const prior = current.intents.get(input.dispatch_id);
           if (prior === undefined) {
+            await dispatcher.preflight(input, runtimeVariables, false); // Resolve the exact command before durable intent.
             const intent: DispatchIntent = { schema_version: WORKFLOW_DISPATCH_INTENT_SCHEMA_VERSION, dispatch_id: input.dispatch_id, invocation_hash: input.invocation_hash,
               plan_id: plan.plan_id as `sha256:${string}`, model: input.model, provider: input.provider, attempt: input.attempt, step_id: input.step_id,
               workflow_sha256: input.workflow_sha256, policy_sha256: plan.policy_semantics_sha256 };
             await appendJson(options.registry, experiment, 'workflow-dispatch-intent', intent); // Durable before consequential dispatch.
-            result = validateResult(await dispatcher.dispatch(input), input);
+            result = validateResult(await dispatcher.dispatch(input, runtimeVariables), input);
           } else {
             if (prior.invocation_hash !== input.invocation_hash || prior.workflow_sha256 !== input.workflow_sha256 || prior.policy_sha256 !== plan.policy_semantics_sha256) throw new Error('workflow dispatch intent binding drift detected');
             const reconciliation = await dispatcher.reconcile(input); wasRecovered = true; recovered = true;
@@ -298,9 +306,10 @@ export async function executeWorkflowPlan(options: WorkflowRuntimeOptions): Prom
                 invocation_hash: input.invocation_hash, plan_id: plan.plan_id, recovery_attempt: recoveryAttempt,
               });
               recoveryCount = recoveryAttempt;
-              result = validateResult(await dispatcher.resume(input), input);
+              result = validateResult(await dispatcher.resume(input, runtimeVariables), input);
             }
           }
+          runtimeVariables[`steps.${input.step_id}.response`] = result.evidence.candidate_response ?? result.evidence.transcript;
           if (!existingReceipts.some((receipt) => receipt.dispatch_id === input.dispatch_id)) {
             const judgeIntent = judgeIntentFor(plan, input, await state(options.registry, plan));
             await retainAndGradeWorkflowStep({ registry: options.registry, experimentId: experiment, plan, dispatchId: input.dispatch_id,
@@ -420,7 +429,7 @@ export async function createReviewedWorkflowBoundary(options: ReviewedWorkflowBo
   const bytes = await reviewedBoundaryModule(options); const timeoutMs = options.timeoutMs ?? DEFAULT_BOUNDARY_TIMEOUT_MS;  const probe = boundaryProbeResult.parse(await invokeReviewedBoundary(bytes, 'probe', { schema_version: WORKFLOW_PROCESS_BOUNDARY_PROTOCOL }, timeoutMs));
   const providers = new Set(probe.providers);
   const operation = async <T>(name: 'preflight' | 'dispatch' | 'reconcile' | 'resume', input: WorkflowRuntimeInvocation,
-    schema: z.ZodType<T>): Promise<T> => {
+    schema: z.ZodType<T>, runtimeVariables: Readonly<Record<string, string>> = {}, allowStepReferences = false): Promise<T> => {
     if (!providers.has(input.provider)) throw boundaryError(`provider ${input.provider} is not advertised by the reviewed module`);
     const workflowBytes = Buffer.from(input.workflow_bytes_base64, 'base64');
     if (workflowBytes.toString('base64') !== input.workflow_bytes_base64 || prefixed(workflowBytes) !== input.workflow_sha256) {
@@ -433,19 +442,20 @@ export async function createReviewedWorkflowBoundary(options: ReviewedWorkflowBo
     if (canonicalHash(invocationCore) !== input.invocation_hash) throw boundaryError('workflow invocation hash does not match its exact bytes');
     workflowStepRequiresModelDispatch(workflowBytes, input.step_id, input.deterministic_command ?? undefined); // Revalidate the exact command contract at the boundary.
     const operationTimeout = ['dispatch', 'resume'].includes(name) ? Math.max(timeoutMs, input.timeout_ms + 5_000) : timeoutMs;
-    return schema.parse(await invokeReviewedBoundary(bytes, name, { invocation: input }, operationTimeout));
+    return schema.parse(await invokeReviewedBoundary(bytes, name, { invocation: input, runtime_variables: runtimeVariables,
+      allow_step_references: allowStepReferences }, operationTimeout));
   };
   const dispatcher: TrustedWorkflowDispatcher = {
     protocol: AUTH_LAUNCHER_PROTOCOL, providers,
-    preflight: async (input) => {
-      const result = await operation('preflight', input, boundaryPreflightResult);
+    preflight: async (input, runtimeVariables = {}, allowStepReferences = false) => {
+      const result = await operation('preflight', input, boundaryPreflightResult, runtimeVariables, allowStepReferences);
       if (result.provider !== input.provider || `${result.provider}/${result.model}` !== input.model || result.juno_version !== input.juno_version) {
         throw boundaryError('preflight substituted the exact provider/model or Juno version');
       }
     },
-    dispatch: async (input) => operation('dispatch', input, terminalResult) as Promise<WorkflowRuntimeTerminalResult>,
+    dispatch: async (input, runtimeVariables = {}) => operation('dispatch', input, terminalResult, runtimeVariables) as Promise<WorkflowRuntimeTerminalResult>,
     reconcile: async (input) => operation('reconcile', input, boundaryReconciliation) as Promise<WorkflowReconciliation>,
-    resume: async (input) => operation('resume', input, terminalResult) as Promise<WorkflowRuntimeTerminalResult>,
+    resume: async (input, runtimeVariables = {}) => operation('resume', input, terminalResult, runtimeVariables) as Promise<WorkflowRuntimeTerminalResult>,
   };
   const judge: GovernedWorkflowJudgeRunner = async (input) => boundaryJudgeResult.parse(
     await invokeReviewedBoundary(bytes, 'judge', { invocation: input }, timeoutMs),

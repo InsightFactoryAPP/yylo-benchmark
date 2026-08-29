@@ -152,7 +152,7 @@ function invocationOf(request) {
 // overlay, which emits exactly: block mappings, block sequences, plain
 // scalars, double-quoted (JSON escape) scalars, single-quoted scalars, and
 // block literal (`|` family) scalars. Anything else fails closed. Only the
-// `steps[].id` and `steps[].command` positions are extracted; other fields are
+// `vars` plus `steps[].id` and `steps[].command` are extracted; other fields are
 // structurally skipped without interpretation.
 // ---------------------------------------------------------------------------
 
@@ -338,30 +338,53 @@ function parseWorkflowSteps(text) {
     }
     extracted.push({ id, command: [...command] });
   }
-  return extracted;
+  const declared = document instanceof Map ? (document.get('vars') ?? document.get('variables')) : undefined;
+  if (declared !== undefined && !(declared instanceof Map)) throw new Error('workflow vars must be a mapping');
+  return { steps: extracted, vars: declared ?? new Map() };
 }
 
-function compiledStepFor(invocation) {
+function compiledStepFor(invocation, runtimeVariables = {}, allowStepReferences = false) {
   if (typeof invocation.workflow_bytes_base64 !== 'string' || invocation.workflow_bytes_base64 === '') fail('invocation has no compiled workflow bytes');
   if (!isHash(invocation.workflow_sha256)) fail('invocation workflow hash is invalid');
   const bytes = Buffer.from(invocation.workflow_bytes_base64, 'base64');
   if (bytes.toString('base64') !== invocation.workflow_bytes_base64 || `sha256:${sha256Hex(bytes)}` !== invocation.workflow_sha256) {
     fail('compiled workflow bytes do not match their exact invocation identity');
   }
-  let steps;
-  try { steps = parseWorkflowSteps(bytes.toString('utf8')); }
+  let parsed;
+  try { parsed = parseWorkflowSteps(bytes.toString('utf8')); }
   catch (error) { fail(`compiled workflow bytes cannot be parsed: ${error instanceof Error ? error.message : String(error)}`); }
-  const step = steps.find((item) => item.id === invocation.step_id);
+  const step = parsed.steps.find((item) => item.id === invocation.step_id);
   if (step === undefined) fail(`compiled workflow does not contain exact step ${invocation.step_id}`);
   const variables = invocation.variables;
   if (variables !== undefined && (variables === null || typeof variables !== 'object' || Array.isArray(variables))) fail('invocation variables are invalid');
+  if (runtimeVariables === null || typeof runtimeVariables !== 'object' || Array.isArray(runtimeVariables)) fail('runtime workflow variables are invalid');
+  const resolvedVariables = {
+    repo_root: projectRoot,
+    run_id: `yylo-benchmark-${String(invocation.plan_id).replace(/^sha256:/u, '').slice(0, 16)}`,
+    ...Object.fromEntries(parsed.vars),
+    ...variables,
+    ...runtimeVariables,
+  };
+  const resolving = new Set();
+  const resolveName = (rawName) => {
+    const name = rawName.startsWith('vars.') ? rawName.slice(5) : rawName;
+    const value = resolvedVariables[name];
+    if (value === undefined || value === null) {
+      if (allowStepReferences && /^steps\.[A-Za-z0-9_.-]+\.response$/u.test(rawName)) return `{{ ${rawName} }}`;
+      fail(`workflow variable ${rawName} is not bound for this invocation`);
+    }
+    if (typeof value !== 'string') return String(value);
+    if (resolving.has(name)) fail(`workflow variable ${rawName} is recursively defined`);
+    resolving.add(name);
+    const output = substitute(value);
+    resolving.delete(name);
+    return output;
+  };
   const substitute = (text) => {
-    const resolved = text.replace(/\$\(([A-Za-z0-9_.-]+)\)/gu, (whole, name) => {
-      const value = variables?.[name];
-      if (value === undefined || value === null) fail(`workflow variable ${name} is not bound for this invocation`);
-      return String(value);
-    });
-    if (resolved.includes('$(')) fail('workflow command contains an unresolved variable reference');
+    const resolved = text
+      .replace(/\$\(([A-Za-z0-9_.-]+)\)/gu, (_whole, name) => resolveName(name))
+      .replace(/\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/gu, (_whole, name) => resolveName(name));
+    if (!allowStepReferences && (resolved.includes('$(') || /\{\{[^}]*\}\}/u.test(resolved))) fail('workflow command contains an unresolved variable reference');
     return resolved;
   };
   return { id: step.id, command: step.command.map(substitute), deterministic: invocation.deterministic_command ?? null };
@@ -529,18 +552,23 @@ function recordTerminal(invocation, result) {
 // Child execution.
 // ---------------------------------------------------------------------------
 
-function runChild(argv, { timeoutMs, extraEnvironment = {} }) {
-  const child = spawn(argv[0], argv.slice(1), { cwd: projectRoot, env: { ...environment, ...extraEnvironment }, stdio: ['ignore', 'pipe', 'pipe'], shell: false });
-  const stdout = []; const stderr = []; let captured = 0; let overflow = false;
+function runChild(argv, { timeoutMs, extraEnvironment = {}, captureEvidence = false }) {
+  const evidenceFd = 3;
+  const child = spawn(argv[0], argv.slice(1), { cwd: projectRoot,
+    env: { ...environment, ...extraEnvironment, ...(captureEvidence ? { YYLO_EXECUTION_EVIDENCE_FD: String(evidenceFd) } : {}) },
+    stdio: captureEvidence ? ['ignore', 'pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'], shell: false });
+  const stdout = []; const stderr = []; const evidence = []; let captured = 0; let overflow = false;
   const collect = (target) => (chunk) => {
     captured += chunk.length;
     if (captured > MAX_CAPTURE_BYTES) { overflow = true; child.kill('SIGKILL'); } else target.push(chunk);
   };
   child.stdout.on('data', collect(stdout)); child.stderr.on('data', collect(stderr));
+  if (captureEvidence) child.stdio[evidenceFd].on('data', collect(evidence));
   let timedOut = false; let force = undefined;
   const timeout = setTimeout(() => { timedOut = true; child.kill('SIGTERM'); force = setTimeout(() => child.kill('SIGKILL'), KILL_GRACE_MS); }, timeoutMs);
   const closed = awaitClose(child).finally(() => { clearTimeout(timeout); if (force !== undefined) clearTimeout(force); });
-  return closed.then((outcome) => ({ outcome, stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr), overflow, timedOut }));
+  return closed.then((outcome) => ({ outcome, stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr),
+    evidence: Buffer.concat(evidence), overflow, timedOut }));
 }
 
 function awaitClose(child) {
@@ -596,12 +624,12 @@ function childCorrelationEnvironment(invocation) {
   return Object.fromEntries(values.filter(([, value]) => typeof value === 'string' && CHILD_CORRELATION_TOKEN.test(value)));
 }
 
-function validatedStepFor(invocation) {
+function validatedStepFor(invocation, runtimeVariables = {}, allowStepReferences = false) {
   // Every no-spawn validation of the exact compiled workflow, its resolved
   // argument array, and the deterministic policy prefix happens here, before
   // any durable dispatch intent exists: a rejected request must remain
   // provably not dispatched and recoverable without deleting evidence.
-  const step = compiledStepFor(invocation);
+  const step = compiledStepFor(invocation, runtimeVariables, allowStepReferences);
   const deterministicPolicy = step.deterministic;
   if (deterministicPolicy !== null) {
     if (deterministicPolicy.step_id !== step.id) fail('deterministic command policy is bound to the wrong step');
@@ -648,14 +676,16 @@ function executeStep(invocation, step) {
     : [resolveExecutable(step.command[0]), ...step.command.slice(1)];
   const extraEnvironment = deterministicPolicy === null ? childCorrelationEnvironment(invocation)
     : Object.fromEntries(deterministicPolicy.environment.map((item) => [item.name, item.value]));
-  const execution = runChild(argv, { timeoutMs: invocation.timeout_ms, extraEnvironment });
-  return execution.then(({ outcome, stdout, stderr, overflow, timedOut }) => {
+  const execution = runChild(argv, { timeoutMs: invocation.timeout_ms, extraEnvironment, captureEvidence: deterministicPolicy === null });
+  return execution.then(({ outcome, stdout, stderr, evidence, overflow, timedOut }) => {
     const endedAt = new Date();
     const runtimeMs = Number((process.hrtime.bigint() - monotonic) / 1_000_000n);
     if (overflow) fail('workflow step output exceeded the bounded capture limit');
     if (timedOut) fail(`workflow step ${step.id} timed out before terminal evidence`);
     if (outcome.code === null && outcome.signal === null) fail(`workflow step ${step.id} closed without a terminal outcome`);
-    const transcript = boundedTranscript(stdout, stderr);
+    const transcript = deterministicPolicy === null
+      ? boundedTranscript(Buffer.concat([evidence, Buffer.from('\n[execution-envelope]\n'), stdout]), stderr)
+      : boundedTranscript(stdout, stderr);
     if (deterministicPolicy !== null) {
       const success = outcome.code === 0;
       return {
@@ -667,7 +697,7 @@ function executeStep(invocation, step) {
           cost: { completeness: 'not_applicable', usd: null },
           candidate_outcome: { status: success ? 'success' : 'failure' },
           harness_validity: { status: 'valid', reason: null },
-          transcript, artifacts: {},
+          transcript, candidate_response: stdout.toString('utf8'), artifacts: {},
         },
       };
     }
@@ -689,7 +719,7 @@ function executeStep(invocation, step) {
         cost: { completeness: 'unavailable', usd: null },
         candidate_outcome: { status: 'failure' },
         harness_validity: { status: 'invalid', reason: `${reason} (${exitLabel})` },
-        transcript, artifacts: {},
+        transcript, candidate_response: evidence.toString('utf8'), artifacts: {},
       },
     });
     if (envelope === null) return harnessFailure(`workflow step ${step.id} produced no ${ENVELOPE_SCHEMA} terminal identity`);
@@ -710,7 +740,8 @@ function executeStep(invocation, step) {
         outer_session_id: envelope.session_id, nested_session_ids: [envelope.session_id],
         started_at: startedAt.toISOString(), ended_at: endedAt.toISOString(), runtime_ms: runtimeMs,
         cost, candidate_outcome: { status: success ? 'success' : 'failure' },
-        harness_validity: { status: 'valid', reason: null }, transcript, artifacts: {},
+        harness_validity: { status: 'valid', reason: null }, transcript,
+        candidate_response: evidence.toString('utf8'), artifacts: {},
       },
     };
   });
@@ -740,6 +771,9 @@ async function main() {
     credentialFor(provider);
     const observed = probeJunoVersion();
     if (observed !== junoVersion) fail(`YYLO version mismatch: invocation requires ${junoVersion}, executable reports ${observed}`);
+    if (invocation.workflow_bytes_base64 !== undefined) {
+      validatedStepFor(invocation, request.runtime_variables ?? {}, request.allow_step_references === true);
+    }
     process.stdout.write(JSON.stringify({ ok: true, provider, model: model.includes('/') ? model.slice(model.indexOf('/') + 1) : model, juno_version: observed }));
     return;
   }
@@ -771,7 +805,7 @@ async function main() {
     if (priorTerminal !== null) { process.stdout.write(JSON.stringify(priorTerminal)); return; }
     // Resolve and fully validate the compiled workflow command before any
     // durable intent: validation rejection stays proven_not_dispatched.
-    const step = validatedStepFor(invocation);
+    const step = validatedStepFor(invocation, request.runtime_variables ?? {}, false);
     const recorded = recordIntent(invocation);
     if (recorded === 'terminal') { process.stdout.write(JSON.stringify(readTerminal(invocation))); return; }
     if (recorded === 'intent') {

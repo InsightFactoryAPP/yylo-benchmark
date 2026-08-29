@@ -32,7 +32,7 @@ steps:
           deeper continuation line
         line two
   - id: compute
-    command: [env, PYTHONPATH=., python3, scripts/track.py, --date, "$(run_date)"]
+    command: [env, PYTHONPATH=., python3, scripts/track.py, --date, "{{ run_date }}"]
 `;
 
 const DETERMINISTIC: DeterministicCommandPolicy = {
@@ -400,6 +400,17 @@ describe('reviewed workflow boundary module protocol', () => {
     expect(summarize.evidence.transcript).toContain('Summarize line one\n\nContext:\n- with: colon and "quotes"\n  deeper continuation line\nline two\n');
     const compute = await boundary.dispatcher.dispatch(current.invocation('compute'));
     expect(compute.evidence.transcript).toContain('--date 2026-08-19');
+  });
+
+  it('rejects an unbound Daily Ops moustache variable before durable intent', async () => {
+    const input = current.invocation('compute', { variables: { run_date: null } });
+    const rejection = await driveModule('dispatch', input);
+    expect(rejection.status).toBe(1);
+    expect(JSON.parse(rejection.stdout)).toMatchObject({ schema_version: 'juno_benchmark_boundary_error.v1',
+      message: expect.stringMatching(/workflow variable run_date is not bound/u) });
+    await expect(readFile(current.journal(input.dispatch_id).intent, 'utf8')).rejects.toThrow(/ENOENT/u);
+    const reconcile = await driveModule('reconcile', input);
+    expect(JSON.parse(reconcile.stdout)).toEqual({ state: 'proven_not_dispatched' });
   });
 
   it('round-trips every canonical planner block-scalar form through the exact dispatched argv', async () => {

@@ -117,7 +117,7 @@ steps:
     const preflights: string[] = [];
     const result = await executeWorkflowPlan({ ...options(item), dispatcher: dispatcher({ preflight: async (input) => { preflights.push(input.step_id); } }) });
     expect('terminals' in result && result.terminals).toHaveLength(4);
-    expect(preflights).toEqual(['prepare', 'publish', 'prepare', 'publish']);
+    expect(preflights).toEqual(['prepare', 'publish', 'prepare', 'publish', 'prepare', 'publish', 'prepare', 'publish']);
     const receipts = await readWorkflowEvidenceReceipts(options(item).registry, `workflow-${item.plan.plan_id.slice(7)}`);
     expect(receipts).toHaveLength(4);
     expect(receipts.every((receipt) => receipt.cost.completeness === 'unavailable' && receipt.harness_validity.status === 'valid')).toBe(true);
@@ -185,6 +185,21 @@ steps:
     const receipts = await readWorkflowEvidenceReceipts(shared.registry, `workflow-${item.plan.plan_id.slice(7)}`);
     expect(receipts[0]!.dispatch_recovery).toMatchObject({ recovered: true, recovery_count: 0 });
     expect(receipts[1]!.dispatch_recovery).toMatchObject({ recovered: false, recovery_count: 0 });
+  });
+
+  it('recovers retained terminals after the source branch advances without redispatch', async () => {
+    const item = await fixture(); const shared = options(item); let dispatches = 0;
+    const tracked = dispatcher({ dispatch: async (input) => { dispatches += 1; return terminal(input); } });
+    await executeWorkflowPlan({ ...shared, dispatcher: tracked });
+    expect(dispatches).toBe(2);
+    await writeFile(path.join(item.root, 'controller-metadata.txt'), 'advanced after workflow execution\n');
+    execFileSync('git', ['add', 'controller-metadata.txt'], { cwd: item.root });
+    execFileSync('git', ['commit', '-m', 'advance controller metadata'], { cwd: item.root, stdio: 'ignore' });
+
+    await expect(executeWorkflowPlan({ ...shared, dispatcher: tracked })).rejects.toThrow(/source ref drift/u);
+    const recovered = await executeWorkflowPlan({ ...shared, dispatcher: tracked, recovery: true });
+    expect(recovered).toMatchObject({ recovered: true });
+    expect(dispatches).toBe(2);
   });
 
   it('keeps dry-run read-only and represents missing estimates as unavailable rather than zero', async () => {
