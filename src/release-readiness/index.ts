@@ -126,10 +126,14 @@ const leakage = z.object({ checked: z.tuple([
 ]) }).strict();
 
 export const RELEASE_VERIFICATION_COMMANDS = Object.freeze({
-  coverage: Object.freeze({ executable: 'npm', arguments: Object.freeze(['exec', '--', 'vitest', 'run', '--coverage', '--coverage.reporter=json-summary', '--coverage.reporter=text']), cwd: 'juno-benchmark', timeout_ms: 120_000, stdin: 'closed' }),
+  // Node 24 coverage measured 151s in the canonical single-worker release
+  // environment. A bounded 300s budget preserves a near-2x contention margin;
+  // shared resource-lock acquisition occurs in the caller's beforeAll hook and
+  // is deliberately excluded from this child execution deadline.
+  coverage: Object.freeze({ executable: 'npm', arguments: Object.freeze(['exec', '--', 'vitest', 'run', '--coverage', '--coverage.reporter=json-summary', '--coverage.reporter=text']), cwd: 'juno-benchmark', timeout_ms: 300_000, stdin: 'closed' }),
   leakage: Object.freeze({ executable: 'node', arguments: Object.freeze(['../juno-code/scripts/scan-benchmark-release-artifacts.mjs', 'dist', '../juno-code/dist', '.release-evidence/yylo-benchmark.tgz', '.release-evidence/yylo-cli.tgz']), cwd: 'juno-benchmark', timeout_ms: 30_000, stdin: 'closed' }),
 } as const);
-const command = z.object({ executable: z.string().min(1), arguments: z.array(z.string()), cwd: z.literal('juno-benchmark'), timeout_ms: z.number().int().min(1).max(120_000), stdin: z.literal('closed') }).strict();
+const command = z.object({ executable: z.string().min(1), arguments: z.array(z.string()), cwd: z.literal('juno-benchmark'), timeout_ms: z.number().int().min(1).max(300_000), stdin: z.literal('closed') }).strict();
 const execution = z.object({ exit_code: z.literal(0), signal: z.null(), timed_out: z.literal(false) }).strict();
 const log = z.object({ stdout_hash: digest, stderr_hash: digest, combined_hash: digest }).strict();
 const coverageOutput = z.object({

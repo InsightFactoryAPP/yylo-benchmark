@@ -241,7 +241,12 @@ not authority for paid dispatch, and the package does not ship provider credenti
 commit/tree, both package versions, source/dist/npm-tarball hashes, and standalone plus
 `yy benchmark` identities from both built and tarball-installed CLIs. It must also carry
 exactly one coverage result and one credential/leak-scan result produced by the fixed,
-stdin-closed commands in `RELEASE_VERIFICATION_COMMANDS`. Each bounded execution binds
+stdin-closed commands in `RELEASE_VERIFICATION_COMMANDS`. Coverage has a hard 300-second
+execution deadline: canonical single-worker Node 24 coverage measured 151 seconds, so
+this supplies a bounded near-2x contention margin. The shared heavy-workload lease is
+acquired in a separate `beforeAll` hook and its wait is not charged to that child
+execution deadline. Timeout still sends `SIGKILL`, caps retained output, and fails the
+gate. Each bounded execution binds
 the unchanged source tree, exact command and timeout, zero exit result, measured output,
 stdout/stderr log digests, and canonical result/evidence hashes. Coverage is derived
 from 14 executed case results. Leakage is derived from six executed, bounded synthetic

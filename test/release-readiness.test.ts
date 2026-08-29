@@ -77,6 +77,8 @@ function input() {
 
 describe('deterministic release-readiness receipt', () => {
   it('binds the exact source, source/dist/tarball artifacts, four CLI surfaces and offline exclusions', () => {
+    expect(RELEASE_VERIFICATION_COMMANDS.coverage.timeout_ms).toBe(300_000);
+    expect(RELEASE_VERIFICATION_COMMANDS.leakage.timeout_ms).toBe(30_000);
     const first = generateReleaseReadinessReceipt(input()); const second = generateReleaseReadinessReceipt(input());
     expect(second).toEqual(first); expect(ReleaseReadinessReceiptSchema.parse(first)).toEqual(first);
     expect(first.coverage.models).toEqual(['openai-codex/gpt-5.6-sol', 'openai-codex/gpt-5.6-mini', 'openai-codex/gpt-5.6-luna', 'zai/glm-5.2']);
