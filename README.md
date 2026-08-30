@@ -126,7 +126,7 @@ export YYLO_BENCHMARK_WORKFLOW_BOUNDARY=/absolute/path/to/yylo-workflow-boundary
 export YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256=LOWERCASE_SHA256
 ```
 
-These values are placeholders and must match the setup receipt. The boundary owns provider credentials and external reconciliation. Candidate operations receive only the immutable invocation; governed judges receive blinded requests and no candidate credential route.
+These values are placeholders and must match the setup receipt. The boundary owns provider credentials and external reconciliation. Candidate operations receive only the immutable invocation. Governed judges receive a blinded, versioned task/rubric/evidence packet and no candidate credential or model-identity route. Each valid verdict retains the exact observed judge provider/model/Juno/session envelope, runtime, cost completeness, exit status, strict verdict, and redacted factual justification.
 
 ### Credential-free synthetic acceptance
 
@@ -145,6 +145,7 @@ After separate review and authorization, live workflow commands are:
 yylo-benchmark run --plan workflow-plan.json --steps-file benchmark-policy.yaml
 yylo-benchmark recover --plan workflow-plan.json --steps-file benchmark-policy.yaml
 yylo-benchmark rejudge --plan workflow-plan.json --steps-file benchmark-policy.yaml --judge :sol
+# Legacy hash-only plans additionally require: --rubric-file retained-rubric.md
 ```
 
 Safety invariants:
@@ -154,7 +155,9 @@ Safety invariants:
 - Persistent typed locks keep production model experiments sequential.
 - Known child terminals are retained, including harness failures; settled work is not redispatched.
 - Recovery reconciles durable intent before policy-permitted resume. Ambiguous external effects remain manual.
-- Rejudge reads retained blinded candidate truth and does not dispatch a candidate.
+- Rejudge reads retained blinded candidate truth, dispatches only missing or judge-invalid eligible work, and does not dispatch a candidate.
+- Provider non-dispatch, timeout, nonzero exit, malformed/no-verdict output, missing identity/task/rubric/artifacts, and redaction failure leave quality unknown; they are never valid rejections.
+- Reports separate candidate outcome, candidate-harness validity, judge validity, and quality. Unknown quality suppresses winner selection.
 - Cost is evidence, not authorization. Missing cost stays unavailable; genuine zero stays zero.
 
 Use dry-run first whenever it is offered:

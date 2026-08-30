@@ -19,7 +19,7 @@
 //   dispatch   -> terminal result (see terminalResult in the runtime)
 //   reconcile  -> { state: 'terminal' | 'safely_resumable' | 'proven_not_dispatched' | 'ambiguous' }
 //   resume     -> terminal result
-//   judge      -> { resolved: boolean, evidence: string }
+//   judge      -> juno_benchmark_governed_judge_envelope.v1
 //
 // Model-dispatch transport: the boundary owns exactly one --execution-envelope
 // request flag (root/global position) and the canonical Juno child correlation
@@ -655,7 +655,7 @@ function executeStep(invocation, step) {
     const endedAt = new Date();
     const runtimeMs = Number((process.hrtime.bigint() - monotonic) / 1_000_000n);
     return {
-      dispatch_id: invocation.dispatch_id, status: 'success', effect: 'completed', runner_run_id: runId,
+      dispatch_id: invocation.dispatch_id, status: 'success', effect: 'none', runner_run_id: runId,
       observed_provider: invocation.provider, observed_model: invocation.model, observed_juno_version: invocation.juno_version,
       evidence: {
         outer_session_id: `synthetic-session-${String(invocation.dispatch_id).replace(/^sha256:/u, '').slice(0, 16)}`,
@@ -663,7 +663,7 @@ function executeStep(invocation, step) {
         started_at: startedAt.toISOString(), ended_at: endedAt.toISOString(), runtime_ms: runtimeMs,
         cost: { completeness: 'not_applicable', usd: null },
         candidate_outcome: { status: 'success' }, harness_validity: { status: 'valid', reason: null },
-        transcript: `synthetic transport: no provider child was spawned\nstep: ${step.id}\nmodel: ${invocation.model}\nargv: ${step.command.map((item) => (item.length > 96 ? `${item.slice(0, 96)}…` : item)).join(' ')}`,
+        transcript: `synthetic transport: no provider child was spawned\nstep: ${step.id}\ntask input: ${deterministicPolicy === null ? step.command.at(-1) : step.command.slice(4).join(' ')}\nvalidated argv digest: sha256:${sha256Hex(Buffer.from(JSON.stringify(step.command), 'utf8'))}`,
         artifacts: {},
       },
     };
@@ -823,41 +823,77 @@ async function main() {
     const judge = invocation.judge;
     const scoringId = invocation.scoring_id;
     const blinded = invocation.blinded_candidate;
-    if (judge === null || typeof judge !== 'object' || !isNonEmpty(judge.model) || !isNonEmpty(scoringId) || !isNonEmpty(blinded)) {
-      fail('judge invocation is incomplete');
-    }
+    const judgeDispatchId = invocation.judge_dispatch_id;
+    const requestedJunoVersion = invocation.requested_juno_version;
+    if (judge === null || typeof judge !== 'object' || !isNonEmpty(judge.model) || !isNonEmpty(scoringId) || !isNonEmpty(blinded)
+        || !isHash(judgeDispatchId) || !isNonEmpty(requestedJunoVersion)) fail('judge invocation is incomplete');
     if (blinded.length > MAX_TRANSCRIPT_BYTES) fail('blinded candidate exceeds the bounded judgement input');
     const separator = judge.model.indexOf('/');
-    const provider = separator > 0 ? judge.model.slice(0, separator) : 'governed';
-    credentialFor(provider === 'governed' ? judge.model : provider);
+    if (separator < 1) fail('judge model must be an exact provider/model identity');
+    const provider = judge.model.slice(0, separator);
+    const model = judge.model.slice(separator + 1);
+    credentialFor(provider);
+    const startedAt = new Date();
+    const monotonic = process.hrtime.bigint();
+    const finish = (fields) => ({
+      schema_version: 'juno_benchmark_governed_judge_envelope.v1', judge_dispatch_id: judgeDispatchId,
+      requested: { provider, model, juno_version: requestedJunoVersion },
+      started_at: startedAt.toISOString(), ended_at: new Date().toISOString(),
+      runtime_ms: Number((process.hrtime.bigint() - monotonic) / 1_000_000n), dispatch_proof: 'terminal',
+      ...fields,
+    });
     if (synthetic) {
-      process.stdout.write(JSON.stringify({
-        resolved: true,
-        evidence: `synthetic governed judgement for ${scoringId} (judge ${judge.judge_id ?? 'governed'} v${judge.judge_version ?? '1'}, blinded digest sha256:${sha256Hex(Buffer.from(blinded, 'utf8'))})`,
-      }));
+      process.stdout.write(JSON.stringify(finish({
+        observed: { provider, model, juno_version: requestedJunoVersion }, session_id: `synthetic-judge-${judgeDispatchId.slice(-16)}`,
+        cost: { completeness: 'not_applicable', usd: null }, exit_status: { code: 0, signal: null }, dispatched: true, verdict: 'pass',
+        justification: `Synthetic governed judgement bound to task, rubric, and evidence packet ${sha256Hex(Buffer.from(blinded, 'utf8'))}.`,
+        terminal_class: 'judge_acceptance',
+      })));
       return;
     }
     const prompt = [
       'You are the governed YYLO Benchmark judge for one blinded candidate step.',
-      'Judge only the retained candidate evidence below. Do not attempt to identify the producing model, provider, or candidate run.',
+      'Judge only the versioned task, rubric, deterministic evidence, transcript, and verified artifacts in the packet.',
+      'Do not identify or infer the candidate model, provider, or run.',
       `Scoring identity: ${scoringId}.`,
-      `Judge policy: judge_id=${judge.judge_id ?? 'governed'} judge_version=${judge.judge_version ?? '1'} rubric_hash=${judge.rubric_hash ?? 'unspecified'}.`,
-      'Reply with a short factual justification, then end your reply with exactly one final line that is either VERDICT: PASS or VERDICT: FAIL.',
-      'Blinded candidate evidence follows:',
-      blinded,
+      'Reply with a short factual justification, then exactly one final line: VERDICT: PASS or VERDICT: FAIL.',
+      'Blinded packet follows:', blinded,
     ].join('\n');
-    const execution = runChild([junoExecutable, 'pi', '--model', judge.model, prompt], { timeoutMs: Number(environment.YYLO_BENCHMARK_BOUNDARY_JUDGE_TIMEOUT_MS ?? 0) > 0 ? Number(environment.YYLO_BENCHMARK_BOUNDARY_JUDGE_TIMEOUT_MS) : 600_000 });
-    const { outcome, stdout, stderr, overflow, timedOut } = await execution;
-    if (overflow) fail('judge output exceeded the bounded capture limit');
-    if (timedOut) fail('judge dispatch timed out before terminal evidence');
-    const text = boundedTranscript(stdout, stderr);
-    const verdicts = text.split(/\r?\n/u).map((line) => line.trim()).filter((line) => line === 'VERDICT: PASS' || line === 'VERDICT: FAIL');
-    const verdict = verdicts.at(-1);
-    if (verdict === undefined || outcome.code !== 0) {
-      process.stdout.write(JSON.stringify({ resolved: false, evidence: `governed judge produced no strict verdict (exit ${outcome.code ?? outcome.signal ?? 'unknown'}); retained tail: ${text.slice(-2048)}` }));
+    const timeoutMs = Number(environment.YYLO_BENCHMARK_BOUNDARY_JUDGE_TIMEOUT_MS ?? 0) > 0 ? Number(environment.YYLO_BENCHMARK_BOUNDARY_JUDGE_TIMEOUT_MS) : 600_000;
+    const { outcome, stdout, stderr, evidence, overflow, timedOut } = await runChild(
+      [junoExecutable, ENVELOPE_FLAG, 'pi', '--model', judge.model, prompt],
+      { timeoutMs, captureEvidence: true, extraEnvironment: { YYLO_INVOCATION_CHILD: '1', YYLO_LAUNCH_SURFACE: 'yylo-benchmark-judge', YYLO_WORKFLOW_STEP_ID: scoringId } },
+    );
+    const justification = (evidence.length > 0 ? evidence : stdout).toString('utf8').trim();
+    const baseFailure = { observed: { provider: null, model: null, juno_version: null }, session_id: null,
+      cost: { completeness: 'unavailable', usd: null }, exit_status: { code: outcome.code, signal: outcome.signal }, dispatched: true,
+      verdict: null, justification: justification.slice(-4096) };
+    if (overflow) { process.stdout.write(JSON.stringify(finish({ ...baseFailure, terminal_class: 'judge_harness_failure', justification: 'judge output exceeded the bounded capture limit' }))); return; }
+    if (timedOut) { process.stdout.write(JSON.stringify(finish({ ...baseFailure, terminal_class: 'judge_timeout', justification: 'judge dispatch timed out before terminal evidence' }))); return; }
+    const envelope = envelopeOf(stdout);
+    if (outcome.code !== 0 || outcome.signal !== null || envelope === null) {
+      process.stdout.write(JSON.stringify(finish({ ...baseFailure, terminal_class: 'judge_harness_failure', justification: justification || `judge exited without a valid ${ENVELOPE_SCHEMA}` })));
       return;
     }
-    process.stdout.write(JSON.stringify({ resolved: verdict === 'VERDICT: PASS', evidence: `governed judge verdict ${verdict} for ${scoringId}; retained tail: ${text.slice(-2048)}` }));
+    const observed = { provider: typeof envelope.provider === 'string' ? envelope.provider : null, model: typeof envelope.model === 'string' ? envelope.model : null,
+      juno_version: typeof envelope.juno_version === 'string' ? envelope.juno_version : null };
+    const sessionId = typeof envelope.session_id === 'string' && envelope.session_id.trim() !== '' ? envelope.session_id : null;
+    const cost = envelope.cost !== undefined && envelope.cost !== null && ['complete', 'partial', 'unavailable', 'not_applicable'].includes(envelope.cost.completeness)
+      ? envelope.cost : { completeness: 'unavailable', usd: null };
+    if (observed.provider !== provider || observed.model !== model || observed.juno_version !== requestedJunoVersion || sessionId === null) {
+      process.stdout.write(JSON.stringify(finish({ ...baseFailure, observed, session_id: sessionId, cost, terminal_class: 'judge_harness_failure', justification: justification || 'judge terminal identity is incomplete or mismatched' })));
+      return;
+    }
+    const lines = justification.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
+    const verdictLines = lines.filter((line) => line === 'VERDICT: PASS' || line === 'VERDICT: FAIL');
+    const finalLine = lines.at(-1);
+    if (verdictLines.length !== 1 || (finalLine !== 'VERDICT: PASS' && finalLine !== 'VERDICT: FAIL') || lines.length < 2) {
+      process.stdout.write(JSON.stringify(finish({ ...baseFailure, observed, session_id: sessionId, cost, terminal_class: 'judge_invalid_evidence', justification: justification || 'judge returned no factual justification' })));
+      return;
+    }
+    const verdict = finalLine === 'VERDICT: PASS' ? 'pass' : 'fail';
+    process.stdout.write(JSON.stringify(finish({ observed, session_id: sessionId, cost, exit_status: { code: 0, signal: null }, dispatched: true, verdict,
+      justification, terminal_class: verdict === 'pass' ? 'judge_acceptance' : 'judge_rejection' })));
     return;
   }
 

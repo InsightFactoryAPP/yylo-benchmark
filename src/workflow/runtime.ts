@@ -92,7 +92,8 @@ export interface WorkflowRuntimeDryRun {
   readonly cost_tracking: { readonly mode: 'best_effort'; readonly unavailable_is_valid: true };
   readonly immutable_hashes: { readonly plan: string; readonly workflow_raw: string; readonly workflow_semantics: string; readonly policy_raw: string; readonly policy_semantics: string; readonly variables: string };
 }
-export interface WorkflowRuntimeOutcome { readonly plan_id: `sha256:${string}`; readonly terminals: readonly WorkflowStepTerminal[]; readonly recovered: boolean }
+export interface WorkflowRuntimeOutcome { readonly plan_id: `sha256:${string}`; readonly terminals: readonly WorkflowStepTerminal[]; readonly recovered: boolean;
+  readonly candidate_dispatch_count: number; readonly judge_dispatch_count: number; readonly production_effect_count: number }
 export interface WorkflowRuntimeOptions {
   readonly plan: WorkflowExecutionPlan; readonly projectRoot: string; readonly policyPath: string;
   readonly registry: ImmutableArtifactRegistry; readonly locks: PersistentTypedResourceLocks; readonly dispatcher?: TrustedWorkflowDispatcher;
@@ -255,7 +256,7 @@ export async function executeWorkflowPlan(options: WorkflowRuntimeOptions): Prom
   const judge = options.judge; if (judge === undefined) throw new Error('workflow execution requires the plan-bound governed judge');
   if (plan.compiled_workflows.some((item) => !dispatcher.providers.has(item.provider))) throw new Error('trusted launcher has no credential route for every exact provider');
   for (const input of invocations) await dispatcher.preflight(input, {}, true); // Validate identities, workflow defaults, and dependency references before any durable intent.
-  const terminals: WorkflowStepTerminal[] = []; let recovered = false; const experiment = experimentId(plan);
+  const terminals: WorkflowStepTerminal[] = []; let recovered = false; let candidateDispatchCount = 0; let judgeDispatchCount = 0; let productionEffectCount = 0; const experiment = experimentId(plan);
   const groups = new Map<string, WorkflowRuntimeInvocation[]>(); for (const item of invocations) { const key = `${item.model}\0${item.attempt}`; groups.set(key, [...(groups.get(key) ?? []), item]); }
   // A plan identity has one process owner at a time. This closes the no-resource
   // race between state inspection and intent append without weakening typed
@@ -281,7 +282,7 @@ export async function executeWorkflowPlan(options: WorkflowRuntimeOptions): Prom
             await appendJson(options.registry, experiment, 'workflow-step-terminal', terminal);
             terminals.push(terminal); recovered = true; return;
           }
-          let result: WorkflowRuntimeTerminalResult; let wasRecovered = false;
+          let result: WorkflowRuntimeTerminalResult; let wasRecovered = false; let dispatchedNow = false;
           let recoveryCount = current.recoveryAttempts.get(input.dispatch_id) ?? 0;
           const prior = current.intents.get(input.dispatch_id);
           if (prior === undefined) {
@@ -290,6 +291,7 @@ export async function executeWorkflowPlan(options: WorkflowRuntimeOptions): Prom
               plan_id: plan.plan_id as `sha256:${string}`, model: input.model, provider: input.provider, attempt: input.attempt, step_id: input.step_id,
               workflow_sha256: input.workflow_sha256, policy_sha256: plan.policy_semantics_sha256 };
             await appendJson(options.registry, experiment, 'workflow-dispatch-intent', intent); // Durable before consequential dispatch.
+            candidateDispatchCount += 1; dispatchedNow = true;
             result = validateResult(await dispatcher.dispatch(input, runtimeVariables), input);
           } else {
             if (prior.invocation_hash !== input.invocation_hash || prior.workflow_sha256 !== input.workflow_sha256 || prior.policy_sha256 !== plan.policy_semantics_sha256) throw new Error('workflow dispatch intent binding drift detected');
@@ -306,17 +308,20 @@ export async function executeWorkflowPlan(options: WorkflowRuntimeOptions): Prom
                 invocation_hash: input.invocation_hash, plan_id: plan.plan_id, recovery_attempt: recoveryAttempt,
               });
               recoveryCount = recoveryAttempt;
+              candidateDispatchCount += 1; dispatchedNow = true;
               result = validateResult(await dispatcher.resume(input, runtimeVariables), input);
             }
           }
           runtimeVariables[`steps.${input.step_id}.response`] = result.evidence.candidate_response ?? result.evidence.transcript;
+          if (dispatchedNow && result.effect === 'completed' && plan.policy.steps.find((item) => item.step_id === input.step_id)!.side_effect === 'production') productionEffectCount += 1;
           if (!existingReceipts.some((receipt) => receipt.dispatch_id === input.dispatch_id)) {
             const judgeIntent = judgeIntentFor(plan, input, await state(options.registry, plan));
             await retainAndGradeWorkflowStep({ registry: options.registry, experimentId: experiment, plan, dispatchId: input.dispatch_id,
               invocationHash: input.invocation_hash, model: input.model, provider: input.provider, attempt: input.attempt, stepId: input.step_id,
               observedProvider: result.observed_provider, observedModel: result.observed_model, observedJunoVersion: result.observed_juno_version, runnerRunId: result.runner_run_id,
               effect: result.effect, recoveryCount, recovered: wasRecovered, evidence: result.evidence as WorkflowCandidateEvidence, judge,
-              beforeJudgeDispatch: async () => appendJson(options.registry, experiment, 'workflow-judge-intent', judgeIntent) });
+              judgeDispatchId: judgeIntent.judge_dispatch_id as `sha256:${string}`,
+              beforeJudgeDispatch: async () => { judgeDispatchCount += 1; await appendJson(options.registry, experiment, 'workflow-judge-intent', judgeIntent); } });
           }
           const terminal: WorkflowStepTerminal = { schema_version: WORKFLOW_STEP_TERMINAL_SCHEMA_VERSION, dispatch_id: input.dispatch_id, invocation_hash: input.invocation_hash,
             plan_id: plan.plan_id, model: input.model, attempt: input.attempt, step_id: input.step_id, recovered: wasRecovered, result: terminalSummaryValue(result) };
@@ -325,7 +330,8 @@ export async function executeWorkflowPlan(options: WorkflowRuntimeOptions): Prom
       }
     });
   } } finally { await planLease.release(); }
-  return { plan_id: plan.plan_id as `sha256:${string}`, terminals: Object.freeze(terminals), recovered };
+  return { plan_id: plan.plan_id as `sha256:${string}`, terminals: Object.freeze(terminals), recovered,
+    candidate_dispatch_count: candidateDispatchCount, judge_dispatch_count: judgeDispatchCount, production_effect_count: productionEffectCount };
 }
 
 export const WORKFLOW_PROCESS_BOUNDARY_PROTOCOL = 'juno_benchmark_workflow_process_boundary.v1' as const;
@@ -339,7 +345,16 @@ const boundaryReconciliation = z.discriminatedUnion('state', [
   z.object({ state: z.literal('terminal'), result: terminalResult }).strict(),
   z.object({ state: z.enum(['safely_resumable', 'proven_not_dispatched', 'ambiguous']) }).strict(),
 ]);
-const boundaryJudgeResult = z.object({ resolved: z.boolean(), evidence: z.string().trim().min(1) }).strict();
+const nullableIdentity = z.string().trim().min(1).nullable();
+const boundaryJudgeResult = z.object({
+  schema_version: z.literal('juno_benchmark_governed_judge_envelope.v1'), judge_dispatch_id: hash,
+  requested: z.object({ provider: z.string(), model: z.string().trim().min(1), juno_version: z.string().trim().min(1) }).strict(),
+  observed: z.object({ provider: nullableIdentity, model: nullableIdentity, juno_version: nullableIdentity }).strict(), session_id: nullableIdentity,
+  started_at: z.string().datetime({ offset: true }), ended_at: z.string().datetime({ offset: true }), runtime_ms: z.number().int().nonnegative(),
+  cost: CostEvidenceSchema, exit_status: z.object({ code: z.number().int().nullable(), signal: z.string().nullable() }).strict(), dispatched: z.boolean(),
+  dispatch_proof: z.enum(['terminal', 'proven_not_dispatched', 'ambiguous']), verdict: z.enum(['pass', 'fail']).nullable(), justification: z.string(),
+  terminal_class: z.enum(['judge_acceptance', 'judge_rejection', 'judge_harness_failure', 'judge_invalid_evidence', 'judge_timeout']),
+}).strict();
 
 export interface ReviewedWorkflowBoundaryOptions {
   /** Absolute, canonical path to the reviewed self-contained JavaScript module. */
@@ -457,9 +472,11 @@ export async function createReviewedWorkflowBoundary(options: ReviewedWorkflowBo
     reconcile: async (input) => operation('reconcile', input, boundaryReconciliation) as Promise<WorkflowReconciliation>,
     resume: async (input, runtimeVariables = {}) => operation('resume', input, terminalResult, runtimeVariables) as Promise<WorkflowRuntimeTerminalResult>,
   };
+  const judgeTimeout = Number(process.env['YYLO_BENCHMARK_BOUNDARY_JUDGE_TIMEOUT_MS'] ?? 0) > 0
+    ? Number(process.env['YYLO_BENCHMARK_BOUNDARY_JUDGE_TIMEOUT_MS']) : 600_000;
   const judge: GovernedWorkflowJudgeRunner = async (input) => boundaryJudgeResult.parse(
-    await invokeReviewedBoundary(bytes, 'judge', { invocation: input }, timeoutMs),
-  );
+    await invokeReviewedBoundary(bytes, 'judge', { invocation: input }, Math.max(timeoutMs, judgeTimeout + 5_000)),
+  ) as Awaited<ReturnType<GovernedWorkflowJudgeRunner>>;
   return Object.freeze({ dispatcher, judge, identity: { protocol: WORKFLOW_PROCESS_BOUNDARY_PROTOCOL,
     sha256: `sha256:${options.sha256}` as `sha256:${string}` } });
 }

@@ -42,7 +42,7 @@ const DETERMINISTIC: DeterministicCommandPolicy = {
 
 const POLICY: WorkflowPolicy = {
   schema_version: 'juno_benchmark_workflow_policy.v1',
-  judge: { judge_id: 'governed-binary', judge_version: '1', model: 'openai-codex/gpt-5.6-sol', rubric_hash: `sha256:${'a'.repeat(64)}` },
+  judge: { judge_id: 'governed-binary', judge_version: '1', model: 'openai-codex/gpt-5.6-sol', rubric_hash: 'sha256:9dbb9b78955fdf1dbacbc5a2004dce18a1d97e8c5f2f239e6bfe4a3e5dfc1b4d', rubric: 'binary rubric' },
   authorization: { authorization_id: 'fixture', production: true, spend: true },
   recovery: { ambiguous_effect: 'manual', max_recovery_attempts: 1 },
   redaction: { secret_patterns: ['TOKEN'], retain_prompts: false },
@@ -69,7 +69,17 @@ for argument in "$@"; do
   prev="$argument"
 done
 if [ -n "$prompt" ]; then
-  printf 'Judging the blinded candidate.\\nVERDICT: PASS\\n'
+  case "$JUDGE_MODE" in
+    nonzero) printf 'provider failed\\n' >&3; exit 7 ;;
+    non-dispatch) printf 'provider was not dispatched\\n' >&3; exit 0 ;;
+    timeout) sleep 1 ;;
+    no-verdict|malformed) printf 'No strict terminal verdict.\\n' >&3 ;;
+    *) printf 'Judging the blinded candidate.\\nVERDICT: PASS\\n' >&3 ;;
+  esac
+  session="judge-sess-$$"; provider="openai-codex"; name="gpt-5.6-sol"
+  [ "$JUDGE_MODE" = "missing-session" ] && session=""
+  [ "$JUDGE_MODE" = "identity-mismatch" ] && provider="zai" && name="glm-5.3"
+  printf '{"schema_version":"juno_execution_envelope.v1","status":"success","session_id":"%s","provider":"%s","model":"%s","juno_version":"%s","cost":{"completeness":"complete","usd":0.07}}\\n' "$session" "$provider" "$name" "${JUNO_VERSION}"
   exit 0
 fi
 case "$model" in
@@ -205,7 +215,7 @@ let current: Harness;
 
 beforeEach(async () => {
   current = await harness();
-  for (const name of ['YYLO_BENCHMARK_BOUNDARY_STATE_ROOT', 'YYLO_BENCHMARK_JUNO_EXECUTABLE', 'OPENAI_CODEX_TOKEN', 'ZAI_API_KEY', 'YYLO_BENCHMARK_BOUNDARY_SYNTHETIC', 'YYLO_BENCHMARK_BOUNDARY_PROJECT_ROOT', 'YYLO_BENCHMARK_BOUNDARY_PI_AUTH_PATH']) {
+  for (const name of ['YYLO_BENCHMARK_BOUNDARY_STATE_ROOT', 'YYLO_BENCHMARK_JUNO_EXECUTABLE', 'OPENAI_CODEX_TOKEN', 'ZAI_API_KEY', 'YYLO_BENCHMARK_BOUNDARY_SYNTHETIC', 'YYLO_BENCHMARK_BOUNDARY_PROJECT_ROOT', 'YYLO_BENCHMARK_BOUNDARY_PI_AUTH_PATH', 'YYLO_BENCHMARK_BOUNDARY_JUDGE_TIMEOUT_MS', 'JUDGE_MODE']) {
     saved[name] = process.env[name];
   }
   setEnv('YYLO_BENCHMARK_BOUNDARY_STATE_ROOT', current.stateRoot);
@@ -581,16 +591,37 @@ steps:
     expect(result.evidence.transcript).toContain('synthetic transport: no provider child was spawned');
     await rm(current.journal(input.dispatch_id).terminal, { force: true });
     await expect(boundary.dispatcher.reconcile(input)).resolves.toEqual({ state: 'safely_resumable' });
-    const decision = await boundary.judge({ judge: POLICY.judge, scoring_id: 'analyze-score', blinded_candidate: '{"scoring_id":"analyze-score"}' });
-    expect(decision.resolved).toBe(true);
-    expect(decision.evidence).toContain('synthetic governed judgement');
+    const decision = await boundary.judge({ judge: POLICY.judge, scoring_id: 'analyze-score', blinded_candidate: '{"scoring_id":"analyze-score"}',
+      judge_dispatch_id: canonicalHash('synthetic-judge'), requested_juno_version: JUNO_VERSION });
+    expect(decision.verdict).toBe('pass');
+    expect(decision.session_id).toMatch(/^synthetic-judge-/u);
+    expect(decision.justification).toContain('Synthetic governed judgement');
   });
 
   it('judges through the governed model verdict in live transport', async () => {
     const boundary = await liveBoundary();
-    const decision = await boundary.judge({ judge: POLICY.judge, scoring_id: 'analyze-score', blinded_candidate: 'blinded fixture evidence' });
-    expect(decision.resolved).toBe(true);
-    expect(decision.evidence).toContain('VERDICT: PASS');
+    const decision = await boundary.judge({ judge: POLICY.judge, scoring_id: 'analyze-score', blinded_candidate: 'blinded fixture evidence',
+      judge_dispatch_id: canonicalHash('live-judge'), requested_juno_version: JUNO_VERSION });
+    expect(decision.verdict).toBe('pass');
+    expect(decision.session_id).toMatch(/^judge-sess-/u);
+    expect(decision.justification).toContain('VERDICT: PASS');
+  });
+
+  it('returns typed judge terminals for built-boundary non-dispatch, nonzero, timeout, malformed verdict, missing session, and identity drift', async () => {
+    const boundary = await liveBoundary();
+    const cases = [
+      ['non-dispatch', 'judge_harness_failure'], ['nonzero', 'judge_harness_failure'], ['timeout', 'judge_timeout'],
+      ['no-verdict', 'judge_invalid_evidence'], ['malformed', 'judge_invalid_evidence'], ['missing-session', 'judge_harness_failure'],
+      ['identity-mismatch', 'judge_harness_failure'],
+    ] as const;
+    for (const [mode, terminalClass] of cases) {
+      setEnv('JUDGE_MODE', mode);
+      setEnv('YYLO_BENCHMARK_BOUNDARY_JUDGE_TIMEOUT_MS', mode === 'timeout' ? '20' : undefined);
+      const decision = await boundary.judge({ judge: POLICY.judge, scoring_id: 'analyze-score', blinded_candidate: 'bound packet',
+        judge_dispatch_id: canonicalHash(`judge-${mode}`), requested_juno_version: JUNO_VERSION });
+      expect(decision).toMatchObject({ terminal_class: terminalClass, verdict: null });
+    }
+    setEnv('JUDGE_MODE', undefined); setEnv('YYLO_BENCHMARK_BOUNDARY_JUDGE_TIMEOUT_MS', undefined);
   });
 
   it('fails closed when journal evidence is tampered with', async () => {

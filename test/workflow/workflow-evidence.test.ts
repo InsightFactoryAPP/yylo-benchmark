@@ -23,7 +23,7 @@ steps:
     command: [yy, pi, second]
 `;
   const policy: WorkflowPolicy = { schema_version: 'juno_benchmark_workflow_policy.v1',
-    judge: { judge_id: 'binary', judge_version: '1', model: ':sol', rubric_hash: `sha256:${'a'.repeat(64)}` },
+    judge: { judge_id: 'binary', judge_version: '1', model: ':sol', rubric_hash: 'sha256:9dbb9b78955fdf1dbacbc5a2004dce18a1d97e8c5f2f239e6bfe4a3e5dfc1b4d', rubric: 'binary rubric' },
     authorization: { authorization_id: 'legacy-metadata', production: false, spend: false },
     recovery: { ambiguous_effect: 'manual', max_recovery_attempts: 1 }, redaction: { secret_patterns: [], retain_prompts: false },
     steps: ['first', 'second'].map((id) => ({ step_id: id, scoring_id: `${id}-score`, side_effect: 'none' as const,
@@ -47,6 +47,16 @@ function terminal(input: WorkflowRuntimeInvocation, cost: WorkflowRuntimeTermina
       started_at: '2026-08-12T09:00:00.000Z', ended_at: '2026-08-12T09:00:01.000Z', runtime_ms: 1000, cost,
       candidate_outcome: { status: 'success' }, harness_validity: { status: 'valid', reason: null }, transcript: input.step_id, artifacts: {} } };
 }
+const judge = async (input: { judge_dispatch_id: `sha256:${string}`; requested_juno_version: string }, terminalClass: 'judge_acceptance' | 'judge_invalid_evidence' = 'judge_acceptance') => ({
+  schema_version: 'juno_benchmark_governed_judge_envelope.v1' as const, judge_dispatch_id: input.judge_dispatch_id,
+  requested: { provider: '', model: ':sol', juno_version: input.requested_juno_version },
+  observed: terminalClass === 'judge_acceptance' ? { provider: '', model: ':sol', juno_version: input.requested_juno_version } : { provider: null, model: null, juno_version: null },
+  session_id: terminalClass === 'judge_acceptance' ? `judge-${input.judge_dispatch_id.slice(-8)}` : null,
+  started_at: '2026-08-12T09:00:00.000Z', ended_at: '2026-08-12T09:00:01.000Z', runtime_ms: 1000,
+  cost: { completeness: 'complete' as const, usd: 0 }, exit_status: { code: terminalClass === 'judge_acceptance' ? 0 : null, signal: null },
+  dispatched: terminalClass === 'judge_acceptance', dispatch_proof: 'terminal' as const, verdict: terminalClass === 'judge_acceptance' ? 'pass' as const : null,
+  justification: terminalClass === 'judge_acceptance' ? 'Factual pass.\nVERDICT: PASS' : 'malformed response', terminal_class: terminalClass,
+});
 
 describe('workflow evidence and observational cost', () => {
   it('retains unavailable and partial cost without invalidating results and reports observed totals', async () => {
@@ -59,7 +69,7 @@ describe('workflow evidence and observational cost', () => {
       preflight: async () => undefined, dispatch: async (input) => terminal(input, costs[index++]!),
       reconcile: async () => ({ state: 'ambiguous' }), resume: async (input) => terminal(input, { completeness: 'unavailable', usd: null }) };
     await executeWorkflowPlan({ plan: item.plan, projectRoot: item.root, policyPath: item.policyPath, registry, locks,
-      boundaryIdentity: item.plan.runtime_binding.boundary!, dispatcher, judge: async () => ({ resolved: true, evidence: 'pass' }) });
+      boundaryIdentity: item.plan.runtime_binding.boundary!, dispatcher, judge: (input) => judge(input) });
     const receipts = await readWorkflowEvidenceReceipts(registry, `workflow-${item.plan.plan_id.slice(7)}`);
     expect(receipts.map((receipt) => receipt.cost)).toEqual(costs);
     expect(receipts.every((receipt) => receipt.harness_validity.status === 'valid' && receipt.terminal_class === 'resolved')).toBe(true);
@@ -74,12 +84,12 @@ describe('workflow evidence and observational cost', () => {
       dispatch: async (input) => terminal(input, { completeness: 'unavailable', usd: null }), reconcile: async () => ({ state: 'ambiguous' }),
       resume: async (input) => terminal(input, { completeness: 'unavailable', usd: null }) };
     await executeWorkflowPlan({ plan: item.plan, projectRoot: item.root, policyPath: item.policyPath, registry, locks,
-      boundaryIdentity: item.plan.runtime_binding.boundary!, dispatcher, judge: async () => ({ resolved: true, evidence: 'initial' }) });
+      boundaryIdentity: item.plan.runtime_binding.boundary!, dispatcher, judge: (input) => judge(input, 'judge_invalid_evidence') });
     const experimentId = `workflow-${item.plan.plan_id.slice(7)}`;
     const receipt = (await readWorkflowEvidenceReceipts(registry, experimentId))[0]!;
     const judgement = await rejudgeRetainedWorkflowStep({ registry, experimentId, receipt, trustedReceiptHash: receipt.receipt_hash,
       expectedPolicySemanticsHash: item.plan.policy_semantics_sha256 as `sha256:${string}`, judge: item.plan.policy.judge,
-      runner: async () => ({ resolved: true, evidence: 'rejudged' }), locks });
+      runner: (input) => judge(input), locks, plan: item.plan });
     expect(judgement.generation).toBe(2); expect(judgement.resolved).toBe(true);
     const roles = (await registry.verifyExperiment(experimentId)).map((entry) => entry.role);
     expect(roles).toContain('workflow-rejudge-intent'); expect(roles).toContain('workflow-rejudge-receipt');
@@ -93,10 +103,10 @@ describe('workflow evidence and observational cost', () => {
       resume: async (input) => terminal(input, { completeness: 'unavailable', usd: null }) };
     await expect(executeWorkflowPlan({ plan: item.plan, projectRoot: item.root, policyPath: item.policyPath, registry, locks,
       boundaryIdentity: item.plan.runtime_binding.boundary!, dispatcher: lost,
-      judge: async () => ({ resolved: true, evidence: 'pass' }) })).rejects.toThrow(/process loss/u);
+      judge: (input) => judge(input) })).rejects.toThrow(/process loss/u);
     await executeWorkflowPlan({ plan: item.plan, projectRoot: item.root, policyPath: item.policyPath, registry, locks,
       boundaryIdentity: item.plan.runtime_binding.boundary!, dispatcher: { ...lost, dispatch: async (input) => terminal(input, { completeness: 'unavailable', usd: null }) },
-      judge: async () => ({ resolved: true, evidence: 'pass' }) });
+      judge: (input) => judge(input) });
     const experimentId = `workflow-${item.plan.plan_id.slice(7)}`;
     const receipt = (await readWorkflowEvidenceReceipts(registry, experimentId))[0]!;
     expect(receipt.dispatch_recovery).toMatchObject({ recovered: true, recovery_count: 1 });

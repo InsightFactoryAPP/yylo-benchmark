@@ -31,6 +31,7 @@ export const WorkflowStepPolicySchema = z.object({
   authorization: z.enum(['none', 'spend', 'production_and_spend']),
   recovery: z.enum(['manual', 'retry_safe']),
   redaction: z.object({ patterns: z.array(nonEmpty).default([]), retain_prompt: z.boolean().default(false) }).strict(),
+  required_artifacts: z.array(nonEmpty).optional(),
 }).strict().superRefine((value, context) => {
   if (value.resources.some((item) => item.type === 'production') && value.side_effect !== 'production') {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['resources'], message: 'production resources require production side-effect classification' });
@@ -48,7 +49,7 @@ const deterministicCommandPolicy = z.object({
 
 export const WorkflowPolicySchema = z.object({
   schema_version: z.literal(WORKFLOW_POLICY_SCHEMA_VERSION),
-  judge: z.object({ judge_id: nonEmpty, judge_version: nonEmpty, model: nonEmpty, rubric_hash: sha256 }).strict(),
+  judge: z.object({ judge_id: nonEmpty, judge_version: nonEmpty, model: nonEmpty, rubric_hash: sha256, rubric: nonEmpty.optional() }).strict(),
   authorization: z.object({ authorization_id: nonEmpty, production: z.boolean(), spend: z.boolean() }).strict(),
   recovery: z.object({ ambiguous_effect: z.literal('manual'), max_recovery_attempts: z.number().int().nonnegative() }).strict(),
   redaction: z.object({ secret_patterns: z.array(nonEmpty).default([]), retain_prompts: z.boolean().default(false) }).strict(),
@@ -60,6 +61,9 @@ export const WorkflowPolicySchema = z.object({
 }).strict().superRefine((value, context) => {
   const ids = value.steps.map((item) => item.step_id);
   const scoring = value.steps.map((item) => item.scoring_id);
+  if (value.judge.rubric !== undefined && prefixedHash(Buffer.from(value.judge.rubric, 'utf8')) !== value.judge.rubric_hash) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['judge', 'rubric_hash'], message: 'judge rubric bytes do not match rubric_hash' });
+  }
   if (new Set(ids).size !== ids.length) context.addIssue({ code: z.ZodIssueCode.custom, path: ['steps'], message: 'step policies must have unique step_id values' });
   if (new Set(scoring).size !== scoring.length) context.addIssue({ code: z.ZodIssueCode.custom, path: ['steps'], message: 'scoring_id values must be unique' });
   if (!value.authorization.production && value.steps.some((item) => item.authorization === 'production_and_spend')) {

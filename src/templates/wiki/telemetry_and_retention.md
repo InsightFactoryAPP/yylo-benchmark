@@ -32,18 +32,22 @@ structured evidence proves it; missing cost is not zero.
 
 ## Privacy and safety
 
-Candidate and judge packets include only declared evidence. Scan outputs for secrets,
-credentials, personal data, and prohibited production content before retention or
-analysis. Prefer normalized outcomes, patches, grader receipts, economics, and bounded
-transcript references over complete transcripts. Production access needs independent
+Candidate and judge packets include only declared evidence. A governed judge packet binds
+versioned task requirements, actual rubric bytes, deterministic candidate truth, a bounded
+transcript, and content-addressed required artifacts. It excludes candidate provider/model
+identity. Scan packets and retained justifications for secrets, credentials, personal data,
+model identity, and prohibited production content before retention. Redaction failure makes
+the judgement invalid; it never becomes a rejection. Production access needs independent
 explicit authorization and is not implied by case eligibility.
 
 ## Immutable derivation
 
-Never rewrite an attempt object. Regrading, comparison, and investigation produce new
-objects that name their source hashes and tool or prompt versions. Doctor operations
-verify object hashes, manifest references, session reconciliation, and completeness;
-they diagnose but do not repair history silently.
+Never rewrite an attempt object. Every governed judgement retains a versioned terminal
+envelope with requested/observed provider, model and Juno version, one session, timestamps,
+runtime, cost completeness, exit status, strict verdict, and a hash-bound redacted factual
+justification. Regrading, rejudging, comparison, and investigation append derived objects
+that name source hashes and versions. Doctor verifies semantic proof as well as hashes;
+legacy hash-only judgements remain readable but are reported judge-invalid until rejudged.
 
 Retention deletion is deferred. Until an independently reviewed policy exists, preserve
 canonical evidence and keep the registry private. Do not copy large logs into canonical

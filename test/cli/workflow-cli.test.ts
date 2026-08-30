@@ -6,7 +6,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createProgram, runCli } from '../../src/cli/program.js';
 
-const rubric = `sha256:${'a'.repeat(64)}`;
+const rubric = 'sha256:9dbb9b78955fdf1dbacbc5a2004dce18a1d97e8c5f2f239e6bfe4a3e5dfc1b4d';
 
 async function fixture(): Promise<string> {
   const root = await mkdtemp(path.join(os.tmpdir(), 'workflow-cli-'));
@@ -14,7 +14,7 @@ async function fixture(): Promise<string> {
   await writeFile(path.join(root, 'workflow.yaml'), `schema_version: 2\nworkflow_id: cli-fixture\nsteps:\n  - id: analyze\n    command: [yy, pi, "Analyze without rewriting this prompt"]\n`);
   await writeFile(path.join(root, 'policy.yaml'), JSON.stringify({
     schema_version: 'juno_benchmark_workflow_policy.v1',
-    judge: { judge_id: 'governed-binary', judge_version: '1', model: 'openai-codex/gpt-5.6-sol', rubric_hash: rubric },
+    judge: { judge_id: 'governed-binary', judge_version: '1', model: 'openai-codex/gpt-5.6-sol', rubric_hash: rubric, rubric: 'binary rubric' },
     authorization: { authorization_id: 'fixture-required', production: true, spend: true },
     recovery: { ambiguous_effect: 'manual', max_recovery_attempts: 1 },
     redaction: { secret_patterns: ['TOKEN'], retain_prompts: false },
@@ -57,7 +57,12 @@ if (operation === 'probe') output = { schema_version: 'juno_benchmark_workflow_p
 else if (operation === 'preflight') output = { ok: true, provider: input.provider, model: ${substitute ? "'substituted'" : "input.model.split('/').slice(1).join('/')"}, juno_version: input.juno_version };
 else if (operation === 'dispatch' || operation === 'resume') output = terminal();
 else if (operation === 'reconcile') output = { state: 'proven_not_dispatched' };
-else if (operation === 'judge') output = { resolved: true, evidence: 'governed synthetic judgement' };
+else if (operation === 'judge') output = { schema_version: 'juno_benchmark_governed_judge_envelope.v1', judge_dispatch_id: input.judge_dispatch_id,
+  requested: { provider: 'openai-codex', model: 'gpt-5.6-sol', juno_version: input.requested_juno_version },
+  observed: { provider: 'openai-codex', model: 'gpt-5.6-sol', juno_version: input.requested_juno_version }, session_id: 'judge-' + input.judge_dispatch_id.slice(-12),
+  started_at: '2026-08-12T00:00:00.000Z', ended_at: '2026-08-12T00:00:01.000Z', runtime_ms: 1000,
+  cost: { completeness: 'complete', usd: 0.1 }, exit_status: { code: 0, signal: null }, dispatched: true, dispatch_proof: 'terminal', verdict: 'pass',
+  justification: 'Verified retained task and evidence.\\nVERDICT: PASS', terminal_class: 'judge_acceptance' };
 else throw new Error('unsupported operation');
 process.stdout.write(JSON.stringify(output));
 `;
@@ -108,11 +113,11 @@ describe('generic workflow CLI lifecycle', () => {
       expect(recover).toMatchObject({ operation: 'recover', plan_id: plan.plan_id, recovered: true });
       const rejudge = await capture(root, ['rejudge', '--plan', 'plan.json', '--steps-file', 'policy.yaml', '--judge', ':sol']);
       expect(rejudge).toMatchObject({ schema_version: 'juno_benchmark_workflow_rejudge.v1', plan_id: plan.plan_id,
-        candidate_dispatch_count: 0, judge_dispatch_count: 1,
+        candidate_dispatch_count: 0, judge_dispatch_count: 0,
         boundary: { protocol: 'juno_benchmark_workflow_process_boundary.v1', sha256: `sha256:${reviewed.sha256}` } });
       const secondRejudge = await capture(root, ['rejudge', '--plan', 'plan.json', '--steps-file', 'policy.yaml', '--judge', ':sol']);
       expect(secondRejudge).toMatchObject({ schema_version: 'juno_benchmark_workflow_rejudge.v1', plan_id: plan.plan_id,
-        candidate_dispatch_count: 0, judge_dispatch_count: 1 });
+        candidate_dispatch_count: 0, judge_dispatch_count: 0 });
     } finally {
       if (priorModule === undefined) delete process.env['YYLO_BENCHMARK_WORKFLOW_BOUNDARY']; else process.env['YYLO_BENCHMARK_WORKFLOW_BOUNDARY'] = priorModule;
       if (priorHash === undefined) delete process.env['YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256']; else process.env['YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256'] = priorHash;

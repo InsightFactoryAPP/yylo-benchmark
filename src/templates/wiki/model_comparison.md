@@ -26,9 +26,11 @@ agent-system identities. Separate model-only comparisons, where the surrounding 
 is fixed, from whole-agent-system comparisons.
 
 Infrastructure-invalid attempts remain visible in invalid-run statistics but do not
-become model failures. Report missing or partial economics explicitly. Include sample
-size and uncertainty; small repeated samples support cautious recommendations, not
-claims of universal superiority.
+become model failures. Reports expose candidate result, candidate-harness result, judge
+validity, and quality verdict separately. Missing or invalid judge proof is `unknown`,
+never `fail`; any unknown comparison suppresses winner selection. Report missing or
+partial economics explicitly. Include sample size and uncertainty; small repeated samples
+support cautious recommendations, not claims of universal superiority.
 
 ## Cheapest good enough
 

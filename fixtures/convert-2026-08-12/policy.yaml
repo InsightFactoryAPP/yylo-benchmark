@@ -4,7 +4,8 @@
     "judge_id": "frontier-governed",
     "judge_version": "2026-08-12.1",
     "model": "openai-codex/gpt-5.6-sol",
-    "rubric_hash": "sha256:fe2cf822622b7fb02d35b6b6f2f5678c40d168ac97327b5b818fefb136016c67"
+    "rubric_hash": "sha256:fe2cf822622b7fb02d35b6b6f2f5678c40d168ac97327b5b818fefb136016c67",
+    "rubric": "# Convert historical workflow binary judge rubric\n\nFor each selected workflow step, return resolved only when the retained candidate evidence is harness-valid, bound to the planned exact model and scoring identity, completes the step's stated outcome, and cites sufficient redacted evidence. Otherwise return unresolved with a concise reason. Candidate identity remains blinded; candidate execution is never repeated during rejudge.\n"
   },
   "authorization": {
     "authorization_id": "convert-2026-08-12-production-and-spend-required",

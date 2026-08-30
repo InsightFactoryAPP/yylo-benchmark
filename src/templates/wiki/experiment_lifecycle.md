@@ -44,7 +44,8 @@ not-applicable cost remains explicit null evidence and does not invalidate an ot
 run. Dry-run never loads the module, reports zero dispatch, and verifies source/policy/model/config
 hashes. Recovery reconciles durable intent before resume; ambiguous effects are manual. Rejudge
 persists identity-bound intent before judge dispatch, consumes retained blinded candidate truth,
-and cannot rerun a candidate.
+and cannot rerun a candidate. It dispatches only eligible missing or judge-invalid work; a valid
+terminal verdict and a candidate harness failure are both reused without judge redispatch.
 
 Pin historical acceptance by exact Git commit, raw and semantic YAML hashes, and named
 step IDs rather than positions. A detached checkout is valid. Keep expected identities
@@ -61,10 +62,12 @@ resources require serialization and separate authorization.
 
 ## Terminal truth
 
-Record resolved or unresolved separately from typed model, safety, harness,
-environment, grader, timeout, and cancellation classifications. Preserve exact model,
-session reference, elapsed runtime, patch identity, and complete or explicitly
-incomplete economics. A failed environment is not a model failure.
+Record candidate outcome, candidate-harness validity, judge validity, and quality verdict
+separately. Governed judge acceptance/rejection is valid only with an exact identity/session
+envelope and retained justification. Provider non-dispatch, timeout, nonzero exit, malformed
+output, missing strict verdict, missing task/rubric/artifacts, identity drift, or redaction failure
+is typed judge-invalid evidence and leaves quality unknown. A failed environment or judge
+harness is not a candidate/model failure.
 
 ## Recovery
 

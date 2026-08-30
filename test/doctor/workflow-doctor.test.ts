@@ -19,7 +19,7 @@ steps:
 
 const policy: WorkflowPolicy = {
   schema_version: 'juno_benchmark_workflow_policy.v1',
-  judge: { judge_id: 'later', judge_version: '1', model: ':sol', rubric_hash: `sha256:${'a'.repeat(64)}` },
+  judge: { judge_id: 'later', judge_version: '1', model: ':sol', rubric_hash: 'sha256:9dbb9b78955fdf1dbacbc5a2004dce18a1d97e8c5f2f239e6bfe4a3e5dfc1b4d', rubric: 'binary rubric' },
   authorization: { authorization_id: 'legacy-metadata-only', production: false, spend: false },
   recovery: { ambiguous_effect: 'manual', max_recovery_attempts: 1 },
   redaction: { secret_patterns: ['API_KEY'], retain_prompts: false },
@@ -70,8 +70,13 @@ function options(item: Awaited<ReturnType<typeof fixture>>, registryName = 'regi
   return { plan: item.plan, projectRoot: item.root, policyPath: item.policyPath,
     registry: new ImmutableArtifactRegistry(path.join(item.root, registryName)),
     locks: new PersistentTypedResourceLocks({ root: path.join(item.root, `${registryName}-locks`) }),
-    dispatcher: dispatcher(), judge: async () => ({ resolved: true, evidence: 'governed pass' }),
-    boundaryIdentity: item.plan.runtime_binding.boundary! };
+    dispatcher: dispatcher(), judge: async (input: { judge_dispatch_id: `sha256:${string}`; requested_juno_version: string }) => ({
+      schema_version: 'juno_benchmark_governed_judge_envelope.v1' as const, judge_dispatch_id: input.judge_dispatch_id,
+      requested: { provider: '', model: ':sol', juno_version: input.requested_juno_version }, observed: { provider: '', model: ':sol', juno_version: input.requested_juno_version },
+      session_id: `judge-${input.judge_dispatch_id.slice(-8)}`, started_at: '2026-08-12T09:00:00.000Z', ended_at: '2026-08-12T09:00:01.000Z', runtime_ms: 1000,
+      cost: { completeness: 'complete' as const, usd: 0 }, exit_status: { code: 0, signal: null }, dispatched: true, dispatch_proof: 'terminal', verdict: 'pass' as const,
+      justification: 'Factual pass.\nVERDICT: PASS', terminal_class: 'judge_acceptance' as const,
+    }), boundaryIdentity: item.plan.runtime_binding.boundary! };
 }
 
 describe('workflow experiment doctor', () => {
@@ -108,6 +113,6 @@ describe('workflow experiment doctor', () => {
       .rejects.toThrow(/process loss/u);
     const result = await doctorWorkflowExperiment(new ImmutableArtifactRegistry(path.join(item.root, 'registry')),
       `workflow-${item.plan.plan_id.slice(7)}`);
-    expect(result).toMatchObject({ ok: true, dispatchIntents: 1, terminals: 0, ambiguousDispatches: 1 });
+    expect(result).toMatchObject({ ok: false, dispatchIntents: 1, terminals: 0, ambiguousDispatches: 1 });
   });
 });

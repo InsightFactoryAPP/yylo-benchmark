@@ -13,7 +13,7 @@ export interface ExperimentDoctorResult {
 }
 
 export interface WorkflowExperimentDoctorResult {
-  readonly ok: true;
+  readonly ok: boolean;
   readonly experimentId: string;
   readonly artifacts: number;
   readonly dispatchIntents: number;
@@ -22,6 +22,8 @@ export interface WorkflowExperimentDoctorResult {
   readonly judgeIntents: number;
   readonly reports: number;
   readonly harnessFailureTerminals: number;
+  readonly judgeInvalid: number;
+  readonly unprovenJudgeIntents: number;
   readonly ambiguousDispatches: number;
 }
 
@@ -52,16 +54,32 @@ export async function doctorWorkflowExperiment(registry: ImmutableArtifactRegist
   const judgeIntents = entries.filter((entry) => entry.role === 'workflow-judge-intent');
   const terminals = entries.filter((entry) => entry.role === 'workflow-step-terminal');
   const reports = entries.filter((entry) => entry.role === 'workflow-report');
-  const receipts = await readWorkflowEvidenceReceipts(registry, experimentId);
+  let receipts: Awaited<ReturnType<typeof readWorkflowEvidenceReceipts>> = [];
+  let legacyJudgeInvalid = 0;
+  try { receipts = await readWorkflowEvidenceReceipts(registry, experimentId); }
+  catch (error) {
+    if (!/legacy workflow (?:evidence receipt|judgement)/u.test(error instanceof Error ? error.message : String(error))) throw error;
+    legacyJudgeInvalid = entries.filter((entry) => entry.role === 'workflow-evidence-receipt').length;
+  }
+  const judgeEnvelopes = entries.filter((entry) => entry.role === 'workflow-judge-envelope');
+  const readJudgeDispatchId = async (entry: ManifestEntry): Promise<string | null> => {
+    const value = JSON.parse((await registry.read(entry)).toString('utf8')) as { judge_dispatch_id?: unknown };
+    return typeof value.judge_dispatch_id === 'string' ? value.judge_dispatch_id : null;
+  };
+  const envelopeDispatchIds = new Set(await Promise.all(judgeEnvelopes.map(readJudgeDispatchId)));
+  const intentJudgeDispatchIds = await Promise.all(judgeIntents.map(readJudgeDispatchId));
+  const judgeInvalid = legacyJudgeInvalid + receipts.filter((receipt) => receipt.candidate_outcome.status === 'success'
+    && receipt.harness_validity.status === 'valid' && !receipt.judge_outcome.valid).length;
+  const unprovenJudgeIntents = intentJudgeDispatchIds.filter((id) => id === null || !envelopeDispatchIds.has(id)).length;
   const intentDispatchIds = await Promise.all(dispatchIntents.map((entry) => readDispatchId(entry)));
   const terminalDispatchIds = new Set(await Promise.all(terminals.map((entry) => readDispatchId(entry))));
   const ambiguousDispatches = intentDispatchIds.filter((dispatchId) => dispatchId === null || !terminalDispatchIds.has(dispatchId)).length;
   return {
-    ok: true, experimentId, artifacts: entries.length,
-    dispatchIntents: dispatchIntents.length, terminals: terminals.length,
-    evidenceReceipts: receipts.length, judgeIntents: judgeIntents.length, reports: reports.length,
+    ok: ambiguousDispatches === 0 && judgeInvalid === 0 && unprovenJudgeIntents === 0,
+    experimentId, artifacts: entries.length, dispatchIntents: dispatchIntents.length, terminals: terminals.length,
+    evidenceReceipts: receipts.length + legacyJudgeInvalid, judgeIntents: judgeIntents.length, reports: reports.length,
     harnessFailureTerminals: receipts.filter((receipt) => receipt.harness_validity.status === 'invalid').length,
-    ambiguousDispatches,
+    judgeInvalid, unprovenJudgeIntents, ambiguousDispatches,
   };
 }
 

@@ -5,6 +5,8 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runCli } from '../../src/cli/program.js';
 import { boundarySha256Hex, packagedBoundaryBytes, BOUNDARY_SETUP_FILENAME } from '../../src/boundary/index.js';
+import { ImmutableArtifactRegistry } from '../../src/registry/index.js';
+import { readWorkflowEvidenceReceipts } from '../../src/workflow/evidence.js';
 
 const JUNO_VERSION = '9.9.9';
 
@@ -28,7 +30,7 @@ async function project(): Promise<string> {
   await writeFile(path.join(root, 'workflow.yaml'), `schema_version: 2\nworkflow_id: boundary-cli\nvariables:\n  run_date: '1970-01-01'\nsteps:\n  - id: analyze\n    command: [yy, pi, "Analyze the $(run_date) snapshot"]\n  - id: compute\n    command: [env, PYTHONPATH=., python3, scripts/track.py, "--date", "$(run_date)"]\n`);
   await writeFile(path.join(root, 'policy.yaml'), JSON.stringify({
     schema_version: 'juno_benchmark_workflow_policy.v1',
-    judge: { judge_id: 'governed-binary', judge_version: '1', model: 'openai-codex/gpt-5.6-sol', rubric_hash: `sha256:${'a'.repeat(64)}` },
+    judge: { judge_id: 'governed-binary', judge_version: '1', model: 'openai-codex/gpt-5.6-sol', rubric_hash: 'sha256:9dbb9b78955fdf1dbacbc5a2004dce18a1d97e8c5f2f239e6bfe4a3e5dfc1b4d', rubric: 'binary rubric' },
     authorization: { authorization_id: 'fixture', production: true, spend: true },
     recovery: { ambiguous_effect: 'manual', max_recovery_attempts: 1 },
     redaction: { secret_patterns: ['TOKEN'], retain_prompts: false },
@@ -187,21 +189,29 @@ describe('installed synthetic lifecycle through the public CLI', () => {
     expect(dryRun).toMatchObject({ dispatch_count: 0, production_models_sequential: true });
 
     const run = await capture(root, ['run', '--plan', 'plan.json', '--steps-file', 'policy.yaml']);
-    expect(run).toMatchObject({ plan_id: plan.plan_id, recovered: false });
+    expect(run).toMatchObject({ plan_id: plan.plan_id, recovered: false, candidate_dispatch_count: 4, judge_dispatch_count: 4, production_effect_count: 0 });
     expect((run.terminals as unknown[]).length).toBe(4);
     for (const terminal of run.terminals as Array<{ result: { observed_model: string; observed_provider: string } }>) {
       expect(terminal.result.observed_model.split('/')[0]).toBe(terminal.result.observed_provider);
     }
+    const receipts = await readWorkflowEvidenceReceipts(new ImmutableArtifactRegistry(path.join(root, '.juno_task/artifacts/yylo-benchmark')),
+      `workflow-${String(plan.plan_id).slice(7)}`);
+    const judgeSessions = receipts.map((receipt) => receipt.judge_outcome).map(async (judgement) => {
+      const envelope = JSON.parse((await new ImmutableArtifactRegistry(path.join(root, '.juno_task/artifacts/yylo-benchmark')).read(judgement.envelope_ref)).toString('utf8')) as { session_id: string };
+      return envelope.session_id;
+    });
+    expect(new Set(await Promise.all(judgeSessions)).size).toBe(4);
+    expect(receipts.every((receipt) => receipt.judge_outcome.valid && receipt.judge_outcome.justification_hash === receipt.judge_outcome.justification_ref.sha256)).toBe(true);
 
     const rerun = await capture(root, ['run', '--plan', 'plan.json', '--steps-file', 'policy.yaml']);
-    expect(rerun).toMatchObject({ plan_id: plan.plan_id, recovered: true });
+    expect(rerun).toMatchObject({ plan_id: plan.plan_id, recovered: true, candidate_dispatch_count: 0, judge_dispatch_count: 0, production_effect_count: 0 });
 
     const recover = await capture(root, ['recover', '--plan', 'plan.json', '--steps-file', 'policy.yaml']);
-    expect(recover).toMatchObject({ operation: 'recover', plan_id: plan.plan_id, recovered: true });
+    expect(recover).toMatchObject({ operation: 'recover', plan_id: plan.plan_id, recovered: true, candidate_dispatch_count: 0, judge_dispatch_count: 0, production_effect_count: 0 });
 
     const rejudge = await capture(root, ['rejudge', '--plan', 'plan.json', '--steps-file', 'policy.yaml']);
     expect(rejudge).toMatchObject({ schema_version: 'juno_benchmark_workflow_rejudge.v1', plan_id: plan.plan_id,
-      candidate_dispatch_count: 0, judge_dispatch_count: 4,
+      candidate_dispatch_count: 0, judge_dispatch_count: 0,
       boundary: { protocol: 'juno_benchmark_workflow_process_boundary.v1', sha256: `sha256:${environment.YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256}` } });
 
     // Synthetic transport spawns no step children at all: the deterministic

@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { Option, type Command } from 'commander';
 import { lintBenchmarkCase } from '../case/lint.js';
-import { canonicalJson } from '../contracts/canonical.js';
+import { canonicalJson, sha256Hex } from '../contracts/canonical.js';
 import { CONFIG_FILENAME, CONFIG_SCHEMA_VERSION, loadConfig } from '../config/index.js';
 import { PublicKanbanClient } from '../kanban/client.js';
 import { doctorExperiment, doctorWorkflowExperiment, isWorkflowExperimentId } from '../doctor/index.js';
@@ -13,7 +13,7 @@ import { parseBenchmarkPlan, TaskExecutionAuthorizationSchema, type BenchmarkPla
 import { PersistentTypedResourceLocks } from '../execution/resource-lock.js';
 import { ImmutableArtifactRegistry } from '../registry/index.js';
 import { createReviewedWorkflowBoundary, executeWorkflowPlan, workflowBoundaryOptionsFromEnvironment } from '../workflow/runtime.js';
-import { readWorkflowEvidenceReceipts, rejudgeRetainedWorkflowStep, storeWorkflowExperimentReport } from '../workflow/evidence.js';
+import { readWorkflowEvidenceReceipts, rejudgeRetainedWorkflowStep, storeWorkflowExperimentReport, workflowReceiptNeedsRejudge } from '../workflow/evidence.js';
 import { generateLongitudinalReport } from '../reporting/index.js';
 import { createJunoInvestigationAgent, investigateRetainedEvidence } from '../investigation/index.js';
 import { authenticatedLauncherOptionsFromEnvironment, createAuthenticatedJunoRunner } from '../auth/index.js';
@@ -253,8 +253,9 @@ const recover = definition(['recover'], 'Recover a workflow plan from durable in
 const rejudgeWorkflow = definition(['rejudge'], 'Rejudge retained workflow truth without candidate dispatch', 'execution', true, (command, context) => {
   command.requiredOption('--plan <path>').requiredOption('--steps-file <path>', 'Workflow policy sidecar used for immediate hash verification')
     .option('--judge <selector>', 'Requested governed judge selector')
+    .option('--rubric-file <path>', 'Actual rubric bytes for migrating a legacy hash-only plan')
     .option('--dry-run', 'Verify immutable rejudge inputs with zero judge or candidate dispatch')
-    .action(async (options: { plan: string; stepsFile: string; judge?: string; dryRun?: boolean }) => {
+    .action(async (options: { plan: string; stepsFile: string; judge?: string; rubricFile?: string; dryRun?: boolean }) => {
       await loadedPreparedConfig(context);
       const benchmarkPlan = await readBenchmarkPlan(path.resolve(context.cwd, options.plan));
       if (benchmarkPlan.schema_version !== 'juno_benchmark_workflow_plan.v2') throw new Error('rejudge supports workflow plans only; use regrade for task-case plans');
@@ -265,6 +266,8 @@ const rejudgeWorkflow = definition(['rejudge'], 'Rejudge retained workflow truth
       const resolvedJudge = requestedJudge === benchmarkPlan.policy.judge.model ? requestedJudge
         : Object.entries(benchmarkPlan.model_selectors).find(([, selector]) => selector === requestedJudge)?.[0];
       if (resolvedJudge !== benchmarkPlan.policy.judge.model) throw new Error('requested workflow judge does not match the immutable governed judge policy');
+      const rubricBytes = options.rubricFile === undefined ? (benchmarkPlan.policy.judge as { rubric?: string }).rubric : await readFile(path.resolve(context.cwd, options.rubricFile), 'utf8');
+      if (rubricBytes === undefined || `sha256:${sha256Hex(Buffer.from(rubricBytes, 'utf8'))}` !== benchmarkPlan.policy.judge.rubric_hash) throw new Error('workflow rejudge rubric bytes are missing or do not match the immutable rubric_hash');
       if (options.dryRun === true) {
         context.writeStdout(`${canonicalJson({ schema_version: 'juno_benchmark_workflow_rejudge_dry_run.v1', operation: 'rejudge',
           plan_id: benchmarkPlan.plan_id, candidate_dispatch_count: 0, judge_dispatch_count: 0,
@@ -276,9 +279,10 @@ const rejudgeWorkflow = definition(['rejudge'], 'Rejudge retained workflow truth
       if (receipts.length !== benchmarkPlan.execution_order.length) throw new Error('workflow rejudge requires a complete retained receipt set');
       const judgements = [];
       for (const receipt of receipts) {
+        if (!await workflowReceiptNeedsRejudge(storage.registry, experimentId, receipt)) continue;
         judgements.push(await rejudgeRetainedWorkflowStep({ registry: storage.registry, experimentId,
           receipt, trustedReceiptHash: receipt.receipt_hash, expectedPolicySemanticsHash: benchmarkPlan.policy_semantics_sha256 as `sha256:${string}`,
-          judge: benchmarkPlan.policy.judge, runner: boundary.judge, locks: storage.locks }));
+          judge: benchmarkPlan.policy.judge, runner: boundary.judge, locks: storage.locks, plan: benchmarkPlan, rubricBytes }));
       }
       const report = await storeWorkflowExperimentReport(storage.registry, benchmarkPlan);
       context.writeStdout(`${canonicalJson({ schema_version: 'juno_benchmark_workflow_rejudge.v1', operation: 'rejudge',
