@@ -509,6 +509,7 @@ function verifyAttemptPlan(plan: AttemptPlanV2, experiment: V2ExperimentPlan): v
     harness_profile: plan.harness_profile, requested_model: plan.requested_model });
   if (plan.attempt_id !== expectedAttemptId || plan.experiment_id !== experiment.experiment_id
       || plan.yylo_version !== experiment.yylo_version || plan.benchmark_version !== experiment.benchmark_version
+      || plan.case.yylo_version !== plan.yylo_version || plan.case.yylo_version !== experiment.yylo_version
       || plan.case.source.repository !== experiment.source_repository || plan.case.source.commit !== experiment.source_commit
       || plan.case.source.tree !== experiment.source_tree || plan.case.kind !== experiment.case_kind
       || plan.comparison_kind !== experiment.comparison_kind) throw new Error('attempt plan identity failed');

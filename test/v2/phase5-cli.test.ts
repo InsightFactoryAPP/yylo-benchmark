@@ -165,8 +165,10 @@ describe('f922O3 phase 5 v2 CLI cutover and restrictive v1 retirement', () => {
     const repository = 'https://example.invalid/unrelated.git';
     const repositoryAttempt = rehashAttempt(plan.attempts[0], { case: { ...plan.attempts[0].case,
       source: { ...plan.attempts[0].case.source, repository } } });
+    const caseVersionAttempt = rehashAttempt(plan.attempts[0], { case: { ...plan.attempts[0].case, yylo_version: 'forged-version' } });
     for (const forged of [rehashOuter({ attempts: [promptAttempt] }),
       rehashOuter({ source_repository: repository, attempts: [repositoryAttempt] }),
+      rehashOuter({ attempts: [caseVersionAttempt] }),
       rehashOuter({ yylo_version: 'forged-version' }), rehashOuter({ benchmark_version: 'forged-version' })]) {
       await expect(runV2Experiment({ cwd: root, plan: forged, dryRun: true })).rejects.toThrow(/tracked source case|actual source repository|attempt plan identity/iu);
       await expect(runV2Experiment({ cwd: root, plan: forged })).rejects.toThrow(/tracked source case|actual source repository|attempt plan identity/iu);
