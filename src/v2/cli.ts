@@ -256,8 +256,10 @@ class CommandHarnessAdapter implements HarnessAdapter {
     }
     let parsed: unknown; try { parsed = JSON.parse(output.stdout) as unknown; } catch { throw new Error(`command harness emitted malformed JSON: ${output.stdout.slice(0, 200)}`); }
     const terminal = object(parsed, 'command harness terminal') as unknown as HarnessTerminalInput; const ended = new Date();
-    return { ...terminal, started_at: started.toISOString(), ended_at: ended.toISOString(), runtime_ms: output.runtimeMs,
-      process: terminal.process ?? { pid: output.pid, command: [this.#config.executable, ...this.#config.arguments] } };
+    const measuredFailure = output.code !== 0 || output.signal !== null;
+    return { ...terminal, status: measuredFailure ? 'failure' : terminal.status, exit_code: output.code, signal: output.signal,
+      started_at: started.toISOString(), ended_at: ended.toISOString(), runtime_ms: output.runtimeMs,
+      process: { pid: output.pid, command: [this.#config.executable, ...this.#config.arguments] } };
   }
 }
 

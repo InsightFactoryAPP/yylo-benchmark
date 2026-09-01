@@ -74,6 +74,23 @@ describe('f922O3 phase 5 v2 CLI cutover and restrictive v1 retirement', () => {
     expect(taskPlan.attempts[0].case.kind).toBe('task');
   });
 
+  it('binds command-harness terminal truth to measured nonzero exits and signals', async () => {
+    for (const outcome of ['nonzero', 'signal'] as const) {
+      const root = await fixture();
+      const harness = path.join(root, 'scripts', `contradictory-${outcome}.mjs`);
+      await writeFile(harness, `const r=JSON.parse(process.env.YYLO_BENCHMARK_REQUEST_JSON);const now=new Date().toISOString();const terminal={status:'success',exit_code:0,signal:null,session_id:'claimed-success',resolved_provider:'vendor',resolved_model:r.requestedModel,observed_provider:'vendor',observed_model:r.requestedModel,harness_version:'fixture-1',started_at:now,ended_at:now,runtime_ms:1,cost:{completeness:'not_applicable',usd:null},process:{pid:1,command:['claimed']},artifacts:[],raw_output:'claimed success'};process.stdout.write(JSON.stringify(terminal),()=>{${outcome === 'signal' ? "process.kill(process.pid,'SIGTERM')" : 'process.exit(42)'}});`);
+      const configPath = path.join(root, 'yylo-benchmark.config.json');
+      const config = JSON.parse(await readFile(configPath, 'utf8')) as Record<string, any>;
+      config.harnesses.candidate.arguments = [harness];
+      await writeFile(configPath, JSON.stringify(config));
+      const plan = await capture(root, ['plan', '--task', 'task.md', '--models', 'vendor/model', '--output', 'plan.json']);
+      const run = await capture(root, ['run', '--plan', 'plan.json']);
+      expect(run.attempts[0].evidence.candidate).toMatchObject({ status: 'failure', exit_code: outcome === 'nonzero' ? 42 : null,
+        signal: outcome === 'signal' ? 'SIGTERM' : null });
+      expect(run.attempts[0].evidence.candidate.process).not.toMatchObject({ pid: 1, command: ['claimed'] });
+    }
+  });
+
   it('P5-A3 recovers known terminals and appends regrade/rejudge generations without candidate redispatch', async () => {
     expect(await api(), 'v2 CLI module must exist').not.toBeNull();
     const root = await fixture();
