@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { accessSync, constants as fsConstants } from 'node:fs';
+import { accessSync, constants as fsConstants, realpathSync } from 'node:fs';
 import { chmod, mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -77,7 +77,17 @@ function assertPlannedAttemptCardinality(plan: Pick<V2ExperimentPlan, 'attempts'
   }
 }
 
+function assertEvaluatorProfileUniqueness(profiles: readonly EvaluatorProfile[], operation: string): void {
+  const identities = new Set<string>();
+  for (const profile of profiles) {
+    const identity = `${profile.profileId}\0${profile.generation}`;
+    if (identities.has(identity)) throw new Error(`${operation}: evaluator profile/generation must be unique: ${profile.profileId}/${profile.generation}`);
+    identities.add(identity);
+  }
+}
+
 function verifyExperimentIdentity(plan: V2ExperimentPlan): void {
+  assertEvaluatorProfileUniqueness(plan.evaluator_profiles, 'experiment plan');
   const first = plan.attempts[0]!; const models: string[] = [];
   for (const attempt of plan.attempts) if (!models.includes(attempt.requested_model)) models.push(attempt.requested_model);
   const attemptsPerModel = plan.attempts.filter((attempt) => attempt.requested_model === models[0]).length;
@@ -225,6 +235,12 @@ async function git(cwd: string, args: readonly string[]): Promise<string> {
     env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', LC_ALL: 'C' } });
   return stdout.trim();
 }
+async function sourceRepositoryIdentity(cwd: string): Promise<string> {
+  const remote = await git(cwd, ['config', '--get', 'remote.origin.url']).catch(() => '');
+  if (remote) return remote;
+  const topLevel = await git(cwd, ['rev-parse', '--show-toplevel']);
+  return realpathSync(topLevel);
+}
 async function trackedBytes(cwd: string, commit: string, relative: string): Promise<Buffer> {
   safeRelative(relative, 'case path');
   const { stdout } = await execFileAsync('git', ['-C', cwd, 'show', `${commit}:${relative}`], { encoding: 'buffer', timeout: 30_000, maxBuffer: 32 * 1024 * 1024 });
@@ -246,10 +262,11 @@ export async function createV2ExperimentPlan(input: {
   const evaluatorIds = input.evaluatorIds ?? loaded.config.default_evaluators;
   const evaluatorCatalog = Object.entries(loaded.config.evaluators).map(([id, config]) => evaluatorProfile(id, config));
   const profiles = evaluatorIds.map((id) => { const config = loaded.config.evaluators[id]; if (config === undefined) throw new Error(`evaluator is unavailable: ${id}`); return evaluatorProfile(id, config); });
+  assertEvaluatorProfileUniqueness(profiles, 'plan');
   const configRelative = safeRelative(path.relative(path.resolve(input.cwd), loaded.path).split(path.sep).join('/'), 'config path');
   const snapshotExclusions = [...new Set(['.juno_task', 'hidden-graders', 'reference-solutions', configRelative])].sort();
   const candidateManifest = await deriveCandidateManifest({ sourceRepository: input.cwd, baseCommit: commit, excludedPaths: snapshotExclusions });
-  const source = { repository: await git(input.cwd, ['config', '--get', 'remote.origin.url']).catch(() => path.resolve(input.cwd)), commit, tree,
+  const source = { repository: await sourceRepositoryIdentity(input.cwd), commit, tree,
     candidate_manifest_hash: candidateManifest.manifest_hash };
   const experimentId = canonicalHash({ kind: input.task === undefined ? 'workflow' : 'task', case_path: casePath, case_sha256: `sha256:${sha256Hex(caseBytes)}`, commit,
     models: input.models, attempts: input.attempts, harness, evaluators: profiles, config_hash: loaded.hash, variables: input.variables ?? {}, controlled_model_variable: input.controlledModelVariable ?? null });
@@ -420,7 +437,7 @@ function roots(cwd: string, config: V2Config): { attempts: string; registry: str
     return { attempts: path.resolve(cwd, config.workspace.attempts_root), registry, intents: path.join(registry, 'v2', 'intents'),
       evaluations: path.join(registry, 'v2', 'evaluations'), isolatedAttempts: false, enforcedBoundary: false };
   }
-  const namespace = canonicalHash({ source_repository: path.resolve(cwd), attempts_root: config.workspace.attempts_root,
+  const namespace = canonicalHash({ source_repository: realpathSync(cwd), attempts_root: config.workspace.attempts_root,
     registry_root: config.workspace.registry_root }).slice(7);
   const attempts = path.join(os.tmpdir(), `yylo-benchmark-attempt-${namespace}`);
   const registry = path.join(os.homedir(), '.local', 'state', 'yylo-benchmark', 'registry', namespace);
@@ -457,11 +474,22 @@ async function attemptBoundaryPaths(cwd: string, root: ReturnType<typeof roots>,
 async function verifySourceIdentity(cwd: string, plan: V2ExperimentPlan): Promise<void> {
   const commit = await git(cwd, ['rev-parse', 'HEAD']);
   const tree = await git(cwd, ['rev-parse', 'HEAD^{tree}']);
+  const repository = await sourceRepositoryIdentity(cwd);
   const manifest = await deriveCandidateManifest({ sourceRepository: cwd, baseCommit: commit, excludedPaths: plan.snapshot_exclusions });
+  if (repository !== plan.source_repository) throw new Error('actual source repository differs from the immutable experiment plan');
   if (commit !== plan.source_commit || tree !== plan.source_tree) throw new Error('actual source commit/tree differs from the immutable experiment plan');
   if (manifest.source_commit !== commit || manifest.source_tree !== tree
       || plan.attempts.some((attempt) => attempt.case.source.candidate_manifest_hash !== manifest.manifest_hash)) {
     throw new Error('actual source candidate manifest differs from the immutable experiment plan');
+  }
+  const caseBytes = await trackedBytes(cwd, commit, plan.case_path);
+  const caseHash = `sha256:${sha256Hex(caseBytes)}`;
+  for (const attempt of plan.attempts) {
+    const normalized = object(attempt.case.normalized_input, 'planned normalized input');
+    const bound = attempt.case.case_version === caseHash && (plan.case_kind === 'task'
+      ? normalized['prompt'] === caseBytes.toString('utf8')
+      : normalized['workflow_path'] === plan.case_path && normalized['workflow_sha256'] === caseHash);
+    if (!bound) throw new Error('planned case input differs from the tracked source case');
   }
 }
 function statePath(registry: string, plan: V2ExperimentPlan, attempt: AttemptPlanV2): string {
@@ -480,6 +508,7 @@ function verifyAttemptPlan(plan: AttemptPlanV2, experiment: V2ExperimentPlan): v
   const expectedAttemptId = canonicalHash({ experiment_id: plan.experiment_id, case_hash: plan.case.normalized_input_hash, attempt_index: plan.attempt_index,
     harness_profile: plan.harness_profile, requested_model: plan.requested_model });
   if (plan.attempt_id !== expectedAttemptId || plan.experiment_id !== experiment.experiment_id
+      || plan.yylo_version !== experiment.yylo_version || plan.benchmark_version !== experiment.benchmark_version
       || plan.case.source.repository !== experiment.source_repository || plan.case.source.commit !== experiment.source_commit
       || plan.case.source.tree !== experiment.source_tree || plan.case.kind !== experiment.case_kind
       || plan.comparison_kind !== experiment.comparison_kind) throw new Error('attempt plan identity failed');

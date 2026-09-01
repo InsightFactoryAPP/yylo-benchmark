@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -141,6 +141,38 @@ describe('f922O3 phase 5 v2 CLI cutover and restrictive v1 retirement', () => {
     }
   });
 
+  it('rejects duplicate evaluator selections before planning or dispatch', async () => {
+    const root = await fixture(); const module = await api();
+    await expect(module!.createV2ExperimentPlan({ cwd: root, benchmarkVersion: 'test', task: 'task.md', models: ['vendor/model'], attempts: 1,
+      evaluatorIds: ['checks', 'checks'] })).rejects.toThrow(/evaluator profile\/generation must be unique/iu);
+  });
+
+  it('re-derives tracked case, repository, and nested version provenance before dry-run or dispatch', async () => {
+    const root = await fixture(); const plan = await capture(root, ['plan', '--task', 'task.md', '--models', 'vendor/model', '--output', 'plan.json']);
+    const rehashAttempt = (attempt: Record<string, any>, changes: Record<string, unknown>) => {
+      const { plan_hash: _claimed, ...core } = { ...attempt, ...changes };
+      return { ...core, plan_hash: canonicalHash(core) };
+    };
+    const rehashOuter = (changes: Record<string, unknown>) => {
+      const { plan_hash: _claimed, ...core } = { ...plan, ...changes };
+      return { ...core, plan_hash: canonicalHash(core) } as never;
+    };
+    const normalized = { ...plan.attempts[0].case.normalized_input, prompt: 'substituted prompt' };
+    const forgedCase = { ...plan.attempts[0].case, normalized_input: normalized, normalized_input_hash: canonicalHash(normalized) };
+    const attemptId = canonicalHash({ experiment_id: plan.attempts[0].experiment_id, case_hash: forgedCase.normalized_input_hash,
+      attempt_index: plan.attempts[0].attempt_index, harness_profile: plan.attempts[0].harness_profile, requested_model: plan.attempts[0].requested_model });
+    const promptAttempt = rehashAttempt(plan.attempts[0], { case: forgedCase, attempt_id: attemptId });
+    const repository = 'https://example.invalid/unrelated.git';
+    const repositoryAttempt = rehashAttempt(plan.attempts[0], { case: { ...plan.attempts[0].case,
+      source: { ...plan.attempts[0].case.source, repository } } });
+    for (const forged of [rehashOuter({ attempts: [promptAttempt] }),
+      rehashOuter({ source_repository: repository, attempts: [repositoryAttempt] }),
+      rehashOuter({ yylo_version: 'forged-version' }), rehashOuter({ benchmark_version: 'forged-version' })]) {
+      await expect(runV2Experiment({ cwd: root, plan: forged, dryRun: true })).rejects.toThrow(/tracked source case|actual source repository|attempt plan identity/iu);
+      await expect(runV2Experiment({ cwd: root, plan: forged })).rejects.toThrow(/tracked source case|actual source repository|attempt plan identity/iu);
+    }
+  });
+
   it('binds the selected config path, complete exclusions, and actual candidate manifest into the workspace receipt', async () => {
     const root = await fixture(); const original = await readFile(path.join(root, 'yylo-benchmark.config.json'));
     await writeFile(path.join(root, 'identical-config.json'), original);
@@ -166,7 +198,7 @@ describe('f922O3 phase 5 v2 CLI cutover and restrictive v1 retirement', () => {
     config.harnesses.candidate.arguments = [harness];
     await writeFile(configPath, JSON.stringify(config));
     const controller = await mkdtemp(path.join(os.tmpdir(), 'yylo-controller-root-'));
-    const namespace = canonicalHash({ source_repository: path.resolve(root), attempts_root: config.workspace.attempts_root,
+    const namespace = canonicalHash({ source_repository: await realpath(root), attempts_root: config.workspace.attempts_root,
       registry_root: config.workspace.registry_root }).slice(7);
     const registry = path.join(os.homedir(), '.local', 'state', 'yylo-benchmark', 'registry', namespace);
     const previous = { PROJECT_ROOT: process.env.PROJECT_ROOT, CONTROLLER_ROOT: process.env.CONTROLLER_ROOT, REGISTRY_PATH: process.env.REGISTRY_PATH,
@@ -176,8 +208,9 @@ describe('f922O3 phase 5 v2 CLI cutover and restrictive v1 retirement', () => {
       process.env.PATH = `${path.join(root, 'node_modules', '.bin')}${path.delimiter}${previous.PATH ?? ''}`;
       const firstPlan = await capture(root, ['plan', '--task', 'task.md', '--models', 'vendor/one', '--output', 'plan-one.json']);
       const firstRun = await capture(root, ['run', '--plan', 'plan-one.json']);
-      const secondPlan = await capture(root, ['plan', '--task', 'task.md', '--models', 'vendor/two', '--output', 'plan-two.json']);
-      const secondRun = await capture(root, ['run', '--plan', 'plan-two.json']);
+      const alias = path.join(probeRoot, 'source-alias'); await symlink(root, alias);
+      const secondPlan = await capture(alias, ['plan', '--task', 'task.md', '--models', 'vendor/two', '--output', 'plan-two.json']);
+      const secondRun = await capture(alias, ['run', '--plan', 'plan-two.json']);
       expect(firstPlan.experiment_id).not.toBe(secondPlan.experiment_id);
       const first = JSON.parse(firstRun.attempts[0].evidence.candidate.output) as Record<string, any>;
       const second = JSON.parse(secondRun.attempts[0].evidence.candidate.output) as Record<string, any>;

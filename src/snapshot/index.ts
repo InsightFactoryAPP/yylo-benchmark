@@ -76,15 +76,17 @@ const FIXED_GIT_ENV = Object.freeze({
 });
 
 function canonicalFilesystemPath(value: string): string {
-  let existing = path.resolve(value); const suffix: string[] = [];
-  while (true) {
-    try { return path.join(realpathSync(existing), ...suffix); }
-    catch {
-      const parent = path.dirname(existing);
-      if (parent === existing) return path.resolve(value);
-      suffix.unshift(path.basename(existing)); existing = parent;
-    }
+  const absolute = path.isAbsolute(value) ? value : `${process.cwd()}${path.sep}${value}`;
+  const root = path.parse(absolute).root;
+  let current = root;
+  for (const component of absolute.slice(root.length).split(/[\\/]+/u)) {
+    if (!component || component === '.') continue;
+    if (component === '..') { current = path.dirname(current); continue; }
+    const candidate = path.join(current, component);
+    try { current = realpathSync(candidate); }
+    catch { current = candidate; }
   }
+  return current;
 }
 
 /** Detect protected filesystem references even when an arbitrary environment value uses lexical aliases. */
