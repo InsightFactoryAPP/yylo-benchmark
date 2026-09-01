@@ -1,5 +1,17 @@
 # YYLO Benchmark
 
+<p align="center">
+  <a href="https://yylo.dev"><strong>yylo.dev</strong></a> ·
+  <a href="https://github.com/yylo-dev/yylo">YYLO CLI</a> ·
+  <a href="https://github.com/yylo-dev/yylo-ledger">YYLO Ledger</a> ·
+  <a href="https://www.npmjs.com/package/%40yylo%2Fbenchmark">npm</a>
+</p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/%40yylo%2Fbenchmark"><img src="https://img.shields.io/npm/v/%40yylo%2Fbenchmark.svg" alt="npm version" /></a>
+  <a href="https://github.com/yylo-dev/yylo-benchmark"><img src="https://img.shields.io/github/stars/yylo-dev/yylo-benchmark?style=social" alt="GitHub stars" /></a>
+</p>
+
 YYLO Benchmark is the flexible, isolated evaluation layer for task prompts and project-owned Workflow Runner YAML. It normalizes every case into one v2 attempt contract, runs each candidate in a private fresh-repository workspace, and evaluates retained evidence with ordered deterministic and/or LLM profiles.
 
 - Package: [`@yylo/benchmark`](https://www.npmjs.com/package/%40yylo%2Fbenchmark)
