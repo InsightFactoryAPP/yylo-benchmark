@@ -1,13 +1,13 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import { canonicalHash } from '../../src/contracts/canonical.js';
 import { createProgram, runCli } from '../../src/cli/program.js';
-import { assertProcessTreeSupported, runCapturedProcess } from '../../src/v2/process.js';
+import { assertProcessTreeSupported, linuxBubblewrapArguments, runCapturedProcess } from '../../src/v2/process.js';
 import { doctorV2Experiment, parseV2ExperimentPlan, reportV2Experiment, resolveV2RuntimePaths, type V2ExperimentPlan } from '../../src/v2/cli.js';
 import { createAttemptWorkspace, doctorAttemptWorkspace } from '../../src/v2/workspace.js';
 
@@ -73,12 +73,30 @@ describe('fT49yV terminal successor contracts', () => {
     const root = await cliFixture(); const commit = (await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim();
     const external = await mkdtemp(path.join(os.tmpdir(), 'yylo-toolchain-boundary-')); const nvm = path.join(external, 'nvm');
     const bin = path.join(nvm, 'versions', 'node', 'v22', 'bin');
+    const alias = path.join(external, 'source-alias'); await symlink(root, alias);
     const workspace = await createAttemptWorkspace({ attemptId: hash('b'), sourceRepository: root, baseCommit: commit,
       attemptsRoot: path.join(external, 'attempts'), privateRegistryRoot: path.join(external, 'registry'),
-      inheritedEnvironment: { NVM_DIR: nvm, PATH: bin, UNRELATED_ALIAS: path.join(root, 'intermediate', '..') } });
+      inheritedEnvironment: { NVM_DIR: nvm, PATH: bin, UNRELATED_ALIAS: path.join(root, 'intermediate', '..'), SOURCE_GLOB: `${alias}/*.secret` } });
     expect(workspace.candidateEnvironment).toMatchObject({ NVM_DIR: nvm, PATH: bin });
     expect(workspace.candidateEnvironment.UNRELATED_ALIAS).toBeUndefined();
+    expect(workspace.candidateEnvironment.SOURCE_GLOB).toBeUndefined();
     await expect(doctorAttemptWorkspace(workspace, { sourceRepository: root })).resolves.toMatchObject({ ok: true });
+    await expect(doctorAttemptWorkspace({ ...workspace, candidateEnvironment: { ...workspace.candidateEnvironment, SOURCE_GLOB: `${alias}/*.secret` } },
+      { sourceRepository: root })).rejects.toThrow(/protected source or controller reference/iu);
+  });
+
+  it('qWJc7U-A3 keeps every candidate-owned Linux process root writable under the read-only host bind', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'yylo-bwrap-roots-')); const repository = path.join(root, 'repository');
+    const home = path.join(root, 'home'); const temporary = path.join(root, 'tmp'); const cache = path.join(root, 'cache'); const config = path.join(root, 'config');
+    const protectedRoot = path.join(root, 'protected');
+    for (const directory of [repository, home, temporary, cache, config, protectedRoot]) await mkdir(directory);
+    const argv = linuxBubblewrapArguments('/usr/bin/node', ['candidate.mjs'], { cwd: repository,
+      environment: { HOME: home, TMPDIR: temporary, XDG_CACHE_HOME: cache, XDG_CONFIG_HOME: config } }, [protectedRoot]);
+    expect(argv.join('\0')).toContain(`--bind\0${repository}\0${repository}`);
+    for (const directory of [home, temporary, cache, config]) {
+      const canonical = await realpath(directory); expect(argv.join('\0')).toContain(`--bind\0${canonical}\0${canonical}`);
+    }
+    expect(argv.join('\0')).toContain(`--tmpfs\0${protectedRoot}`);
   });
 
   it('8lyWtv-002 rejects zero attempts and duplicate attempt identities in plans, doctor, and report', async () => {

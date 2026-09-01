@@ -5,13 +5,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { canonicalHash, canonicalJson, sha256Hex, type JsonValue } from '../contracts/canonical.js';
-import { caseInvocation, compileTaskAttempt, compileWorkflowAttempt, evidenceFromTerminal, executeCaseAttempt, recoverCaseAttempt } from './adapters.js';
+import { caseInvocation, compileTaskAttempt, compileWorkflowAttempt, evidenceFromTerminal, executeCaseAttempt, nonModelInputHash, recoverCaseAttempt } from './adapters.js';
 import { evaluateAttempt, reevaluateAttempt, type DeterministicEvaluator, type EvaluationComposition, type EvaluatorProfile, type RichEvaluationRecord } from './evaluators.js';
 import { loadHarnessTerminalForVerification, YyloPiHarnessAdapter, type HarnessAdapter, type HarnessRequest, type HarnessReconcileResult, type HarnessTerminalInput } from './harness.js';
 import { AttemptEvidenceV2Schema, AttemptPlanV2Schema, EvaluationRecordV2Schema, ReportProvenanceV2Schema, ReportV2Schema, serializeV2, type AttemptEvidenceV2, type AttemptPlanV2 } from './contracts.js';
 import { WorkflowRunnerHarnessAdapter } from './adapters.js';
 import { doctorAttemptWorkspace, loadAttemptWorkspace } from './workspace.js';
 import { runCapturedProcess } from './process.js';
+import { deriveCandidateManifest } from '../snapshot/index.js';
 
 export const V2_CLI_SCHEMA_VERSION = 'yylo_benchmark_cli.v2' as const;
 export const V2_CONFIG_SCHEMA_VERSION = 'yylo_benchmark_config.v2' as const;
@@ -54,6 +55,8 @@ export interface V2ExperimentPlan {
   readonly experiment_id: `sha256:${string}`;
   readonly plan_hash: `sha256:${string}`;
   readonly config_hash: `sha256:${string}`;
+  readonly config_path: string;
+  readonly snapshot_exclusions: readonly string[];
   readonly source_repository: string;
   readonly source_commit: string;
   readonly source_tree: string;
@@ -72,6 +75,35 @@ function assertPlannedAttemptCardinality(plan: Pick<V2ExperimentPlan, 'attempts'
     if (identities.has(attempt.attempt_id)) throw new Error(`${operation}: duplicate planned attempt identity: ${attempt.attempt_id}`);
     identities.add(attempt.attempt_id);
   }
+}
+
+function verifyExperimentIdentity(plan: V2ExperimentPlan): void {
+  const first = plan.attempts[0]!; const models: string[] = [];
+  for (const attempt of plan.attempts) if (!models.includes(attempt.requested_model)) models.push(attempt.requested_model);
+  const attemptsPerModel = plan.attempts.filter((attempt) => attempt.requested_model === models[0]).length;
+  if (attemptsPerModel < 1 || plan.attempts.length !== models.length * attemptsPerModel) throw new Error('experiment attempt matrix is incomplete');
+  const expectedEvaluators = plan.evaluator_profiles.map((profile) => ({ profile_id: profile.profileId, profile_version: profile.profileVersion,
+    generation: profile.generation, kind: profile.kind, required: profile.required, config_hash: evaluatorProfileHash(profile) }));
+  const baselineNonModel = nonModelInputHash(first);
+  for (const model of models) {
+    const attempts = plan.attempts.filter((attempt) => attempt.requested_model === model);
+    if (attempts.some((attempt, index) => attempt.attempt_index !== index + 1 || attempt.case.case_id !== plan.case_path
+        || attempt.case.kind !== plan.case_kind || attempt.harness_profile !== first.harness_profile
+        || canonicalHash(attempt.evaluators) !== canonicalHash(expectedEvaluators) || nonModelInputHash(attempt) !== baselineNonModel)) {
+      throw new Error('experiment attempt matrix/evaluator linkage is invalid');
+    }
+  }
+  const normalized = object(first.case.normalized_input, 'planned normalized input');
+  const controlled = plan.case_kind === 'workflow' && typeof normalized['controlled_model_variable'] === 'string'
+    ? normalized['controlled_model_variable'] : null;
+  const variables = controlled === null ? first.variables : Object.fromEntries(Object.entries(first.variables).filter(([key]) => key !== controlled));
+  if (controlled !== null && plan.attempts.some((attempt) => attempt.variables[controlled] !== attempt.requested_model)) {
+    throw new Error('experiment controlled-model matrix is invalid');
+  }
+  const expected = canonicalHash({ kind: plan.case_kind, case_path: plan.case_path, case_sha256: first.case.case_version, commit: plan.source_commit,
+    models, attempts: attemptsPerModel, harness: first.harness_profile, evaluators: plan.evaluator_profiles, config_hash: plan.config_hash,
+    variables, controlled_model_variable: controlled });
+  if (plan.experiment_id !== expected) throw new Error('experiment identity derivation failed');
 }
 
 interface PersistedAttempt {
@@ -214,8 +246,11 @@ export async function createV2ExperimentPlan(input: {
   const evaluatorIds = input.evaluatorIds ?? loaded.config.default_evaluators;
   const evaluatorCatalog = Object.entries(loaded.config.evaluators).map(([id, config]) => evaluatorProfile(id, config));
   const profiles = evaluatorIds.map((id) => { const config = loaded.config.evaluators[id]; if (config === undefined) throw new Error(`evaluator is unavailable: ${id}`); return evaluatorProfile(id, config); });
+  const configRelative = safeRelative(path.relative(path.resolve(input.cwd), loaded.path).split(path.sep).join('/'), 'config path');
+  const snapshotExclusions = [...new Set(['.juno_task', 'hidden-graders', 'reference-solutions', configRelative])].sort();
+  const candidateManifest = await deriveCandidateManifest({ sourceRepository: input.cwd, baseCommit: commit, excludedPaths: snapshotExclusions });
   const source = { repository: await git(input.cwd, ['config', '--get', 'remote.origin.url']).catch(() => path.resolve(input.cwd)), commit, tree,
-    candidate_manifest_hash: canonicalHash({ tree, exclusions: ['.juno_task', 'hidden-graders', 'reference-solutions'] }) };
+    candidate_manifest_hash: candidateManifest.manifest_hash };
   const experimentId = canonicalHash({ kind: input.task === undefined ? 'workflow' : 'task', case_path: casePath, case_sha256: `sha256:${sha256Hex(caseBytes)}`, commit,
     models: input.models, attempts: input.attempts, harness, evaluators: profiles, config_hash: loaded.hash, variables: input.variables ?? {}, controlled_model_variable: input.controlledModelVariable ?? null });
   const evaluatorRefs = profiles.map((profile) => ({ profile_id: profile.profileId, profile_version: profile.profileVersion, generation: profile.generation,
@@ -234,7 +269,8 @@ export async function createV2ExperimentPlan(input: {
     }
   }
   const core = { schema_version: V2_EXPERIMENT_PLAN_SCHEMA_VERSION, yylo_version: loaded.config.yylo_version, benchmark_version: input.benchmarkVersion,
-    experiment_id: experimentId, config_hash: loaded.hash, source_repository: source.repository, source_commit: commit, source_tree: tree,
+    experiment_id: experimentId, config_hash: loaded.hash, config_path: configRelative, snapshot_exclusions: snapshotExclusions,
+    source_repository: source.repository, source_commit: commit, source_tree: tree,
     comparison_kind: plans[0]!.comparison_kind, case_kind: input.task === undefined ? 'workflow' as const : 'task' as const,
     case_path: casePath, evaluator_profiles: profiles, evaluator_catalog: evaluatorCatalog, attempts: plans };
   return Object.freeze({ ...core, plan_hash: canonicalHash(core) });
@@ -242,10 +278,11 @@ export async function createV2ExperimentPlan(input: {
 
 export function parseV2ExperimentPlan(value: unknown): V2ExperimentPlan {
   const root = object(value, 'v2 experiment plan');
-  exactKeys(root, ['schema_version', 'yylo_version', 'benchmark_version', 'experiment_id', 'plan_hash', 'config_hash', 'source_repository',
+  exactKeys(root, ['schema_version', 'yylo_version', 'benchmark_version', 'experiment_id', 'plan_hash', 'config_hash', 'config_path', 'snapshot_exclusions', 'source_repository',
     'source_commit', 'source_tree', 'comparison_kind', 'case_kind', 'case_path', 'evaluator_profiles', 'evaluator_catalog', 'attempts'], 'v2 experiment plan');
   if (root['schema_version'] !== V2_EXPERIMENT_PLAN_SCHEMA_VERSION || typeof root['yylo_version'] !== 'string' || typeof root['benchmark_version'] !== 'string'
       || typeof root['experiment_id'] !== 'string' || typeof root['plan_hash'] !== 'string' || typeof root['config_hash'] !== 'string'
+      || typeof root['config_path'] !== 'string' || !Array.isArray(root['snapshot_exclusions']) || root['snapshot_exclusions'].some((item) => typeof item !== 'string')
       || typeof root['source_repository'] !== 'string' || typeof root['source_commit'] !== 'string' || typeof root['source_tree'] !== 'string'
       || (root['comparison_kind'] !== 'model_only' && root['comparison_kind'] !== 'agent_system') || (root['case_kind'] !== 'task' && root['case_kind'] !== 'workflow')
       || typeof root['case_path'] !== 'string' || !Array.isArray(root['attempts']) || !Array.isArray(root['evaluator_profiles'])
@@ -262,6 +299,8 @@ export function parseV2ExperimentPlan(value: unknown): V2ExperimentPlan {
   catch (error) { throw new Error(`attempt plan schema verification failed: ${error instanceof Error ? error.message : String(error)}`); }
   const plan = Object.freeze({ ...root, attempts } as unknown as V2ExperimentPlan);
   assertPlannedAttemptCardinality(plan, 'plan');
+  for (const attempt of attempts) verifyAttemptPlan(attempt, plan);
+  verifyExperimentIdentity(plan);
   return plan;
 }
 
@@ -418,9 +457,10 @@ async function attemptBoundaryPaths(cwd: string, root: ReturnType<typeof roots>,
 async function verifySourceIdentity(cwd: string, plan: V2ExperimentPlan): Promise<void> {
   const commit = await git(cwd, ['rev-parse', 'HEAD']);
   const tree = await git(cwd, ['rev-parse', 'HEAD^{tree}']);
-  const manifest = canonicalHash({ tree, exclusions: ['.juno_task', 'hidden-graders', 'reference-solutions'] });
+  const manifest = await deriveCandidateManifest({ sourceRepository: cwd, baseCommit: commit, excludedPaths: plan.snapshot_exclusions });
   if (commit !== plan.source_commit || tree !== plan.source_tree) throw new Error('actual source commit/tree differs from the immutable experiment plan');
-  if (plan.attempts.some((attempt) => attempt.case.source.candidate_manifest_hash !== manifest)) {
+  if (manifest.source_commit !== commit || manifest.source_tree !== tree
+      || plan.attempts.some((attempt) => attempt.case.source.candidate_manifest_hash !== manifest.manifest_hash)) {
     throw new Error('actual source candidate manifest differs from the immutable experiment plan');
   }
 }
@@ -437,8 +477,6 @@ function verifyAttemptPlan(plan: AttemptPlanV2, experiment: V2ExperimentPlan): v
   if (!parsed.success) throw new Error(`attempt plan schema verification failed: ${parsed.error.issues.map((item) => item.message).join('; ')}`);
   const { plan_hash: claimed, ...core } = plan;
   if (claimed !== canonicalHash(core)) throw new Error('attempt plan integrity failed');
-  const expectedCandidateManifest = canonicalHash({ tree: plan.case.source.tree, exclusions: ['.juno_task', 'hidden-graders', 'reference-solutions'] });
-  if (plan.case.source.candidate_manifest_hash !== expectedCandidateManifest) throw new Error('attempt source candidate manifest identity failed');
   const expectedAttemptId = canonicalHash({ experiment_id: plan.experiment_id, case_hash: plan.case.normalized_input_hash, attempt_index: plan.attempt_index,
     harness_profile: plan.harness_profile, requested_model: plan.requested_model });
   if (plan.attempt_id !== expectedAttemptId || plan.experiment_id !== experiment.experiment_id
@@ -452,6 +490,13 @@ function verifyAttemptPlan(plan: AttemptPlanV2, experiment: V2ExperimentPlan): v
       throw new Error('attempt evaluator configuration linkage failed');
     }
   }
+}
+
+function assertConfigPathBinding(cwd: string, plan: V2ExperimentPlan, loadedPath: string): void {
+  const relative = path.relative(path.resolve(cwd), loadedPath).split(path.sep).join('/');
+  if (relative !== plan.config_path) throw new Error('v2 config path drifted from the immutable plan');
+  const expected = [...new Set(['.juno_task', 'hidden-graders', 'reference-solutions', plan.config_path])].sort();
+  if (canonicalHash(plan.snapshot_exclusions) !== canonicalHash(expected)) throw new Error('v2 snapshot exclusion binding failed');
 }
 
 async function loadState(file: string, plan: V2ExperimentPlan, attempt: AttemptPlanV2): Promise<PersistedAttempt | null> {
@@ -513,10 +558,9 @@ export async function runV2Experiment(input: { readonly cwd: string; readonly co
   parseV2ExperimentPlan(input.plan);
   await verifySourceIdentity(input.cwd, input.plan);
   const loaded = await loadV2Config(input.cwd, input.configPath); if (loaded.hash !== input.plan.config_hash) throw new Error('v2 config drifted from the immutable plan');
+  assertConfigPathBinding(input.cwd, input.plan, loaded.path);
   assertPlanConfigBinding(input.plan, loaded.config);
   for (const attempt of input.plan.attempts) verifyAttemptPlan(attempt, input.plan);
-  const configRelative = path.relative(path.resolve(input.cwd), loaded.path).split(path.sep).join('/');
-  const snapshotExclusions = configRelative !== '' && !configRelative.startsWith('../') && !path.isAbsolute(configRelative) ? [configRelative] : [];
   if (input.dryRun === true) return { schema_version: 'yylo_benchmark_run_dry_run.v2', yylo_version: input.plan.yylo_version, plan_hash: input.plan.plan_hash,
     dispatch_count: 0, attempt_count: input.plan.attempts.length, comparison_kind: input.plan.comparison_kind };
   const root = roots(input.cwd, loaded.config); const attempts: Array<Record<string, unknown>> = []; let dispatched = 0; let reused = 0; let ambiguous = 0;
@@ -544,7 +588,7 @@ export async function runV2Experiment(input: { readonly cwd: string; readonly co
         reused += 1;
       } catch { ambiguous += 1; attempts.push({ attempt_id: attempt.attempt_id, reused: false, recovery: 'manual', quality: 'unknown' }); continue; }
     } else {
-      executed = await executeCaseAttempt({ plan: attempt, sourceRepository: input.cwd, attemptsRoot, privateRegistryRoot: root.registry, excludedPaths: snapshotExclusions,
+      executed = await executeCaseAttempt({ plan: attempt, sourceRepository: input.cwd, attemptsRoot, privateRegistryRoot: root.registry, excludedPaths: input.plan.snapshot_exclusions,
         controllerPaths: protectedPaths, deniedPaths, intentRoot: root.intents, adapter: harnessAdapter(attempt.harness_profile, harnessConfig) });
       dispatched += 1;
     }
@@ -564,6 +608,7 @@ export async function reevaluateV2Experiment(input: { readonly cwd: string; read
   parseV2ExperimentPlan(input.plan);
   await verifySourceIdentity(input.cwd, input.plan);
   const loaded = await loadV2Config(input.cwd, input.configPath); if (loaded.hash !== input.plan.config_hash) throw new Error('v2 config drifted from the immutable plan');
+  assertConfigPathBinding(input.cwd, input.plan, loaded.path);
   assertPlanConfigBinding(input.plan, loaded.config);
   const config = loaded.config.evaluators[input.profileId]; if (config === undefined || (input.kind === 'regrade') !== (config.kind === 'deterministic')) throw new Error(`${input.kind} profile kind is invalid: ${input.profileId}`);
   const profile = evaluatorProfile(input.profileId, config);
@@ -609,6 +654,7 @@ export async function doctorV2Experiment(input: { readonly cwd: string; readonly
   parseV2ExperimentPlan(input.plan);
   await verifySourceIdentity(input.cwd, input.plan);
   const loaded = await loadV2Config(input.cwd, input.configPath); if (loaded.hash !== input.plan.config_hash) throw new Error('v2 config drifted from the immutable plan');
+  assertConfigPathBinding(input.cwd, input.plan, loaded.path);
   assertPlanConfigBinding(input.plan, loaded.config);
   const root = roots(input.cwd, loaded.config); let retained = 0; let ambiguous = 0; const evidenceIds: string[] = []; const evaluationIds: string[] = [];
   for (const attempt of input.plan.attempts) {
@@ -631,6 +677,7 @@ export async function reportV2Experiment(input: { readonly cwd: string; readonly
   parseV2ExperimentPlan(input.plan);
   await verifySourceIdentity(input.cwd, input.plan);
   const loaded = await loadV2Config(input.cwd, input.configPath); if (loaded.hash !== input.plan.config_hash) throw new Error('v2 config drifted from the immutable plan');
+  assertConfigPathBinding(input.cwd, input.plan, loaded.path);
   assertPlanConfigBinding(input.plan, loaded.config);
   const root = roots(input.cwd, loaded.config); const states: PersistedAttempt[] = [];
   for (const attempt of input.plan.attempts) {

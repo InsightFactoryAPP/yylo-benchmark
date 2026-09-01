@@ -76,8 +76,15 @@ const FIXED_GIT_ENV = Object.freeze({
 });
 
 function canonicalFilesystemPath(value: string): string {
-  const resolved = path.resolve(value);
-  try { return realpathSync(resolved); } catch { return resolved; }
+  let existing = path.resolve(value); const suffix: string[] = [];
+  while (true) {
+    try { return path.join(realpathSync(existing), ...suffix); }
+    catch {
+      const parent = path.dirname(existing);
+      if (parent === existing) return path.resolve(value);
+      suffix.unshift(path.basename(existing)); existing = parent;
+    }
+  }
 }
 
 /** Detect protected filesystem references even when an arbitrary environment value uses lexical aliases. */
@@ -179,6 +186,27 @@ function parseTree(output: Buffer): Array<{ mode: string; oid: string; path: str
 
 function manifestIdentity(input: Omit<SnapshotManifest, 'content_identity' | 'synthetic_commit' | 'synthetic_tree' | 'isolation'>): `sha256:${string}` {
   return canonicalHash(input);
+}
+
+export interface CandidateManifestV2 {
+  readonly source_commit: string;
+  readonly source_tree: string;
+  readonly excluded_paths: readonly string[];
+  readonly entries: readonly { path: string; mode: string; oid: string }[];
+  readonly manifest_hash: `sha256:${string}`;
+}
+
+/** Derive the candidate-visible source identity directly from the selected Git tree. */
+export async function deriveCandidateManifest(options: Pick<BuildSnapshotOptions, 'sourceRepository' | 'baseCommit' | 'excludedPaths'>): Promise<CandidateManifestV2> {
+  const source = await realpath(options.sourceRepository);
+  const excludedPaths = [...new Set((options.excludedPaths ?? []).map((entry) => normalizedRelativePath(entry, 'excluded path')))].sort();
+  const sourceCommit = (await git(source, ['rev-parse', '--verify', `${options.baseCommit}^{commit}`])).toString('utf8').trim();
+  const sourceTree = (await git(source, ['rev-parse', '--verify', `${sourceCommit}^{tree}`])).toString('utf8').trim();
+  const entries = parseTree(await git(source, ['ls-tree', '-rz', '--full-tree', sourceCommit]))
+    .filter((entry) => !excluded(entry.path, excludedPaths))
+    .map((entry) => ({ path: normalizedRelativePath(entry.path, 'Git tree path'), mode: entry.mode, oid: entry.oid }));
+  const core = { source_commit: sourceCommit, source_tree: sourceTree, excluded_paths: excludedPaths, entries } as const;
+  return Object.freeze({ ...core, manifest_hash: canonicalHash(core) });
 }
 
 /** Export a selected commit without checkout filters or any source Git metadata. */

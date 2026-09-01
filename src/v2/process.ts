@@ -26,6 +26,17 @@ export interface CapturedProcessResult {
 
 const DEFAULT_TERM_GRACE_MS = 500;
 
+export function linuxBubblewrapArguments(executable: string, args: readonly string[], options: Pick<CapturedProcessOptions, 'cwd' | 'environment'>,
+  deniedPaths: readonly string[]): string[] {
+  const writableRoots = [...new Set(['HOME', 'TMPDIR', 'TMP', 'TEMP', 'XDG_CACHE_HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME']
+    .flatMap((name) => { const value = options.environment[name]; return value !== undefined && path.isAbsolute(value) && existsSync(value) ? [realpathSync(value)] : []; }))]
+    .filter((item) => !deniedPaths.some((denied) => item === denied || item.startsWith(`${denied}${path.sep}`)));
+  return ['--die-with-parent', '--ro-bind', '/', '/', '--dev-bind', '/dev', '/dev', '--proc', '/proc',
+    '--bind', path.resolve(options.cwd), path.resolve(options.cwd), ...writableRoots.flatMap((item) => ['--bind', item, item]),
+    ...deniedPaths.filter((item) => existsSync(item)).flatMap((item) => ['--tmpfs', item]),
+    '--chdir', path.resolve(options.cwd), executable, ...args];
+}
+
 export function assertProcessTreeSupported(platform: NodeJS.Platform = process.platform): void {
   if (platform === 'win32') throw new Error('process-tree timeout isolation is unsupported on Windows; refusing dispatch');
 }
@@ -62,9 +73,7 @@ export async function runCapturedProcess(executable: string, args: readonly stri
     const bubblewrap = ['/usr/bin/bwrap', '/bin/bwrap'].find((item) => existsSync(item));
     if (bubblewrap === undefined) throw new Error('candidate filesystem boundary is unavailable: install bubblewrap before dispatch');
     effectiveExecutable = bubblewrap;
-    effectiveArgs = ['--die-with-parent', '--ro-bind', '/', '/', '--dev-bind', '/dev', '/dev', '--proc', '/proc',
-      '--bind', path.resolve(options.cwd), path.resolve(options.cwd), ...deniedPaths.filter((item) => existsSync(item)).flatMap((item) => ['--tmpfs', item]),
-      '--chdir', path.resolve(options.cwd), executable, ...args];
+    effectiveArgs = linuxBubblewrapArguments(executable, args, options, deniedPaths);
   } else if (deniedPaths.length > 0) {
     throw new Error(`candidate filesystem boundary is unsupported on ${process.platform}; refusing dispatch`);
   }

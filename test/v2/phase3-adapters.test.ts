@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { git } from '../snapshot/real-git.js';
+import { deriveCandidateManifest } from '../../src/snapshot/index.js';
 
 async function phase3() {
   return import('../../src/v2/adapters.js').catch(() => null);
@@ -19,7 +20,10 @@ async function sourceRepository() {
   await writeFile(path.join(root, 'task.txt'), 'repair the fixture');
   await git(root, 'add', '--all');
   await git(root, 'commit', '--quiet', '-m', 'fixture');
-  return { root, commit: await git(root, 'rev-parse', 'HEAD'), workflow };
+  const commit = await git(root, 'rev-parse', 'HEAD');
+  const manifest = await deriveCandidateManifest({ sourceRepository: root, baseCommit: commit,
+    excludedPaths: ['.juno_task', 'hidden-graders', 'reference-solutions'] });
+  return { root, commit, workflow, candidateManifestHash: manifest.manifest_hash };
 }
 
 const evaluator = { profile_id: 'shared', profile_version: '1', generation: 1, kind: 'deterministic' as const, required: true, config_hash: `sha256:${'a'.repeat(64)}` };
@@ -39,7 +43,7 @@ describe('uUcc9l phase 3 unified task and Workflow Runner adapters', () => {
     const api = await phase3();
     expect(api, 'v2 task/workflow adapter module must exist').not.toBeNull();
     const source = await sourceRepository();
-    const common = { sourceRepository: source.root, baseCommit: source.commit, sourceIdentity: { repository: source.root, commit: source.commit, tree: await git(source.root, 'rev-parse', 'HEAD^{tree}'), candidate_manifest_hash: `sha256:${'b'.repeat(64)}` }, experimentId: 'exp', attemptIndex: 1, harnessProfile: 'fake', requestedModel: 'provider/model', evaluators: [evaluator], yyloVersion: '2', benchmarkVersion: '2' };
+    const common = { sourceRepository: source.root, baseCommit: source.commit, sourceIdentity: { repository: source.root, commit: source.commit, tree: await git(source.root, 'rev-parse', 'HEAD^{tree}'), candidate_manifest_hash: source.candidateManifestHash }, experimentId: 'exp', attemptIndex: 1, harnessProfile: 'fake', requestedModel: 'provider/model', evaluators: [evaluator], yyloVersion: '2', benchmarkVersion: '2' };
     const task = await api!.compileTaskAttempt({ ...common, taskId: 'task-1', taskVersion: '1', prompt: 'repair' });
     const workflow = await api!.compileWorkflowAttempt({ ...common, workflowId: 'flow-1', workflowVersion: '1', workflowPath: 'workflows/flexible.yaml', variables: { candidate_model: 'provider/model' }, controlledModelVariable: 'candidate_model' });
     expect(task.schema_version).toBe(workflow.schema_version);
@@ -62,7 +66,7 @@ describe('uUcc9l phase 3 unified task and Workflow Runner adapters', () => {
     expect(api, 'v2 task/workflow adapter module must exist').not.toBeNull();
     const source = await sourceRepository();
     const tree = await git(source.root, 'rev-parse', 'HEAD^{tree}');
-    const plan = await api!.compileWorkflowAttempt({ sourceRepository: source.root, baseCommit: source.commit, sourceIdentity: { repository: source.root, commit: source.commit, tree, candidate_manifest_hash: `sha256:${'c'.repeat(64)}` }, experimentId: 'flow-exp', attemptIndex: 1, harnessProfile: 'workflow-runner', requestedModel: 'provider/model', evaluators: [evaluator], yyloVersion: '2', benchmarkVersion: '2', workflowId: 'flow', workflowVersion: '1', workflowPath: 'workflows/flexible.yaml', variables: { candidate_model: 'provider/model' }, controlledModelVariable: 'candidate_model' });
+    const plan = await api!.compileWorkflowAttempt({ sourceRepository: source.root, baseCommit: source.commit, sourceIdentity: { repository: source.root, commit: source.commit, tree, candidate_manifest_hash: source.candidateManifestHash }, experimentId: 'flow-exp', attemptIndex: 1, harnessProfile: 'workflow-runner', requestedModel: 'provider/model', evaluators: [evaluator], yyloVersion: '2', benchmarkVersion: '2', workflowId: 'flow', workflowVersion: '1', workflowPath: 'workflows/flexible.yaml', variables: { candidate_model: 'provider/model' }, controlledModelVariable: 'candidate_model' });
     const root = await mkdtemp(path.join(os.tmpdir(), 'phase3-flow-run-'));
     let observed: { cwd: string; bytes: string; invocation: unknown } | undefined;
     const adapter = { profileId: 'workflow-runner', version: '1', probe: async () => ({ ready: true as const }), prepare: async () => ({ prepared: true as const }), run: async (request: { cwd: string; invocation?: unknown }) => { observed = { cwd: request.cwd, bytes: await readFile(path.join(request.cwd, 'workflows/flexible.yaml'), 'utf8'), invocation: request.invocation }; return successfulTerminal('provider/model'); }, reconcile: async () => ({ state: 'ambiguous' as const, reason: 'unknown' }) };
@@ -79,7 +83,7 @@ describe('uUcc9l phase 3 unified task and Workflow Runner adapters', () => {
     expect(api, 'v2 task/workflow adapter module must exist').not.toBeNull();
     const source = await sourceRepository();
     const tree = await git(source.root, 'rev-parse', 'HEAD^{tree}');
-    const common = { sourceRepository: source.root, baseCommit: source.commit, sourceIdentity: { repository: source.root, commit: source.commit, tree, candidate_manifest_hash: `sha256:${'d'.repeat(64)}` }, experimentId: 'flow-exp', harnessProfile: 'fake', requestedModel: 'provider/model', evaluators: [evaluator], yyloVersion: '2', benchmarkVersion: '2', workflowId: 'flow', workflowVersion: '1', workflowPath: 'workflows/flexible.yaml', variables: {}, controlledModelVariable: undefined };
+    const common = { sourceRepository: source.root, baseCommit: source.commit, sourceIdentity: { repository: source.root, commit: source.commit, tree, candidate_manifest_hash: source.candidateManifestHash }, experimentId: 'flow-exp', harnessProfile: 'fake', requestedModel: 'provider/model', evaluators: [evaluator], yyloVersion: '2', benchmarkVersion: '2', workflowId: 'flow', workflowVersion: '1', workflowPath: 'workflows/flexible.yaml', variables: {}, controlledModelVariable: undefined };
     const root = await mkdtemp(path.join(os.tmpdir(), 'phase3-siblings-'));
     const seen: string[] = [];
     const adapter = { profileId: 'fake', version: '1', probe: async () => ({ ready: true as const }), prepare: async () => ({ prepared: true as const }), run: async (request: { cwd: string }) => { seen.push(request.cwd); await writeFile(path.join(request.cwd, 'candidate-output'), request.cwd); return successfulTerminal('provider/model'); }, reconcile: async () => ({ state: 'ambiguous' as const, reason: 'unknown' }) };
@@ -108,7 +112,7 @@ describe('uUcc9l phase 3 unified task and Workflow Runner adapters', () => {
     const api = await phase3();
     expect(api, 'v2 task/workflow adapter module must exist').not.toBeNull();
     const source = await sourceRepository();
-    const plan = await api!.compileTaskAttempt({ sourceRepository: source.root, baseCommit: source.commit, sourceIdentity: { repository: source.root, commit: source.commit, tree: await git(source.root, 'rev-parse', 'HEAD^{tree}'), candidate_manifest_hash: `sha256:${'f'.repeat(64)}` }, experimentId: 'recover', attemptIndex: 1, harnessProfile: 'fake', requestedModel: 'p/m', evaluators: [evaluator], yyloVersion: '2', benchmarkVersion: '2', taskId: 'task', taskVersion: '1', prompt: 'repair' });
+    const plan = await api!.compileTaskAttempt({ sourceRepository: source.root, baseCommit: source.commit, sourceIdentity: { repository: source.root, commit: source.commit, tree: await git(source.root, 'rev-parse', 'HEAD^{tree}'), candidate_manifest_hash: source.candidateManifestHash }, experimentId: 'recover', attemptIndex: 1, harnessProfile: 'fake', requestedModel: 'p/m', evaluators: [evaluator], yyloVersion: '2', benchmarkVersion: '2', taskId: 'task', taskVersion: '1', prompt: 'repair' });
     const root = await mkdtemp(path.join(os.tmpdir(), 'phase3-recover-'));
     const run = vi.fn(async () => successfulTerminal('p/m'));
     const adapter = { profileId: 'fake', version: '1', probe: async () => ({ ready: true as const }), prepare: async () => ({ prepared: true as const }), run, reconcile: async () => ({ state: 'ambiguous' as const, reason: 'manual review' }) };

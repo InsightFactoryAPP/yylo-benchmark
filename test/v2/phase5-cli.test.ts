@@ -129,6 +129,31 @@ describe('f922O3 phase 5 v2 CLI cutover and restrictive v1 retirement', () => {
     await expect(runV2Experiment({ cwd: root, plan: plan as never })).rejects.toThrow(/actual source commit\/tree/iu);
   });
 
+  it('re-derives the selected evaluators and complete model/attempt matrix from direct-call plans', async () => {
+    const root = await fixture(); const plan = await capture(root, ['plan', '--task', 'task.md', '--models', 'vendor/a,vendor/b', '--attempts', '2', '--output', 'plan.json']);
+    const forge = (changes: Record<string, unknown>) => {
+      const { plan_hash: _claimed, ...core } = plan; const forgedCore = { ...core, ...changes };
+      return { ...forgedCore, plan_hash: canonicalHash(forgedCore) } as never;
+    };
+    for (const forged of [forge({ evaluator_profiles: [] }), forge({ attempts: plan.attempts.slice(0, 2) })]) {
+      await expect(runV2Experiment({ cwd: root, plan: forged, dryRun: true })).rejects.toThrow(/experiment.*(?:evaluator|identity|matrix)|attempt.*evaluator/iu);
+      await expect(runV2Experiment({ cwd: root, plan: forged })).rejects.toThrow(/experiment.*(?:evaluator|identity|matrix)|attempt.*evaluator/iu);
+    }
+  });
+
+  it('binds the selected config path, complete exclusions, and actual candidate manifest into the workspace receipt', async () => {
+    const root = await fixture(); const original = await readFile(path.join(root, 'yylo-benchmark.config.json'));
+    await writeFile(path.join(root, 'identical-config.json'), original);
+    const plan = await capture(root, ['plan', '--task', 'task.md', '--models', 'vendor/model', '--output', 'plan.json']);
+    await expect(runV2Experiment({ cwd: root, configPath: 'identical-config.json', plan: plan as never, dryRun: true })).rejects.toThrow(/config path drifted/iu);
+    const run = await runV2Experiment({ cwd: root, plan: plan as never }); expect(run.candidate_dispatch_count).toBe(1);
+    const runtime = await resolveV2RuntimePaths({ cwd: root, plan: plan as never, attemptIndex: 0 });
+    const retained = JSON.parse(await readFile(path.join(runtime.workspaceRoot, '.workspace.json'), 'utf8')) as Record<string, any>;
+    expect(plan.snapshot_exclusions).toContain('yylo-benchmark.config.json');
+    expect(retained.snapshot.excluded_paths).toEqual(plan.snapshot_exclusions);
+    expect(retained.receipt.candidate_manifest_hash).toBe(plan.attempts[0].case.source.candidate_manifest_hash);
+  });
+
   it('keeps generated-default candidate roots and environment outside source and private control topology', async () => {
     const root = await fixture();
     const probeRoot = await mkdtemp(path.join(os.tmpdir(), 'yylo-topology-probe-'));

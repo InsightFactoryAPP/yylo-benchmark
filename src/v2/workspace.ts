@@ -1,7 +1,7 @@
 import { chmod, lstat, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { canonicalHash, canonicalJson } from '../contracts/canonical.js';
-import { buildSnapshot, captureRepositoryResult, doctorSnapshot, environmentValueDisclosesProtectedPath, isCredentialEnvironmentName, type RepositoryResultManifest, type SnapshotManifest } from '../snapshot/index.js';
+import { buildSnapshot, captureRepositoryResult, deriveCandidateManifest, doctorSnapshot, environmentValueDisclosesProtectedPath, isCredentialEnvironmentName, type RepositoryResultManifest, type SnapshotManifest } from '../snapshot/index.js';
 
 export const ATTEMPT_WORKSPACE_SCHEMA_VERSION = 'yylo_benchmark_attempt_workspace.v2' as const;
 
@@ -11,6 +11,7 @@ export interface AttemptWorkspaceReceiptV2 {
   readonly backend: 'fresh_repository';
   readonly source_commit: string;
   readonly source_tree: string;
+  readonly candidate_manifest_hash: `sha256:${string}`;
   readonly snapshot_identity: `sha256:${string}`;
   readonly roots: {
     readonly repository: string;
@@ -139,6 +140,8 @@ export async function createAttemptWorkspace(options: CreateAttemptWorkspaceOpti
     destination: repository,
     excludedPaths: [...new Set(mandatoryExclusions)],
   });
+  const candidateManifest = await deriveCandidateManifest({ sourceRepository: options.sourceRepository, baseCommit: options.baseCommit,
+    excludedPaths: [...new Set(mandatoryExclusions)] });
   await chmod(repository, 0o700);
   const environment = candidateEnvironment({ inherited: options.inheritedEnvironment ?? process.env, repository, temporary, cache, config, home, protectedPaths });
   const core = {
@@ -147,6 +150,7 @@ export async function createAttemptWorkspace(options: CreateAttemptWorkspaceOpti
     backend: 'fresh_repository' as const,
     source_commit: snapshot.source_commit,
     source_tree: snapshot.source_tree,
+    candidate_manifest_hash: candidateManifest.manifest_hash,
     snapshot_identity: snapshot.content_identity,
     roots: { repository: 'repository', temporary: 'tmp', cache: 'cache', config: 'config', home: 'home' },
     isolation: {
