@@ -93,7 +93,7 @@ function candidateEnvironment(options: {
   for (const [name, value] of Object.entries(options.inherited)) {
     if (value === undefined || ROUTING.test(name) || isCredentialEnvironmentName(name)) continue;
     if (name.toUpperCase() === 'PATH') {
-      const safe = value.split(path.delimiter).filter((item) => item !== '' && !disclosed(item)).join(path.delimiter);
+      const safe = value.split(path.delimiter).filter((item) => item !== '' && path.isAbsolute(item) && !disclosed(item)).join(path.delimiter);
       if (safe !== '') environment[name] = safe;
     } else if (!disclosed(value)) environment[name] = value;
   }

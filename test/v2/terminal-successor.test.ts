@@ -92,6 +92,14 @@ describe('fT49yV terminal successor contracts', () => {
       { sourceRepository: root })).rejects.toThrow(/protected source or controller reference/iu);
     await expect(doctorAttemptWorkspace({ ...workspace, candidateEnvironment: { ...workspace.candidateEnvironment, PATH: `${bin}${path.delimiter}${parentPathAlias}` } },
       { sourceRepository: root })).rejects.toThrow(/protected source or controller reference/iu);
+    const relativeTraversal = '../../../..';
+    const nestedWorkspace = await createAttemptWorkspace({ attemptId: hash('c'), sourceRepository: root, baseCommit: commit,
+      attemptsRoot: path.join(root, '.benchmark', 'attempts'), privateRegistryRoot: path.join(root, '.benchmark', 'registry'),
+      inheritedEnvironment: { PATH: relativeTraversal } });
+    expect(path.resolve(nestedWorkspace.repository, relativeTraversal)).toBe(root);
+    expect(nestedWorkspace.candidateEnvironment.PATH).toBeUndefined();
+    await expect(doctorAttemptWorkspace({ ...nestedWorkspace, candidateEnvironment: { ...nestedWorkspace.candidateEnvironment, PATH: relativeTraversal } },
+      { sourceRepository: root })).rejects.toThrow(/relative PATH environment entry/iu);
   });
 
   it('qWJc7U-A3 keeps every candidate-owned Linux process root writable under the read-only host bind', async () => {

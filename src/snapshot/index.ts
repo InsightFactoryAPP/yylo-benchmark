@@ -436,6 +436,9 @@ export async function doctorSnapshot(options: SnapshotDoctorOptions): Promise<Sn
     if (value === undefined) continue;
     if (ROUTING_ENV.test(name)) throw new Error(`doctor: canonical routing environment is present: ${name}`);
     if (isCredentialEnvironmentName(name)) throw new Error(`doctor: credential environment is present: ${name}`);
+    if (name.toUpperCase() === 'PATH' && value.split(path.delimiter).some((item) => item === '' || !path.isAbsolute(item))) {
+      throw new Error(`doctor: relative PATH environment entry is present: ${name}`);
+    }
     if (environmentValueDisclosesProtectedPath(value, [...(options.canonicalControllerPaths ?? []), ...automaticSourceReferences], [path.dirname(options.repository)])) {
       throw new Error(`doctor: protected source or controller reference is present in environment: ${name}`);
     }
