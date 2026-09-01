@@ -1,0 +1,14 @@
+{
+  "schema_version": "yylo_benchmark_tdd_requirement_matrix.v1",
+  "task_id": "Gwu1KD",
+  "phase": "terminal-review-successor",
+  "command": ["npm", "test", "--", "test/v2/terminal-successor.test.ts"],
+  "cwd": "juno-benchmark",
+  "assertions": [
+    {"id":"Gwu1KD-A1","requirement":"Selective re-evaluation deterministically retains every required deterministic correctness/safety failure."},
+    {"id":"Gwu1KD-A2","requirement":"Hash-valid retained state is bound to the exact plan, attempt, candidate identity, evaluator configuration, evidence, and evaluation identities; cross-attempt replay fails closed."},
+    {"id":"Gwu1KD-A3","requirement":"Malformed deterministic protocol output is invalid infrastructure truth with unknown quality."},
+    {"id":"Gwu1KD-A4","requirement":"Timeout applies bounded TERM grace, process-group KILL, and reap to SIGTERM-resistant descendants."},
+    {"id":"Gwu1KD-A5","requirement":"The v2 report exposes authoritative millisecond attempt/evaluator/aggregate wall runtime with provenance while costs remain separate."}
+  ]
+}

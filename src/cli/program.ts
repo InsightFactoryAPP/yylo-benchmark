@@ -32,7 +32,7 @@ export function createProgram(options: ProgramOptions = {}): Command {
   const root = new Command();
   root
     .name('yylo-benchmark')
-    .description('Immutable task-case and project-owned workflow evaluation')
+    .description('Flexible isolated v2 task and workflow evaluation')
     .showHelpAfterError('Run yylo-benchmark --help for supported commands.')
     .version(PACKAGE_VERSION)
     .option('--config <path>', 'Use an explicit yylo-benchmark.config.json');
@@ -78,6 +78,6 @@ export async function runCli(argv: readonly string[], options: ProgramOptions = 
     if (token.startsWith('--config=') || token === '--help' || token === '-h' || token === '--version' || token === '-V') continue;
     if (!token.startsWith('-')) { command = token; break; }
   }
-  if (command !== undefined && !supported.has(command)) throw new Error(`unknown command '${command}'; run yylo-benchmark --help for plan, run, recover, and rejudge`);
+  if (command !== undefined && !supported.has(command)) throw new Error(`unknown command '${command}'; run yylo-benchmark --help for the v2 evaluation lifecycle`);
   await createProgram(options).parseAsync([...argv], { from: 'user' });
 }

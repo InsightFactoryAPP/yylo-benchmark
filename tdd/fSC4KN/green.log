@@ -1,0 +1,14 @@
+
+> @yylo/benchmark@0.1.0-rc.8 test
+> vitest run test/v2/phase2-workspace-harness.test.ts
+
+
+ RUN  v1.6.1 /Users/mahdiyar/Code/CA_JUNOAI/playground/juno-mono-002-worktrees/e4oMSm/juno-benchmark
+
+ ✓ test/v2/phase2-workspace-harness.test.ts  (5 tests) 1080ms
+
+ Test Files  1 passed (1)
+      Tests  5 passed (5)
+   Start at  00:12:18
+   Duration  1.21s (transform 58ms, setup 11ms, collect 18ms, tests 1.08s, environment 0ms, prepare 31ms)
+

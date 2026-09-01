@@ -415,7 +415,7 @@ describe('admission hermeticity guard', () => {
     await expectRefused(() => net.createConnection(443, 'example.invalid'));
     // connect(port): defaults to localhost and really connects to a live listener.
     const server = net.createServer();
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    await new Promise<void>((resolve) => server.listen(0, 'localhost', resolve));
     const port = (server.address() as net.AddressInfo).port;
     await new Promise<void>((resolve, reject) => {
       const loop = net.createConnection(port);
@@ -443,4 +443,3 @@ describe('admission hermeticity guard', () => {
     socket.destroy();
   });
 });
-

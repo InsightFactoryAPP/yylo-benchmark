@@ -1,0 +1,13 @@
+{
+  "schema_version": "yylo_benchmark_tdd_requirement_matrix.v1",
+  "task_id": "88c6Mi",
+  "phase": 1,
+  "command": ["npm", "test", "--", "test/v2/phase1-contracts.test.ts"],
+  "cwd": "juno-benchmark",
+  "assertions": [
+    {"id":"P1-A1","requirement":"Task and workflow inputs normalize into the same serialized v2 attempt contract."},
+    {"id":"P1-A2","requirement":"New case, plan, evidence, evaluation, and report provenance use yylo_version and never juno_version."},
+    {"id":"P1-A3","requirement":"Hash-verified v1 task/workflow evidence projects read-only without byte mutation."},
+    {"id":"P1-A4","requirement":"Evaluator generation and requested/resolved/observed harness/model identity are distinct."}
+  ]
+}

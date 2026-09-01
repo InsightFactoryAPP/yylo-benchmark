@@ -1,0 +1,21 @@
+{
+  "schema_version": "yylo_benchmark_tdd_receipt.v1",
+  "task_id": "f922O3",
+  "phase": "RED",
+  "base_sha": "81f62614d61e8b6d1749590c4e8d61f4a2ace8fa",
+  "test_only_tree_sha": "0992c693bfa736667da1633e78f430c2f630aacb",
+  "cwd": "juno-benchmark",
+  "argv": ["npm", "test", "--", "test/v2/phase5-cli.test.ts"],
+  "named_tests": ["P5-A1", "P5-A2", "P5-A3", "P5-A4", "P5-A5"],
+  "expected_missing_behavior": "The public CLI has not cut over to v2 and still routes users through restrictive v1 task/workflow execution, recovery, evaluation, doctor, and report paths.",
+  "actual_failing_assertions": [
+    "P5-A1: v2 CLI module must exist",
+    "P5-A2: v2 CLI module must exist",
+    "P5-A3: v2 CLI module must exist",
+    "P5-A4: v2 CLI module must exist",
+    "P5-A5: v2 CLI module must exist"
+  ],
+  "exit_status": 1,
+  "log": "red.log",
+  "log_sha256": "ec53955ff39520f0d8dc2e55d74e4a8d1755564eb0e5c05e3393e8c0790148aa"
+}

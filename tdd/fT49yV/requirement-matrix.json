@@ -1,0 +1,20 @@
+{
+  "schema_version": "yylo_benchmark_tdd_requirement_matrix.v1",
+  "task_id": "fT49yV",
+  "requirements": [
+    {
+      "id": "fT49yV-A1",
+      "test": "fT49yV-A1 binds intentional edited, added, and committed repository results through reuse, recovery, doctor, report, and re-evaluation",
+      "command": "npm test -- test/v2/terminal-successor.test.ts -t 'fT49yV-A1'",
+      "red_receipt": "A1-red-receipt.json",
+      "green_receipt": "A1-green-receipt.json"
+    },
+    {
+      "id": "fT49yV-A2",
+      "test": "fT49yV-A2 makes doctor and report reject every incomplete planned state/workspace/intent/terminal/evidence chain",
+      "command": "npm test -- test/v2/terminal-successor.test.ts -t 'fT49yV-A2'",
+      "red_receipt": "A2-red-receipt.json",
+      "green_receipt": "A2-green-receipt.json"
+    }
+  ]
+}

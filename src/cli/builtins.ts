@@ -1,28 +1,18 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { Option, type Command } from 'commander';
-import { lintBenchmarkCase } from '../case/lint.js';
-import { canonicalJson, sha256Hex } from '../contracts/canonical.js';
-import { CONFIG_FILENAME, CONFIG_SCHEMA_VERSION, loadConfig } from '../config/index.js';
-import { PublicKanbanClient } from '../kanban/client.js';
-import { doctorExperiment, doctorWorkflowExperiment, isWorkflowExperimentId } from '../doctor/index.js';
-import { createJunoRunner, readExecutionPlan, regradeExperiment, runExperiment, writeExecutionPlan } from '../execution/index.js';
-import { createSnapshotPreparer } from '../execution/prepare.js';
-import { createPlanFromProject, createWorkflowPlanFromProject } from '../planning/cli.js';
-import { parseBenchmarkPlan, TaskExecutionAuthorizationSchema, type BenchmarkPlan } from '../planning/index.js';
-import { PersistentTypedResourceLocks } from '../execution/resource-lock.js';
-import { ImmutableArtifactRegistry } from '../registry/index.js';
-import { createReviewedWorkflowBoundary, executeWorkflowPlan, workflowBoundaryOptionsFromEnvironment } from '../workflow/runtime.js';
-import { readWorkflowEvidenceReceipts, rejudgeRetainedWorkflowStep, storeWorkflowExperimentReport, workflowReceiptNeedsRejudge } from '../workflow/evidence.js';
-import { generateLongitudinalReport } from '../reporting/index.js';
-import { createJunoInvestigationAgent, investigateRetainedEvidence } from '../investigation/index.js';
-import { authenticatedLauncherOptionsFromEnvironment, createAuthenticatedJunoRunner } from '../auth/index.js';
-import { createCommandGrader } from '../grading/index.js';
-import { installBenchmarkWikis } from '../wiki/index.js';
-import { generateReleaseReadinessReceipt } from '../release-readiness/index.js';
-import { generateBoundaryReadiness, installReviewedBoundary, BOUNDARY_SUPPORTED_PROVIDERS, loadBoundarySetup, resolveWorkflowRegistryRoot } from '../boundary/index.js';
-import { discoverJunoVersion } from '../planning/cli.js';
-import { loadBenchmarkEnvironment, prepareBenchmarkEnvironment, verifyBenchmarkEnvironment } from '../environment/index.js';
+import { canonicalJson } from '../contracts/canonical.js';
+import {
+  createV2ExperimentPlan,
+  defaultV2Config,
+  doctorV2Experiment,
+  parseVariables,
+  readV2Plan,
+  reevaluateV2Experiment,
+  reportV2Experiment,
+  runV2Experiment,
+  writeV2Plan,
+} from '../v2/cli.js';
 import {
   COMMAND_API_VERSION,
   type CommandContext,
@@ -35,334 +25,103 @@ function definition(
   commandPath: readonly [string, ...string[]],
   description: string,
   phase: CommandPhase,
-  available: boolean,
   configure: (command: Command, context: CommandContext) => void,
 ): CommandDefinition {
-  return { api_version: COMMAND_API_VERSION, path: commandPath, description, phase, available, configure };
-}
-
-const init = definition(['init'], 'Initialize benchmark configuration and managed guidance', 'foundation', true, (command, context) => {
-  command.option('--stdout', 'Print configuration without writing it').action(async (options: { stdout?: boolean }) => {
-    const contents = `${canonicalJson({
-      schema_version: CONFIG_SCHEMA_VERSION,
-      repository_id: 'root',
-      kanban: { arguments: [] },
-      model_aliases: {},
-      environment: { env_file: '.env.yylo', legacy_env_file: '.env.juno' },
-    })}\n`;
-    if (options.stdout === true) {
-      context.writeStdout(contents);
-      return;
-    }
-    const destination = path.join(context.cwd, CONFIG_FILENAME);
-    await writeFile(destination, contents, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
-    await installBenchmarkWikis({ projectRoot: context.cwd });
-    context.writeStdout(`${destination}\n`);
-  });
-});
-
-const caseLint = definition(['case', 'lint'], 'Validate an explicitly opted-in Kanban task', 'foundation', true, (command, context) => {
-  command.argument('<task-id>').action(async (taskId: string) => {
-    const loaded = await loadConfig({ cwd: context.cwd, ...(context.configPath === undefined ? {} : { configPath: context.configPath }) });
-    const task = await new PublicKanbanClient(loaded).getTask(taskId);
-    context.writeStdout(`${canonicalJson(lintBenchmarkCase(task))}\n`);
-  });
-});
-
-async function loadedPreparedConfig(context: CommandContext) {
-  const loaded = await loadConfig({ cwd: context.cwd, ...(context.configPath === undefined ? {} : { configPath: context.configPath }) });
-  if (loaded.config.environment.python !== undefined) {
-    await verifyBenchmarkEnvironment(loaded);
-    await loadBenchmarkEnvironment(loaded);
-  } else {
-    await loadBenchmarkEnvironment(loaded).catch((error) => {
-      if (!(error instanceof Error) || !error.message.includes('canonical .env.yylo is missing')) throw error;
-    });
-  }
-  return loaded;
-}
-
-const prepare = definition(['prepare'], 'Prepare canonical project environment and install declared benchmark requirements', 'foundation', true, (command, context) => {
-  command.action(async () => {
-    const loaded = await loadConfig({ cwd: context.cwd, ...(context.configPath === undefined ? {} : { configPath: context.configPath }) });
-    context.writeStdout(`${canonicalJson(await prepareBenchmarkEnvironment(loaded))}\n`);
-  });
-});
-
-const setup = definition(['setup'], 'Install the reviewed hash-pinned workflow boundary and bind the private registry', 'foundation', true, (command, context) => {
-  command.option('--providers <names>', `Comma-separated boundary providers (default: ${BOUNDARY_SUPPORTED_PROVIDERS.join(',')})`)
-    .option('--synthetic', 'Record synthetic transport intent for installed-CLI acceptance without credentials')
-    .action(async (options: { providers?: string; synthetic?: boolean }) => {
-      const loaded = await loadConfig({ cwd: context.cwd, ...(context.configPath === undefined ? {} : { configPath: context.configPath }) });
-      const preparation = await prepareBenchmarkEnvironment(loaded);
-      const providers = (options.providers === undefined ? [...BOUNDARY_SUPPORTED_PROVIDERS] : options.providers.split(',').map((item) => item.trim()).filter(Boolean));
-      const receipt = await installReviewedBoundary({ projectRoot: loaded.projectRoot, providers, synthetic: options.synthetic === true });
-      context.writeStdout(`${canonicalJson({ ...receipt, preparation })}\n`);
-    });
-});
-
-const readiness = definition(['readiness'], 'Emit a retained zero-dispatch boundary readiness receipt for exact models', 'control-plane', true, (command, context) => {
-  command.requiredOption('--models <selectors>', 'Comma-separated model selectors, resolved through model_aliases like planning')
-    .action(async (options: { models: string }) => {
-      const loaded = await loadedPreparedConfig(context);
-      const selections = options.models.split(',').map((item) => item.trim()).filter(Boolean).map((selector) => {
-        const exact = selector.startsWith(':') ? loaded.config.model_aliases[selector] : selector;
-        if (exact === undefined) throw new Error(`model alias ${selector} has no exact binding in model_aliases`);
-        if (!/^[^:/\s\x00-\x1f\x7f]+\/[^:/\s\x00-\x1f\x7f]+$/u.test(exact)) throw new Error(`model ${selector} does not resolve to an exact provider/model identity`);
-        const separator = exact.indexOf('/');
-        return { selector, model: exact, provider: exact.slice(0, separator) };
-      });
-      if (selections.length === 0) throw new Error('at least one model selector is required');
-      if (new Set(selections.map((item) => item.model)).size !== selections.length) throw new Error('model selectors must resolve to distinct exact models');
-      const executable = process.env['YYLO_BENCHMARK_JUNO_EXECUTABLE']?.trim() || 'yy';
-      const junoVersion = await discoverJunoVersion(loaded.projectRoot);
-      const { receipt } = await generateBoundaryReadiness({ projectRoot: loaded.projectRoot, models: selections, junoVersion, junoExecutable: executable });
-      context.writeStdout(`${canonicalJson(receipt)}\n`);
-    });
-});
-
-function privateRegistry(): ImmutableArtifactRegistry {
-  const root = process.env['YYLO_BENCHMARK_REGISTRY']?.trim();
-  if (root === undefined || root === '') throw new Error('YYLO_BENCHMARK_REGISTRY must select the private artifact registry');
-  return new ImmutableArtifactRegistry(root);
+  return { api_version: COMMAND_API_VERSION, path: commandPath, description, phase, available: true, configure };
 }
 
 function collect(value: string, previous: string[]): string[] { return [...previous, value]; }
-async function readJson(pathname: string, label: string): Promise<unknown> {
-  try { return JSON.parse(await readFile(pathname, 'utf8')) as unknown; }
-  catch (error) { throw new Error(`cannot read ${label} ${pathname}: ${error instanceof Error ? error.message : String(error)}`); }
-}
-async function readBenchmarkPlan(planPath: string): Promise<BenchmarkPlan> {
-  const value = await readJson(planPath, 'benchmark plan');
-  try { return parseBenchmarkPlan(value); }
-  catch (error) { throw new Error(`malformed benchmark plan ${planPath}: ${error instanceof Error ? error.message : String(error)}`); }
-}
-async function readTaskAuthorization(authorizationPath: string | undefined, context: CommandContext) {
-  if (authorizationPath === undefined) return undefined;
-  const absolute = path.resolve(context.cwd, authorizationPath);
-  try { return TaskExecutionAuthorizationSchema.parse(await readJson(absolute, 'task authorization')); }
-  catch (error) { throw new Error(`malformed task authorization ${absolute}: ${error instanceof Error ? error.message : String(error)}`); }
-}
-function workflowStorage(context: CommandContext): { registry: ImmutableArtifactRegistry; locks: PersistentTypedResourceLocks } {
-  const root = process.env['YYLO_BENCHMARK_REGISTRY']?.trim() || path.join(context.cwd, '.juno_task', 'artifacts', 'yylo-benchmark');
-  return { registry: new ImmutableArtifactRegistry(root), locks: new PersistentTypedResourceLocks({ root: path.join(root, 'locks') }) };
-}
-async function workflowBoundary(context: CommandContext) {
-  const options = workflowBoundaryOptionsFromEnvironment();
-  if (options === null) throw new Error('live workflow execution requires YYLO_BENCHMARK_WORKFLOW_BOUNDARY and YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256');
-  // When the reviewed module is the one this project installed, the setup
-  // record owns transport selection so synthetic acceptance can never be
-  // mistaken for live provider evidence and vice versa.
-  const setup = await loadBoundarySetup(context.cwd).catch(() => null);
-  if (setup !== null && setup.boundary.path === options.module) {
-    const ambient = process.env['YYLO_BENCHMARK_BOUNDARY_SYNTHETIC'] === '1';
-    if (setup.synthetic && !ambient) process.env['YYLO_BENCHMARK_BOUNDARY_SYNTHETIC'] = '1';
-    if (!setup.synthetic && ambient) throw new Error('synthetic transport is ambient but the setup record binds live transport; rerun setup --synthetic explicitly');
-  }
-  return createReviewedWorkflowBoundary(options);
-}
-function variables(values: readonly string[]): Record<string, string> {
-  const result: Record<string, string> = {};
-  for (const value of values) {
-    const separator = value.indexOf('=');
-    if (separator < 1) throw new Error(`workflow variable must use key=value syntax: ${value}`);
-    const key = value.slice(0, separator); if (result[key] !== undefined) throw new Error(`duplicate workflow variable: ${key}`);
-    result[key] = value.slice(separator + 1);
-  }
-  return result;
-}
-const plan = definition(['plan'], 'Create a deterministic execution plan', 'control-plane', true, (command, context) => {
-  command.addOption(new Option('--task <task-id>', 'Plan a legacy Kanban task case').conflicts('workflow'))
-    .addOption(new Option('--workflow <path>', 'Plan a tracked Workflow Runner YAML').conflicts('task'))
-    .requiredOption('--models <models>').option('--steps-file <path>', 'Hash-bound workflow benchmark policy sidecar')
-    .option('--steps <ids>', 'Comma-separated stable workflow step IDs').option('--var <key=value>', 'Bind a workflow variable', collect, [])
-    .option('--max-usd <amount>', 'Immutable aggregate spend ceiling in USD (default: 20)')
-    .option('--attempts <count>', 'Attempts per model', '1').option('--output <path>').option('--dry-run', 'Explicitly affirm read-only planning')
-    .action(async (options: { task?: string; workflow?: string; models: string; stepsFile?: string; steps?: string; var: string[]; maxUsd?: string; attempts: string; output?: string }) => {
-      await loadedPreparedConfig(context);
-      if ((options.task === undefined) === (options.workflow === undefined)) throw new Error('exactly one of --task or --workflow is required');
-      if (options.workflow !== undefined && options.maxUsd !== undefined) throw new Error('--max-usd applies only to legacy task-case plans; workflow cost is best-effort evidence');
-      const attempts = Number(options.attempts); const models = options.models.split(',').map((item) => item.trim()).filter(Boolean);
-      const common = { cwd: context.cwd, ...(context.configPath === undefined ? {} : { configPath: context.configPath }), models, attempts };
-      const result = options.task !== undefined
-        ? await createPlanFromProject({ ...common, taskId: options.task, ...(options.maxUsd === undefined ? {} : { aggregateMaxUsd: Number(options.maxUsd) }) })
-        : await createWorkflowPlanFromProject({ ...common, workflowPath: options.workflow!,
-          policyPath: options.stepsFile ?? (() => { throw new Error('--steps-file is required with --workflow'); })(),
-          variables: variables(options.var), ...(options.steps === undefined ? {} : { selectedStepIds: options.steps.split(',').map((item) => item.trim()).filter(Boolean) }) });
-      if (options.output !== undefined) {
-        const destination = path.resolve(context.cwd, options.output);
-        if (result.schema_version === 'juno_benchmark_plan.v1') await writeExecutionPlan(destination, result);
-        else await writeFile(destination, `${canonicalJson(result)}\n`, { flag: 'wx', mode: 0o600 });
-      }
-      context.writeStdout(`${canonicalJson(result)}\n`);
-    });
-});
+function selectors(value: string): string[] { return value.split(',').map((item) => item.trim()).filter(Boolean); }
 
-const run = definition(['run'], 'Execute an immutable task or workflow plan (workflow --dry-run never dispatches)', 'execution', true, (command, context) => {
-  command.requiredOption('--plan <path>').option('--steps-file <path>', 'Workflow policy sidecar used for immediate hash verification')
-    .option('--authorization <path>', 'Explicit plan-bound execution authorization').option('--dry-run', 'Verify and render a workflow plan with zero dispatch')
-    .option('--no-record').option('--non-canonical-scope <scope>').action(async (options: { plan: string; stepsFile?: string; authorization?: string; dryRun?: boolean; record: boolean; nonCanonicalScope?: string }) => {
-      await loadedPreparedConfig(context);
-      const absolutePlan = path.resolve(context.cwd, options.plan); const benchmarkPlan = await readBenchmarkPlan(absolutePlan);
-      if (benchmarkPlan.schema_version === 'juno_benchmark_workflow_plan.v2') {
-        if (options.record === false || options.nonCanonicalScope !== undefined) throw new Error('--no-record and --non-canonical-scope apply only to task-case plans');
-        if (options.stepsFile === undefined) throw new Error('--steps-file is required for workflow run binding verification');
-        if (options.authorization !== undefined) throw new Error('workflow execution no longer accepts spend authorization; cost is best-effort evidence');
-        const storage = workflowStorage(context);
-        const boundary = options.dryRun === true ? undefined : await workflowBoundary(context);
-        const result = await executeWorkflowPlan({ plan: benchmarkPlan, projectRoot: context.cwd, policyPath: options.stepsFile,
-          registry: storage.registry, locks: storage.locks,
-          ...(boundary === undefined ? { dryRun: true as const } : { dispatcher: boundary.dispatcher, judge: boundary.judge, boundaryIdentity: boundary.identity }) });
-        context.writeStdout(`${canonicalJson(result)}\n`); return;
-      }
-      if (options.dryRun === true || options.stepsFile !== undefined) throw new Error('workflow options cannot be combined with a task-case plan');
-      const loaded = await loadConfig({ cwd: context.cwd, ...(context.configPath === undefined ? {} : { configPath: context.configPath }) });
-      const executionPlan = await readExecutionPlan(absolutePlan); const client = new PublicKanbanClient(loaded); const registry = privateRegistry();
-      const locks = new PersistentTypedResourceLocks({ root: path.join(registry.root, 'locks') });
-      const workRoot = process.env['YYLO_BENCHMARK_WORK_ROOT']?.trim() || path.join(registry.root, 'work'); await mkdir(workRoot, { recursive: true, mode: 0o700 });
-      const policy = options.record === false ? { noRecord: true as const, nonCanonicalScope: options.nonCanonicalScope as 'fixture' | 'local' } : {};
-      const authenticated = authenticatedLauncherOptionsFromEnvironment();
-      const runner = authenticated === null ? createJunoRunner() : createAuthenticatedJunoRunner(authenticated);
-      const authorization = await readTaskAuthorization(options.authorization, context);
-      const profileName = executionPlan.case.case_ref.grader_profile; const profile = loaded.config.grader_profiles[profileName];
-      const grader = profile === undefined ? undefined : createCommandGrader({ executable: profile.executable, arguments: profile.arguments,
-        graderId: profile.grader_id, graderVersion: profile.grader_version, sha256: profile.sha256 as `sha256:${string}`, cwd: loaded.projectRoot });
-      const result = await runExperiment({ client, registry, plan: executionPlan, prepareAttempt: createSnapshotPreparer({ projectRoot: loaded.projectRoot, workRoot, plan: executionPlan, client }), runner, grader,
-        ...(authorization === undefined ? {} : { authorization }), recordPolicy: policy, locks });
-      context.writeStdout(`${canonicalJson(result)}\n`);
-    });
-});
-
-const recover = definition(['recover'], 'Recover a workflow plan from durable intent without blind redispatch', 'execution', true, (command, context) => {
-  command.requiredOption('--plan <path>').requiredOption('--steps-file <path>')
-    .option('--authorization <path>', 'Explicit plan-bound workflow execution authorization')
-    .option('--dry-run', 'Verify recovery bindings and order with zero dispatch')
-    .action(async (options: { plan: string; stepsFile: string; authorization?: string; dryRun?: boolean }) => {
-      await loadedPreparedConfig(context);
-      const benchmarkPlan = await readBenchmarkPlan(path.resolve(context.cwd, options.plan));
-      if (benchmarkPlan.schema_version !== 'juno_benchmark_workflow_plan.v2') throw new Error('recover supports workflow plans only; task-case recovery remains automatic in run');
-      const storage = workflowStorage(context); const boundary = options.dryRun === true ? undefined : await workflowBoundary(context);
-      if (options.authorization !== undefined) throw new Error('workflow recovery no longer accepts spend authorization; cost is best-effort evidence');
-      const result = await executeWorkflowPlan({ plan: benchmarkPlan, projectRoot: context.cwd,
-        policyPath: options.stepsFile, registry: storage.registry, locks: storage.locks, recovery: true,
-        ...(boundary === undefined ? { dryRun: true as const } : { dispatcher: boundary.dispatcher, judge: boundary.judge, boundaryIdentity: boundary.identity }) });
-      context.writeStdout(`${canonicalJson({ operation: 'recover', ...result })}\n`);
-    });
-});
-
-const rejudgeWorkflow = definition(['rejudge'], 'Rejudge retained workflow truth without candidate dispatch', 'execution', true, (command, context) => {
-  command.requiredOption('--plan <path>').requiredOption('--steps-file <path>', 'Workflow policy sidecar used for immediate hash verification')
-    .option('--judge <selector>', 'Requested governed judge selector')
-    .option('--rubric-file <path>', 'Actual rubric bytes for migrating a legacy hash-only plan')
-    .option('--dry-run', 'Verify immutable rejudge inputs with zero judge or candidate dispatch')
-    .action(async (options: { plan: string; stepsFile: string; judge?: string; rubricFile?: string; dryRun?: boolean }) => {
-      await loadedPreparedConfig(context);
-      const benchmarkPlan = await readBenchmarkPlan(path.resolve(context.cwd, options.plan));
-      if (benchmarkPlan.schema_version !== 'juno_benchmark_workflow_plan.v2') throw new Error('rejudge supports workflow plans only; use regrade for task-case plans');
-      const storage = workflowStorage(context); const verified = await executeWorkflowPlan({ plan: benchmarkPlan, projectRoot: context.cwd,
-        policyPath: options.stepsFile, registry: storage.registry, locks: storage.locks, dryRun: true });
-      if (!('immutable_hashes' in verified)) throw new Error('workflow rejudge dry-run unexpectedly entered execution');
-      const requestedJudge = options.judge ?? benchmarkPlan.policy.judge.model;
-      const resolvedJudge = requestedJudge === benchmarkPlan.policy.judge.model ? requestedJudge
-        : Object.entries(benchmarkPlan.model_selectors).find(([, selector]) => selector === requestedJudge)?.[0];
-      if (resolvedJudge !== benchmarkPlan.policy.judge.model) throw new Error('requested workflow judge does not match the immutable governed judge policy');
-      const rubricBytes = options.rubricFile === undefined ? (benchmarkPlan.policy.judge as { rubric?: string }).rubric : await readFile(path.resolve(context.cwd, options.rubricFile), 'utf8');
-      if (rubricBytes === undefined || `sha256:${sha256Hex(Buffer.from(rubricBytes, 'utf8'))}` !== benchmarkPlan.policy.judge.rubric_hash) throw new Error('workflow rejudge rubric bytes are missing or do not match the immutable rubric_hash');
-      if (options.dryRun === true) {
-        context.writeStdout(`${canonicalJson({ schema_version: 'juno_benchmark_workflow_rejudge_dry_run.v1', operation: 'rejudge',
-          plan_id: benchmarkPlan.plan_id, candidate_dispatch_count: 0, judge_dispatch_count: 0,
-          requested_judge: requestedJudge, retained_candidate_receipts_expected: benchmarkPlan.execution_order.length,
-          policy_semantics_sha256: benchmarkPlan.policy_semantics_sha256, immutable_hashes: verified.immutable_hashes })}\n`); return;
-      }
-      const boundary = await workflowBoundary(context); const experimentId = `workflow-${benchmarkPlan.plan_id.slice(7)}`;
-      const receipts = await readWorkflowEvidenceReceipts(storage.registry, experimentId);
-      if (receipts.length !== benchmarkPlan.execution_order.length) throw new Error('workflow rejudge requires a complete retained receipt set');
-      const judgements = [];
-      for (const receipt of receipts) {
-        if (!await workflowReceiptNeedsRejudge(storage.registry, experimentId, receipt)) continue;
-        judgements.push(await rejudgeRetainedWorkflowStep({ registry: storage.registry, experimentId,
-          receipt, trustedReceiptHash: receipt.receipt_hash, expectedPolicySemanticsHash: benchmarkPlan.policy_semantics_sha256 as `sha256:${string}`,
-          judge: benchmarkPlan.policy.judge, runner: boundary.judge, locks: storage.locks, plan: benchmarkPlan, rubricBytes }));
-      }
-      const report = await storeWorkflowExperimentReport(storage.registry, benchmarkPlan);
-      context.writeStdout(`${canonicalJson({ schema_version: 'juno_benchmark_workflow_rejudge.v1', operation: 'rejudge',
-        plan_id: benchmarkPlan.plan_id, candidate_dispatch_count: 0, judge_dispatch_count: judgements.length,
-        requested_judge: requestedJudge, boundary: boundary.identity, judgements, report })}\n`);
-    });
-});
-
-const regrade = definition(['regrade'], 'Regrade retained candidate evidence without candidate execution', 'execution', true, (command, context) => {
-  command.requiredOption('--plan <path>').action(async (options: { plan: string }) => {
-    const loaded = await loadConfig({ cwd: context.cwd, ...(context.configPath === undefined ? {} : { configPath: context.configPath }) });
-    const executionPlan = await readExecutionPlan(path.resolve(context.cwd, options.plan));
-    const profileName = executionPlan.case.case_ref.grader_profile; const profile = loaded.config.grader_profiles[profileName];
-    const grader = profile === undefined ? undefined : createCommandGrader({ executable: profile.executable, arguments: profile.arguments,
-      graderId: profile.grader_id, graderVersion: profile.grader_version, sha256: profile.sha256 as `sha256:${string}`, cwd: loaded.projectRoot });
-    const result = await regradeExperiment({ registry: privateRegistry(), plan: executionPlan, grader, client: new PublicKanbanClient(loaded) });
-    context.writeStdout(`${canonicalJson(result)}\n`);
-  });
-});
-
-const doctor = definition(['doctor'], 'Verify retained experiment evidence', 'execution', true, (command, context) => {
-  command.argument('<experiment-task-id>').action(async (taskId: string) => {
-    // `workflow-<64-hex>` is a private-registry experiment identity, not a
-    // Kanban task: verify retained workflow evidence without any Ledger read.
-    if (isWorkflowExperimentId(taskId)) {
-      const loaded = await loadedPreparedConfig(context);
-      const setup = await loadBoundarySetup(loaded.projectRoot).catch(() => null);
-      const configured = setup === null ? resolveWorkflowRegistryRoot(loaded.projectRoot) : setup.registry.root;
-      const ambient = resolveWorkflowRegistryRoot(loaded.projectRoot);
-      if (ambient !== configured) throw new Error(`ambient workflow registry ${ambient} does not match the setup record ${configured}; align YYLO_BENCHMARK_REGISTRY before doctor`);
-      const result = await doctorWorkflowExperiment(new ImmutableArtifactRegistry(configured), taskId);
-      context.writeStdout(`${canonicalJson(result)}\n`);
-      return;
+const init = definition(['init'], 'Write a minimal flexible v2 configuration', 'foundation', (command, context) => {
+  command.option('--stdout', 'Print configuration without writing it').action(async (options: { stdout?: boolean }) => {
+    const contents = `${canonicalJson(defaultV2Config())}\n`;
+    if (options.stdout === true) context.writeStdout(contents);
+    else {
+      const destination = path.join(context.cwd, 'yylo-benchmark.config.json');
+      await writeFile(destination, contents, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+      context.writeStdout(`${destination}\n`);
     }
-    const loaded = await loadConfig({ cwd: context.cwd, ...(context.configPath === undefined ? {} : { configPath: context.configPath }) });
-    const result = await doctorExperiment(new PublicKanbanClient(loaded), privateRegistry(), taskId);
-    context.writeStdout(`${canonicalJson(result)}\n`);
   });
 });
 
-const report = definition(['report'], 'Build a longitudinal case report', 'longitudinal', true, (command, context) => {
-  command.requiredOption('--task <task-id>').action(async (options: { task: string }) => {
-    const loaded = await loadConfig({ cwd: context.cwd, ...(context.configPath === undefined ? {} : { configPath: context.configPath }) });
-    const result = await generateLongitudinalReport({ client: new PublicKanbanClient(loaded), registry: privateRegistry(), taskId: options.task });
-    context.writeStdout(`${canonicalJson(result)}\n`);
+const plan = definition(['plan'], 'Create an immutable v2 task or workflow experiment plan', 'control-plane', (command, context) => {
+  command.addOption(new Option('--task <path>', 'Tracked task prompt file').conflicts('workflow'))
+    .addOption(new Option('--workflow <path>', 'Tracked Workflow Runner YAML passed through unchanged').conflicts('task'))
+    .requiredOption('--models <selectors>', 'Comma-separated opaque model selectors')
+    .option('--attempts <count>', 'Attempts per selector', '1')
+    .option('--harness <profile>', 'Candidate harness profile')
+    .option('--evaluator <profile>', 'Evaluator profile; repeatable', collect, [])
+    .option('--var <key=value>', 'Case variable; repeatable', collect, [])
+    .option('--controlled-model-variable <name>', 'Workflow variable controlled by the model matrix')
+    .option('--output <path>', 'Write the immutable plan')
+    .option('--dry-run', 'Compatibility alias: planning is always zero-dispatch')
+    .action(async (options: { task?: string; workflow?: string; models: string; attempts: string; harness?: string; evaluator: string[]; var: string[]; controlledModelVariable?: string; output?: string }) => {
+      const result = await createV2ExperimentPlan({ cwd: context.cwd, ...(context.configPath === undefined ? {} : { configPath: context.configPath }),
+        benchmarkVersion: command.parent?.version() ?? '0.0.0-unbuilt', ...(options.task === undefined ? {} : { task: options.task }),
+        ...(options.workflow === undefined ? {} : { workflow: options.workflow }), models: selectors(options.models), attempts: Number(options.attempts),
+        ...(options.harness === undefined ? {} : { harness: options.harness }), variables: parseVariables(options.var),
+        ...(options.controlledModelVariable === undefined ? {} : { controlledModelVariable: options.controlledModelVariable }),
+        ...(options.evaluator.length === 0 ? {} : { evaluatorIds: options.evaluator }) });
+      if (options.output !== undefined) await writeV2Plan(context.cwd, options.output, result);
+      context.writeStdout(`${canonicalJson(result)}\n`);
+    });
+});
+
+const run = definition(['run'], 'Execute isolated v2 attempts and configured evaluators', 'execution', (command, context) => {
+  command.requiredOption('--plan <path>').option('--dry-run', 'Verify the immutable plan with zero dispatch')
+    .action(async (options: { plan: string; dryRun?: boolean }) => {
+      const planValue = await readV2Plan(context.cwd, options.plan);
+      const result = await runV2Experiment({ cwd: context.cwd, ...(context.configPath === undefined ? {} : { configPath: context.configPath }), plan: planValue,
+        ...(options.dryRun === undefined ? {} : { dryRun: options.dryRun }) });
+      context.writeStdout(`${canonicalJson(result)}\n`);
+    });
+});
+
+const recover = definition(['recover'], 'Reuse retained terminals and reconcile missing v2 work safely', 'execution', (command, context) => {
+  command.requiredOption('--plan <path>').option('--dry-run', 'Verify recovery inputs with zero dispatch')
+    .action(async (options: { plan: string; dryRun?: boolean }) => {
+      const planValue = await readV2Plan(context.cwd, options.plan);
+      const result = await runV2Experiment({ cwd: context.cwd, ...(context.configPath === undefined ? {} : { configPath: context.configPath }), plan: planValue,
+        recovery: true, ...(options.dryRun === undefined ? {} : { dryRun: options.dryRun }) });
+      context.writeStdout(`${canonicalJson(result)}\n`);
+    });
+});
+
+function reevaluation(name: 'regrade' | 'rejudge', description: string): CommandDefinition {
+  return definition([name], description, 'execution', (command, context) => {
+    command.requiredOption('--plan <path>').requiredOption('--profile <id>').action(async (options: { plan: string; profile: string }) => {
+      const planValue = await readV2Plan(context.cwd, options.plan);
+      const result = await reevaluateV2Experiment({ cwd: context.cwd, ...(context.configPath === undefined ? {} : { configPath: context.configPath }),
+        plan: planValue, profileId: options.profile, kind: name });
+      context.writeStdout(`${canonicalJson(result)}\n`);
+    });
+  });
+}
+
+const doctor = definition(['doctor'], 'Verify v2 plan, attempt, evidence, and evaluation linkage', 'execution', (command, context) => {
+  command.requiredOption('--plan <path>').action(async (options: { plan: string }) => {
+    const planValue = await readV2Plan(context.cwd, options.plan);
+    context.writeStdout(`${canonicalJson(await doctorV2Experiment({ cwd: context.cwd, ...(context.configPath === undefined ? {} : { configPath: context.configPath }), plan: planValue }))}\n`);
   });
 });
 
-const releaseReadiness = definition(['release-readiness'], 'Generate a deterministic offline release-readiness receipt', 'longitudinal', true, (command, context) => {
-  command.requiredOption('--input <path>', 'Path to measured path-free artifact identities').action(async (options: { input: string }) => {
-    const raw = JSON.parse(await readFile(path.resolve(context.cwd, options.input), 'utf8')) as unknown;
-    const forbidden = Object.entries(process.env).filter(([key, value]) => value !== undefined && /(?:TOKEN|SECRET|PASSWORD|AUTH|REGISTRY|YYLO_BENCHMARK_(?:WORK_ROOT|REGISTRY)|^(?:HOME|XDG_))/u.test(key))
-      .map(([, value]) => value as string);
-    context.writeStdout(`${canonicalJson(generateReleaseReadinessReceipt(raw, { forbiddenValues: forbidden }))}\n`);
-  });
-});
-
-const investigate = definition(['investigate'], 'Investigate bounded retained evidence', 'longitudinal', true, (command, context) => {
-  command.requiredOption('--task <task-id>').argument('<question>').action(async (question: string, options: { task: string }) => {
-    const loaded = await loadConfig({ cwd: context.cwd, ...(context.configPath === undefined ? {} : { configPath: context.configPath }) });
-    const result = await investigateRetainedEvidence({ client: new PublicKanbanClient(loaded), registry: privateRegistry(), taskId: options.task, question, agent: createJunoInvestigationAgent() });
-    context.writeStdout(`${canonicalJson(result)}\n`);
+const report = definition(['report'], 'Derive a provenance-bound v2 reliability and economics report', 'longitudinal', (command, context) => {
+  command.requiredOption('--plan <path>').action(async (options: { plan: string }) => {
+    const planValue = await readV2Plan(context.cwd, options.plan);
+    context.writeStdout(`${canonicalJson(await reportV2Experiment({ cwd: context.cwd, ...(context.configPath === undefined ? {} : { configPath: context.configPath }), plan: planValue }))}\n`);
   });
 });
 
 export const BUILTIN_COMMANDS: readonly CommandDefinition[] = Object.freeze([
   init,
-  caseLint,
-  prepare,
-  setup,
-  readiness,
   plan,
   run,
   recover,
-  rejudgeWorkflow,
-  regrade,
+  reevaluation('regrade', 'Append deterministic evaluation over retained candidate evidence'),
+  reevaluation('rejudge', 'Append LLM evaluation over retained candidate evidence'),
   doctor,
   report,
-  investigate,
-  releaseReadiness,
 ]);
 
 export function registerBuiltinCommands(registry: CommandRegistry): void {

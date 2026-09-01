@@ -4,7 +4,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
-import { createProgram, runCli } from '../../src/cli/program.js';
 import { parseBenchmarkPlan } from '../../src/planning/index.js';
 import {
   compileWorkflowOverlay, parseWorkflowBytes, planWorkflowFromProject, verifyWorkflowPlanBindings,
@@ -181,17 +180,5 @@ steps:
     expect(() => parseWorkflowBytes(Buffer.from('schema_version: 2\nsteps:\n  - &base { id: one, command: [echo, ok] }\n  - *base\n'))).toThrow(/aliases/u);
     const root = await fixture(); await writeFile(path.join(root, 'workflow.yaml'), `${workflowText}# dirty\n`);
     await expect(planWorkflowFromProject(input(root))).rejects.toThrow(/bound source commit/u);
-  });
-
-  it('plans read-only through the CLI and makes --task and --workflow mutually exclusive', async () => {
-    const root = await fixture(); const output: string[] = [];
-    await runCli(['plan', '--workflow', 'workflow.yaml', '--steps-file', 'policy.yaml', '--models', ':sol,zai/glm-5.2', '--steps', 'prepare,analyze', '--var', 'run_date=2026-08-12', '--dry-run'], { cwd: root, stdout: (text) => output.push(text) });
-    expect(JSON.parse(output.join(''))).toMatchObject({ schema_version: 'juno_benchmark_workflow_plan.v2', attempts: 1, selected_step_ids: ['prepare', 'analyze'] });
-    await expect(stat(path.join(root, '.juno_task', 'artifacts'))).rejects.toMatchObject({ code: 'ENOENT' });
-
-    const program = createProgram().configureOutput({ writeErr: () => undefined });
-    program.commands.find((item) => item.name() === 'plan')!.exitOverride();
-    await expect(program.parseAsync(['plan', '--task', 'T1', '--workflow', 'w.yaml', '--models', ':sol'], { from: 'user' }))
-      .rejects.toMatchObject({ code: 'commander.conflictingOption' });
   });
 });

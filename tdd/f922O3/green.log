@@ -1,0 +1,14 @@
+
+> @yylo/benchmark@0.1.0-rc.8 test
+> vitest run test/v2/phase5-cli.test.ts
+
+
+ RUN  v1.6.1 /Users/mahdiyar/Code/CA_JUNOAI/playground/juno-mono-002-worktrees/e4oMSm/juno-benchmark
+
+ ✓ test/v2/phase5-cli.test.ts  (5 tests) 1542ms
+
+ Test Files  1 passed (1)
+      Tests  5 passed (5)
+   Start at  00:48:20
+   Duration  1.77s (transform 88ms, setup 11ms, collect 103ms, tests 1.54s, environment 0ms, prepare 42ms)
+

@@ -1,0 +1,71 @@
+
+> @yylo/benchmark@0.1.0-rc.8 test
+> vitest run test/v2/phase3-adapters.test.ts
+
+
+ RUN  v1.6.1 /Users/mahdiyar/Code/CA_JUNOAI/playground/juno-mono-002-worktrees/e4oMSm/juno-benchmark
+
+ ❯ test/v2/phase3-adapters.test.ts  (5 tests | 5 failed) 9ms
+   ❯ test/v2/phase3-adapters.test.ts > uUcc9l phase 3 unified task and Workflow Runner adapters > P3-A1 compiles task and workflow cases into the same AttemptPlan and AttemptEvidence contracts
+     → v2 task/workflow adapter module must exist: expected null not to be null
+   ❯ test/v2/phase3-adapters.test.ts > uUcc9l phase 3 unified task and Workflow Runner adapters > P3-A2 passes formerly forbidden Workflow Runner YAML through byte-for-byte without admission or rewriting
+     → v2 task/workflow adapter module must exist: expected null not to be null
+   ❯ test/v2/phase3-adapters.test.ts > uUcc9l phase 3 unified task and Workflow Runner adapters > P3-A3 keeps each complete workflow cwd inside its own workspace and exposes no sibling output
+     → v2 task/workflow adapter module must exist: expected null not to be null
+   ❯ test/v2/phase3-adapters.test.ts > uUcc9l phase 3 unified task and Workflow Runner adapters > P3-A4 binds model-variable matrices with identical non-model input and classifies model-only versus agent-system
+     → v2 task/workflow adapter module must exist: expected null not to be null
+   ❯ test/v2/phase3-adapters.test.ts > uUcc9l phase 3 unified task and Workflow Runner adapters > P3-A5 delegates terminal reuse, supported resume, and ambiguous-effect recovery without duplicate candidate dispatch
+     → v2 task/workflow adapter module must exist: expected null not to be null
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 5 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/v2/phase3-adapters.test.ts > uUcc9l phase 3 unified task and Workflow Runner adapters > P3-A1 compiles task and workflow cases into the same AttemptPlan and AttemptEvidence contracts
+AssertionError: v2 task/workflow adapter module must exist: expected null not to be null
+ ❯ test/v2/phase3-adapters.test.ts:40:67
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/5]⎯
+
+ FAIL  test/v2/phase3-adapters.test.ts > uUcc9l phase 3 unified task and Workflow Runner adapters > P3-A2 passes formerly forbidden Workflow Runner YAML through byte-for-byte without admission or rewriting
+AssertionError: v2 task/workflow adapter module must exist: expected null not to be null
+ ❯ test/v2/phase3-adapters.test.ts:61:67
+     59|   it('P3-A2 passes formerly forbidden Workflow Runner YAML through byt…
+     60|     const api = await phase3();
+     61|     expect(api, 'v2 task/workflow adapter module must exist').not.toBe…
+       |                                                                   ^
+     62|     const source = await sourceRepository();
+     63|     const tree = await git(source.root, 'rev-parse', 'HEAD^{tree}');
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/5]⎯
+
+ FAIL  test/v2/phase3-adapters.test.ts > uUcc9l phase 3 unified task and Workflow Runner adapters > P3-A3 keeps each complete workflow cwd inside its own workspace and exposes no sibling output
+AssertionError: v2 task/workflow adapter module must exist: expected null not to be null
+ ❯ test/v2/phase3-adapters.test.ts:78:67
+     76|   it('P3-A3 keeps each complete workflow cwd inside its own workspace …
+     77|     const api = await phase3();
+     78|     expect(api, 'v2 task/workflow adapter module must exist').not.toBe…
+       |                                                                   ^
+     79|     const source = await sourceRepository();
+     80|     const tree = await git(source.root, 'rev-parse', 'HEAD^{tree}');
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/5]⎯
+
+ FAIL  test/v2/phase3-adapters.test.ts > uUcc9l phase 3 unified task and Workflow Runner adapters > P3-A4 binds model-variable matrices with identical non-model input and classifies model-only versus agent-system
+AssertionError: v2 task/workflow adapter module must exist: expected null not to be null
+ ❯ test/v2/phase3-adapters.test.ts:95:67
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/5]⎯
+
+ FAIL  test/v2/phase3-adapters.test.ts > uUcc9l phase 3 unified task and Workflow Runner adapters > P3-A5 delegates terminal reuse, supported resume, and ambiguous-effect recovery without duplicate candidate dispatch
+AssertionError: v2 task/workflow adapter module must exist: expected null not to be null
+ ❯ test/v2/phase3-adapters.test.ts:108:67
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/5]⎯
+
+ Test Files  1 failed (1)
+      Tests  5 failed (5)
+   Start at  00:15:04
+   Duration  156ms (transform 32ms, setup 11ms, collect 20ms, tests 9ms, environment 0ms, prepare 43ms)
+

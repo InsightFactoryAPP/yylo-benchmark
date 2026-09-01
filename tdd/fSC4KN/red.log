@@ -1,0 +1,81 @@
+
+> @yylo/benchmark@0.1.0-rc.8 test
+> vitest run test/v2/phase2-workspace-harness.test.ts
+
+
+ RUN  v1.6.1 /Users/mahdiyar/Code/CA_JUNOAI/playground/juno-mono-002-worktrees/e4oMSm/juno-benchmark
+
+ ❯ test/v2/phase2-workspace-harness.test.ts  (5 tests | 5 failed) 8ms
+   ❯ test/v2/phase2-workspace-harness.test.ts > fSC4KN phase 2 isolated workspace and provider-agnostic harness > P2-A1 creates private fresh-repository attempts with isolated roots and registry/sibling invisibility
+     → v2 workspace and harness modules must exist: expected null not to be null
+   ❯ test/v2/phase2-workspace-harness.test.ts > fSC4KN phase 2 isolated workspace and provider-agnostic harness > P2-A2 preserves historical Git isolation from future objects, refs, remotes, alternates, worktree links, and controller routing
+     → v2 workspace and harness modules must exist: expected null not to be null
+   ❯ test/v2/phase2-workspace-harness.test.ts > fSC4KN phase 2 isolated workspace and provider-agnostic harness > P2-A3 passes at least three opaque selectors through one harness without provider or spend admission
+     → v2 workspace and harness modules must exist: expected null not to be null
+   ❯ test/v2/phase2-workspace-harness.test.ts > fSC4KN phase 2 isolated workspace and provider-agnostic harness > P2-A4 retains identity mismatch, missing session, timeout, signal, and incomplete cost as separate truth
+     → v2 workspace and harness modules must exist: expected null not to be null
+   ❯ test/v2/phase2-workspace-harness.test.ts > fSC4KN phase 2 isolated workspace and provider-agnostic harness > P2-A5 persists intent before dispatch, reuses known terminals, and leaves ambiguous effects manual
+     → v2 workspace and harness modules must exist: expected null not to be null
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 5 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/v2/phase2-workspace-harness.test.ts > fSC4KN phase 2 isolated workspace and provider-agnostic harness > P2-A1 creates private fresh-repository attempts with isolated roots and registry/sibling invisibility
+AssertionError: v2 workspace and harness modules must exist: expected null not to be null
+ ❯ test/v2/phase2-workspace-harness.test.ts:45:68
+     43|   it('P2-A1 creates private fresh-repository attempts with isolated ro…
+     44|     const api = await phase2();
+     45|     expect(api, 'v2 workspace and harness modules must exist').not.toB…
+       |                                                                    ^
+     46|     const source = await makeSourceRepository();
+     47|     const { registry, attempts } = await roots();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/5]⎯
+
+ FAIL  test/v2/phase2-workspace-harness.test.ts > fSC4KN phase 2 isolated workspace and provider-agnostic harness > P2-A2 preserves historical Git isolation from future objects, refs, remotes, alternates, worktree links, and controller routing
+AssertionError: v2 workspace and harness modules must exist: expected null not to be null
+ ❯ test/v2/phase2-workspace-harness.test.ts:63:68
+     61|   it('P2-A2 preserves historical Git isolation from future objects, re…
+     62|     const api = await phase2();
+     63|     expect(api, 'v2 workspace and harness modules must exist').not.toB…
+       |                                                                    ^
+     64|     const source = await makeSourceRepository();
+     65|     const { registry, attempts } = await roots();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/5]⎯
+
+ FAIL  test/v2/phase2-workspace-harness.test.ts > fSC4KN phase 2 isolated workspace and provider-agnostic harness > P2-A3 passes at least three opaque selectors through one harness without provider or spend admission
+AssertionError: v2 workspace and harness modules must exist: expected null not to be null
+ ❯ test/v2/phase2-workspace-harness.test.ts:77:68
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/5]⎯
+
+ FAIL  test/v2/phase2-workspace-harness.test.ts > fSC4KN phase 2 isolated workspace and provider-agnostic harness > P2-A4 retains identity mismatch, missing session, timeout, signal, and incomplete cost as separate truth
+AssertionError: v2 workspace and harness modules must exist: expected null not to be null
+ ❯ test/v2/phase2-workspace-harness.test.ts:92:68
+     90|   it('P2-A4 retains identity mismatch, missing session, timeout, signa…
+     91|     const api = await phase2();
+     92|     expect(api, 'v2 workspace and harness modules must exist').not.toB…
+       |                                                                    ^
+     93|     const { root } = await roots();
+     94|     const cases = [
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/5]⎯
+
+ FAIL  test/v2/phase2-workspace-harness.test.ts > fSC4KN phase 2 isolated workspace and provider-agnostic harness > P2-A5 persists intent before dispatch, reuses known terminals, and leaves ambiguous effects manual
+AssertionError: v2 workspace and harness modules must exist: expected null not to be null
+ ❯ test/v2/phase2-workspace-harness.test.ts:111:68
+    109|   it('P2-A5 persists intent before dispatch, reuses known terminals, a…
+    110|     const api = await phase2();
+    111|     expect(api, 'v2 workspace and harness modules must exist').not.toB…
+       |                                                                    ^
+    112|     const { root } = await roots();
+    113|     const intentRoot = path.join(root, 'intents');
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/5]⎯
+
+ Test Files  1 failed (1)
+      Tests  5 failed (5)
+   Start at  00:09:06
+   Duration  151ms (transform 31ms, setup 12ms, collect 18ms, tests 8ms, environment 0ms, prepare 42ms)
+

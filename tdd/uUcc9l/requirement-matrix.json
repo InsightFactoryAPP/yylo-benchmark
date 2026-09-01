@@ -1,0 +1,14 @@
+{
+  "schema_version": "yylo_benchmark_tdd_requirement_matrix.v1",
+  "task_id": "uUcc9l",
+  "phase": 3,
+  "command": ["npm", "test", "--", "test/v2/phase3-adapters.test.ts"],
+  "cwd": "juno-benchmark",
+  "assertions": [
+    {"id":"P3-A1","requirement":"Task and workflow cases compile and execute through identical v2 plan/evidence contracts."},
+    {"id":"P3-A2","requirement":"Tracked Workflow Runner YAML, including ordinary fields and commands, passes through without parsing or rewriting."},
+    {"id":"P3-A3","requirement":"The complete workflow cwd is its dedicated workspace and sibling outputs are not exposed."},
+    {"id":"P3-A4","requirement":"Controlled model matrices preserve non-model identity and uncontrolled workflows are agent-system comparisons."},
+    {"id":"P3-A5","requirement":"Recovery reuses known terminals and delegates only policy-supported resume while ambiguous effects remain manual."}
+  ]
+}

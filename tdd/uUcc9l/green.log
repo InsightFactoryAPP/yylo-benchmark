@@ -1,0 +1,14 @@
+
+> @yylo/benchmark@0.1.0-rc.8 test
+> vitest run test/v2/phase3-adapters.test.ts
+
+
+ RUN  v1.6.1 /Users/mahdiyar/Code/CA_JUNOAI/playground/juno-mono-002-worktrees/e4oMSm/juno-benchmark
+
+ ✓ test/v2/phase3-adapters.test.ts  (5 tests) 1370ms
+
+ Test Files  1 passed (1)
+      Tests  5 passed (5)
+   Start at  00:18:21
+   Duration  1.50s (transform 61ms, setup 11ms, collect 22ms, tests 1.37s, environment 0ms, prepare 31ms)
+

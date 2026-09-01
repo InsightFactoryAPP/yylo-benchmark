@@ -1,0 +1,22 @@
+{
+  "schema_version": "yylo_benchmark_tdd_receipt.v1",
+  "task_id": "F7ZPw7",
+  "phase": "RED",
+  "base_sha": "78d2a48fed4f81e15ce3c404c335d0e7d37c52fc",
+  "test_only_tree_sha": "6bf22aaed80171939328356bfb79b130b2bac814",
+  "cwd": "juno-benchmark",
+  "argv": ["npm", "test", "--", "test/v2/phase4-evaluators.test.ts"],
+  "named_tests": ["P4-A1", "P4-A2", "P4-A3", "P4-A4", "P4-A5", "P4-A6"],
+  "expected_missing_behavior": "The shared evaluator pipeline, configurable independent judge, composition policy, validity model, and append-only re-evaluation do not exist.",
+  "actual_failing_assertions": [
+    "P4-A1: v2 evaluator module must exist",
+    "P4-A2: v2 evaluator module must exist",
+    "P4-A3: v2 evaluator module must exist",
+    "P4-A4: v2 evaluator module must exist",
+    "P4-A5: v2 evaluator module must exist",
+    "P4-A6: v2 evaluator module must exist"
+  ],
+  "exit_status": 1,
+  "log": "red.log",
+  "log_sha256": "9f973c049455e63eaa9266c2c000d6cb70dc3404062b7eafe94f7a728b990076"
+}

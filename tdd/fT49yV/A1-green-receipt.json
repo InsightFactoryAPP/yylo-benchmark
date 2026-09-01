@@ -1,0 +1,10 @@
+{
+  "schema_version": "yylo_benchmark_tdd_receipt.v1",
+  "task_id": "fT49yV",
+  "requirement_id": "fT49yV-A1",
+  "phase": "GREEN",
+  "command": "npm test -- test/v2/terminal-successor.test.ts -t 'fT49yV-A1'",
+  "exit_code": 0,
+  "log": "A1-green.log",
+  "log_sha256": "sha256:2ae24e57f14c020edb973b14e53f9a6f7b753ae684856ba07813828fc8440936"
+}

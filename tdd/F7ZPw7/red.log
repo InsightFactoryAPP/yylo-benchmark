@@ -1,0 +1,90 @@
+
+> @yylo/benchmark@0.1.0-rc.8 test
+> vitest run test/v2/phase4-evaluators.test.ts
+
+
+ RUN  v1.6.1 /Users/mahdiyar/Code/CA_JUNOAI/playground/juno-mono-002-worktrees/e4oMSm/juno-benchmark
+
+ ❯ test/v2/phase4-evaluators.test.ts  (6 tests | 6 failed) 9ms
+   ❯ test/v2/phase4-evaluators.test.ts > F7ZPw7 phase 4 shared configurable evaluator pipeline > P4-A1 applies the same ordered deterministic and LLM profiles to task and workflow evidence
+     → v2 evaluator module must exist: expected null not to be null
+   ❯ test/v2/phase4-evaluators.test.ts > F7ZPw7 phase 4 shared configurable evaluator pipeline > P4-A2 keeps candidate and judge harness/model selection independent and provider-agnostic
+     → v2 evaluator module must exist: expected null not to be null
+   ❯ test/v2/phase4-evaluators.test.ts > F7ZPw7 phase 4 shared configurable evaluator pipeline > P4-A3 hash-binds custom prompt/rubric and supports strict JSON, legacy PASS/FAIL, blinded and identity-visible packets
+     → v2 evaluator module must exist: expected null not to be null
+   ❯ test/v2/phase4-evaluators.test.ts > F7ZPw7 phase 4 shared configurable evaluator pipeline > P4-A4 appends a new rejudge generation over retained evidence without candidate dispatch or prior mutation
+     → v2 evaluator module must exist: expected null not to be null
+   ❯ test/v2/phase4-evaluators.test.ts > F7ZPw7 phase 4 shared configurable evaluator pipeline > P4-A5 prevents favorable judge prose from overriding a required deterministic correctness failure
+     → v2 evaluator module must exist: expected null not to be null
+   ❯ test/v2/phase4-evaluators.test.ts > F7ZPw7 phase 4 shared configurable evaluator pipeline > P4-A6 preserves malformed, timeout, missing-identity, privacy, and harness failures as invalid unknown quality
+     → v2 evaluator module must exist: expected null not to be null
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 6 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/v2/phase4-evaluators.test.ts > F7ZPw7 phase 4 shared configurable evaluator pipeline > P4-A1 applies the same ordered deterministic and LLM profiles to task and workflow evidence
+AssertionError: v2 evaluator module must exist: expected null not to be null
+ ❯ test/v2/phase4-evaluators.test.ts:34:55
+     32|   it('P4-A1 applies the same ordered deterministic and LLM profiles to…
+     33|     const api = await phase4();
+     34|     expect(api, 'v2 evaluator module must exist').not.toBeNull();
+       |                                                       ^
+     35|     for (const kind of ['task', 'workflow'] as const) {
+     36|       const judge = adapter('{"verdict":"pass","findings":["clear"]}');
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/6]⎯
+
+ FAIL  test/v2/phase4-evaluators.test.ts > F7ZPw7 phase 4 shared configurable evaluator pipeline > P4-A2 keeps candidate and judge harness/model selection independent and provider-agnostic
+AssertionError: v2 evaluator module must exist: expected null not to be null
+ ❯ test/v2/phase4-evaluators.test.ts:45:55
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/6]⎯
+
+ FAIL  test/v2/phase4-evaluators.test.ts > F7ZPw7 phase 4 shared configurable evaluator pipeline > P4-A3 hash-binds custom prompt/rubric and supports strict JSON, legacy PASS/FAIL, blinded and identity-visible packets
+AssertionError: v2 evaluator module must exist: expected null not to be null
+ ❯ test/v2/phase4-evaluators.test.ts:55:55
+     53|   it('P4-A3 hash-binds custom prompt/rubric and supports strict JSON, …
+     54|     const api = await phase4();
+     55|     expect(api, 'v2 evaluator module must exist').not.toBeNull();
+       |                                                       ^
+     56|     const blinded = adapter('{"verdict":"pass","score":0.9}');
+     57|     const root = await runRoot();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/6]⎯
+
+ FAIL  test/v2/phase4-evaluators.test.ts > F7ZPw7 phase 4 shared configurable evaluator pipeline > P4-A4 appends a new rejudge generation over retained evidence without candidate dispatch or prior mutation
+AssertionError: v2 evaluator module must exist: expected null not to be null
+ ❯ test/v2/phase4-evaluators.test.ts:74:55
+     72|   it('P4-A4 appends a new rejudge generation over retained evidence wi…
+     73|     const api = await phase4();
+     74|     expect(api, 'v2 evaluator module must exist').not.toBeNull();
+       |                                                       ^
+     75|     const candidateDispatch = vi.fn();
+     76|     const firstJudge = adapter('{"verdict":"fail"}');
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/6]⎯
+
+ FAIL  test/v2/phase4-evaluators.test.ts > F7ZPw7 phase 4 shared configurable evaluator pipeline > P4-A5 prevents favorable judge prose from overriding a required deterministic correctness failure
+AssertionError: v2 evaluator module must exist: expected null not to be null
+ ❯ test/v2/phase4-evaluators.test.ts:90:55
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/6]⎯
+
+ FAIL  test/v2/phase4-evaluators.test.ts > F7ZPw7 phase 4 shared configurable evaluator pipeline > P4-A6 preserves malformed, timeout, missing-identity, privacy, and harness failures as invalid unknown quality
+AssertionError: v2 evaluator module must exist: expected null not to be null
+ ❯ test/v2/phase4-evaluators.test.ts:100:55
+     98|   it('P4-A6 preserves malformed, timeout, missing-identity, privacy, a…
+     99|     const api = await phase4();
+    100|     expect(api, 'v2 evaluator module must exist').not.toBeNull();
+       |                                                       ^
+    101|     for (const [output, overrides, code] of [
+    102|       ['not json', {}, 'malformed_output'],
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/6]⎯
+
+ Test Files  1 failed (1)
+      Tests  6 failed (6)
+   Start at  00:21:05
+   Duration  131ms (transform 24ms, setup 11ms, collect 15ms, tests 9ms, environment 0ms, prepare 29ms)
+

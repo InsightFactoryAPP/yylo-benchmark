@@ -1,0 +1,81 @@
+
+> @yylo/benchmark@0.1.0-rc.8 test
+> vitest run test/v2/phase5-cli.test.ts
+
+
+ RUN  v1.6.1 /Users/mahdiyar/Code/CA_JUNOAI/playground/juno-mono-002-worktrees/e4oMSm/juno-benchmark
+
+ ❯ test/v2/phase5-cli.test.ts  (5 tests | 5 failed) 8ms
+   ❯ test/v2/phase5-cli.test.ts > f922O3 phase 5 v2 CLI cutover and restrictive v1 retirement > P5-A1 exposes plan/run/recover/regrade/rejudge/doctor/report with v2 help and no spend, provider, boundary, policy-sidecar, or overlay options
+     → v2 CLI module must exist: expected null not to be null
+   ❯ test/v2/phase5-cli.test.ts > f922O3 phase 5 v2 CLI cutover and restrictive v1 retirement > P5-A2 runs task and arbitrary workflow plans through isolated v2 evidence/evaluators with yylo_version and cost-only economics
+     → v2 CLI module must exist: expected null not to be null
+   ❯ test/v2/phase5-cli.test.ts > f922O3 phase 5 v2 CLI cutover and restrictive v1 retirement > P5-A3 recovers known terminals and appends regrade/rejudge generations without candidate redispatch
+     → v2 CLI module must exist: expected null not to be null
+   ❯ test/v2/phase5-cli.test.ts > f922O3 phase 5 v2 CLI cutover and restrictive v1 retirement > P5-A4 doctor and report retain provenance, evaluator generations, invalidity, candidate/judge cost, and comparison classification
+     → v2 CLI module must exist: expected null not to be null
+   ❯ test/v2/phase5-cli.test.ts > f922O3 phase 5 v2 CLI cutover and restrictive v1 retirement > P5-A5 standalone and delegated argv/cwd/streams/exits remain package-independent and the packed CLI supports no-dispatch help/plan/doctor
+     → v2 CLI module must exist: expected null not to be null
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 5 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/v2/phase5-cli.test.ts > f922O3 phase 5 v2 CLI cutover and restrictive v1 retirement > P5-A1 exposes plan/run/recover/regrade/rejudge/doctor/report with v2 help and no spend, provider, boundary, policy-sidecar, or overlay options
+AssertionError: v2 CLI module must exist: expected null not to be null
+ ❯ test/v2/phase5-cli.test.ts:54:57
+     52| describe('f922O3 phase 5 v2 CLI cutover and restrictive v1 retirement'…
+     53|   it('P5-A1 exposes plan/run/recover/regrade/rejudge/doctor/report wit…
+     54|     expect(await api(), 'v2 CLI module must exist').not.toBeNull();
+       |                                                         ^
+     55|     let help = '';
+     56|     createProgram().configureOutput({ writeOut: (text) => { help += te…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/5]⎯
+
+ FAIL  test/v2/phase5-cli.test.ts > f922O3 phase 5 v2 CLI cutover and restrictive v1 retirement > P5-A2 runs task and arbitrary workflow plans through isolated v2 evidence/evaluators with yylo_version and cost-only economics
+AssertionError: v2 CLI module must exist: expected null not to be null
+ ❯ test/v2/phase5-cli.test.ts:62:57
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/5]⎯
+
+ FAIL  test/v2/phase5-cli.test.ts > f922O3 phase 5 v2 CLI cutover and restrictive v1 retirement > P5-A3 recovers known terminals and appends regrade/rejudge generations without candidate redispatch
+AssertionError: v2 CLI module must exist: expected null not to be null
+ ❯ test/v2/phase5-cli.test.ts:78:57
+     76| 
+     77|   it('P5-A3 recovers known terminals and appends regrade/rejudge gener…
+     78|     expect(await api(), 'v2 CLI module must exist').not.toBeNull();
+       |                                                         ^
+     79|     const root = await fixture();
+     80|     await capture(root, ['plan', '--task', 'task.md', '--models', 'ven…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/5]⎯
+
+ FAIL  test/v2/phase5-cli.test.ts > f922O3 phase 5 v2 CLI cutover and restrictive v1 retirement > P5-A4 doctor and report retain provenance, evaluator generations, invalidity, candidate/judge cost, and comparison classification
+AssertionError: v2 CLI module must exist: expected null not to be null
+ ❯ test/v2/phase5-cli.test.ts:92:57
+     90| 
+     91|   it('P5-A4 doctor and report retain provenance, evaluator generations…
+     92|     expect(await api(), 'v2 CLI module must exist').not.toBeNull();
+       |                                                         ^
+     93|     const root = await fixture();
+     94|     await capture(root, ['plan', '--workflow', 'workflow.yaml', '--mod…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/5]⎯
+
+ FAIL  test/v2/phase5-cli.test.ts > f922O3 phase 5 v2 CLI cutover and restrictive v1 retirement > P5-A5 standalone and delegated argv/cwd/streams/exits remain package-independent and the packed CLI supports no-dispatch help/plan/doctor
+AssertionError: v2 CLI module must exist: expected null not to be null
+ ❯ test/v2/phase5-cli.test.ts:107:52
+    105|   it('P5-A5 standalone and delegated argv/cwd/streams/exits remain pac…
+    106|     const module = await api();
+    107|     expect(module, 'v2 CLI module must exist').not.toBeNull();
+       |                                                    ^
+    108|     expect(module!.V2_CLI_SCHEMA_VERSION).toBe('yylo_benchmark_cli.v2'…
+    109|     const builtins = await readFile(path.join(process.cwd(), 'src', 'c…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/5]⎯
+
+ Test Files  1 failed (1)
+      Tests  5 failed (5)
+   Start at  00:27:20
+   Duration  357ms (transform 164ms, setup 12ms, collect 223ms, tests 8ms, environment 0ms, prepare 43ms)
+

@@ -1,0 +1,21 @@
+{
+  "schema_version": "yylo_benchmark_tdd_receipt.v1",
+  "task_id": "fSC4KN",
+  "phase": "RED",
+  "base_sha": "7f66fcdbbb2fa041151c8cb65f9d18e864d88738",
+  "test_only_tree_sha": "77714c5bc5314840a6f2184f2c3e413252242cf9",
+  "cwd": "juno-benchmark",
+  "argv": ["npm", "test", "--", "test/v2/phase2-workspace-harness.test.ts"],
+  "named_tests": ["P2-A1", "P2-A2", "P2-A3", "P2-A4", "P2-A5"],
+  "expected_missing_behavior": "The v2 isolated AttemptWorkspace and provider-agnostic probe/prepare/run/reconcile harness protocol do not exist.",
+  "actual_failing_assertions": [
+    "P2-A1: v2 workspace and harness modules must exist",
+    "P2-A2: v2 workspace and harness modules must exist",
+    "P2-A3: v2 workspace and harness modules must exist",
+    "P2-A4: v2 workspace and harness modules must exist",
+    "P2-A5: v2 workspace and harness modules must exist"
+  ],
+  "exit_status": 1,
+  "log": "red.log",
+  "log_sha256": "4b73b81a0204347666a46ca87ced76ddc75d340cb63c4c52b9a96255577e1738"
+}

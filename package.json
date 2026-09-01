@@ -1,7 +1,7 @@
 {
   "name": "@yylo/benchmark",
   "version": "0.1.0-rc.8",
-  "description": "YYLO Benchmark: immutable task-case and workflow evaluation contracts and CLI",
+  "description": "YYLO Benchmark: flexible isolated task and workflow evaluation",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -17,11 +17,7 @@
   "files": [
     "dist",
     "README.md",
-    "workflows",
-    "scripts/verify-convert-installed-acceptance.mjs",
-    "fixtures/convert-2026-08-12/expected.json",
-    "fixtures/convert-2026-08-12/policy.yaml",
-    "fixtures/convert-2026-08-12/rubric.md",
+    "scripts/verify-v2-packed-acceptance.mjs",
     "LICENSE"
   ],
   "scripts": {

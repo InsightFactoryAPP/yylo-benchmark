@@ -1,0 +1,11 @@
+{
+  "schema_version": "yylo_benchmark_tdd_receipt.v1",
+  "task_id": "fT49yV",
+  "requirement_id": "fT49yV-A2",
+  "phase": "RED",
+  "implementation_commit": "715727251d1444fac9419f72712a4967b8590620",
+  "command": "npm test -- test/v2/terminal-successor.test.ts -t 'fT49yV-A2'",
+  "exit_code": 1,
+  "log": "A2-red.log",
+  "log_sha256": "sha256:2d77359d2ac627781faea01266b19b084f00aec8a2b707a65d944462e3a5be1b"
+}

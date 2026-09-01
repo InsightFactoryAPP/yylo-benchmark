@@ -1,0 +1,129 @@
+
+> @yylo/benchmark@0.1.0-rc.8 test
+> vitest run test/v2/terminal-successor.test.ts
+
+
+ RUN  v1.6.1 /private/tmp/Gwu1KD-red.lWzGAS/juno-benchmark
+
+ ❯ test/v2/terminal-successor.test.ts  (5 tests | 5 failed) 1258ms
+   ❯ test/v2/terminal-successor.test.ts > Gwu1KD terminal-review successor contracts > Gwu1KD-A1 retains required deterministic failures across selective re-evaluation
+     → expected 'resolved' to be 'unresolved' // Object.is equality
+   ❯ test/v2/terminal-successor.test.ts > Gwu1KD terminal-review successor contracts > Gwu1KD-A2 rejects cross-attempt replay of otherwise hash-valid retained state
+     → promise resolved "{ ambiguous_count: +0, …(8) }" instead of rejecting
+   ❯ test/v2/terminal-successor.test.ts > Gwu1KD terminal-review successor contracts > Gwu1KD-A3 classifies malformed deterministic protocol output as invalid infrastructure truth
+     → expected { records: [ { …(22) } ], …(5) } to match object { quality: 'unknown', …(1) }
+(12 matching properties omitted from actual)
+   ❯ test/v2/terminal-successor.test.ts > Gwu1KD terminal-review successor contracts > Gwu1KD-A4 bounds TERM-resistant descendant trees with process-group KILL and reap
+     → expected [Function] to throw an error
+   ❯ test/v2/terminal-successor.test.ts > Gwu1KD terminal-review successor contracts > Gwu1KD-A5 reports measured millisecond attempt/evaluator/aggregate runtime provenance without merging costs
+     → expected undefined to match object { unit: 'milliseconds', …(1) }
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 5 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/v2/terminal-successor.test.ts > Gwu1KD terminal-review successor contracts > Gwu1KD-A1 retains required deterministic failures across selective re-evaluation
+AssertionError: expected 'resolved' to be 'unresolved' // Object.is equality
+
+- Expected
++ Received
+
+- unresolved
++ resolved
+
+ ❯ test/v2/terminal-successor.test.ts:55:28
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/5]⎯
+
+ FAIL  test/v2/terminal-successor.test.ts > Gwu1KD terminal-review successor contracts > Gwu1KD-A2 rejects cross-attempt replay of otherwise hash-valid retained state
+AssertionError: promise resolved "{ ambiguous_count: +0, …(8) }" instead of rejecting
+
+- Expected
++ Received
+
+- [Error: rejected promise]
++ Object {
++   "ambiguous_count": 0,
++   "candidate_dispatch_count": 2,
++   "evaluation_ids": Array [
++     "sha256:fb20d19ddf9d795596f3a5484d9134724fa8a9b089bcb0d81bc28e76f47ffa08",
++     "sha256:fb20d19ddf9d795596f3a5484d9134724fa8a9b089bcb0d81bc28e76f47ffa08",
++   ],
++   "evidence_ids": Array [
++     "sha256:351ecefd1192c364d16083a7fe868de65f40c9a1307b1c84b4060531eb2ab214",
++     "sha256:351ecefd1192c364d16083a7fe868de65f40c9a1307b1c84b4060531eb2ab214",
++   ],
++   "missing_count": 0,
++   "ok": true,
++   "plan_hash": "sha256:e7db1f96a44d99e271261f86bad4f2120fa1743da54f206adc886080bfe91797",
++   "schema_version": "yylo_benchmark_doctor.v2",
++   "yylo_version": "2",
++ }
+
+ ❯ test/v2/terminal-successor.test.ts:67:66
+     65|     const second = path.join(registry, `${plan.attempts[1].attempt_id.…
+     66|     await writeFile(second, await readFile(first));
+     67|     await expect(capture(root, ['doctor', '--plan', 'plan.json'])).rej…
+       |                                                                  ^
+     68|   });
+     69| 
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/5]⎯
+
+ FAIL  test/v2/terminal-successor.test.ts > Gwu1KD terminal-review successor contracts > Gwu1KD-A3 classifies malformed deterministic protocol output as invalid infrastructure truth
+AssertionError: expected { records: [ { …(22) } ], …(5) } to match object { quality: 'unknown', …(1) }
+(12 matching properties omitted from actual)
+
+- Expected
++ Received
+
+  Object {
+-   "quality": "unknown",
+-   "validity": "invalid",
++   "quality": "resolved",
++   "validity": "valid",
+  }
+
+ ❯ test/v2/terminal-successor.test.ts:73:23
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/5]⎯
+
+ FAIL  test/v2/terminal-successor.test.ts > Gwu1KD terminal-review successor contracts > Gwu1KD-A4 bounds TERM-resistant descendant trees with process-group KILL and reap
+AssertionError: expected [Function] to throw an error
+ ❯ test/v2/terminal-successor.test.ts:85:47
+     83|     const descendant = Number(await readFile(pidFile, 'utf8'));
+     84|     await new Promise((resolve) => setTimeout(resolve, 50));
+     85|     expect(() => process.kill(descendant, 0)).toThrow();
+       |                                               ^
+     86|   });
+     87| 
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/5]⎯
+
+ FAIL  test/v2/terminal-successor.test.ts > Gwu1KD terminal-review successor contracts > Gwu1KD-A5 reports measured millisecond attempt/evaluator/aggregate runtime provenance without merging costs
+AssertionError: expected undefined to match object { unit: 'milliseconds', …(1) }
+
+- Expected: 
+Object {
+  "provenance": "measured_wall_clock",
+  "unit": "milliseconds",
+}
+
++ Received: 
+undefined
+
+ ❯ test/v2/terminal-successor.test.ts:91:28
+     89|     const root = await cliFixture(); await capture(root, ['plan', '--t…
+     90|     const report = await capture(root, ['report', '--plan', 'plan.json…
+     91|     expect(report.runtime).toMatchObject({ unit: 'milliseconds', prove…
+       |                            ^
+     92|     expect(report.runtime.attempts[0]).toMatchObject({ runtime_ms: exp…
+     93|     expect(report.runtime.evaluators[0]).toMatchObject({ runtime_ms: e…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/5]⎯
+
+ Test Files  1 failed (1)
+      Tests  5 failed (5)
+   Start at  22:23:25
+   Duration  1.46s (transform 86ms, setup 11ms, collect 102ms, tests 1.26s, environment 0ms, prepare 28ms)
+

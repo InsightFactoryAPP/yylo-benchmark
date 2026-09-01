@@ -1,225 +1,144 @@
 # YYLO Benchmark
 
-YYLO Benchmark is the immutable planning, execution, recovery, and longitudinal-reporting layer for coding-agent evaluations. It is for evaluation engineers and operators who need reproducible task cases or project-owned workflow experiments with retained, integrity-bound evidence.
+YYLO Benchmark is the flexible, isolated evaluation layer for task prompts and project-owned Workflow Runner YAML. It normalizes every case into one v2 attempt contract, runs each candidate in a private fresh-repository workspace, and evaluates retained evidence with ordered deterministic and/or LLM profiles.
 
-- npm package and CLI: [`@yylo/benchmark`](https://www.npmjs.com/package/%40yylo%2Fbenchmark) / `yylo-benchmark`
+- Package: [`@yylo/benchmark`](https://www.npmjs.com/package/%40yylo%2Fbenchmark)
+- CLI: `yylo-benchmark` (also delegated unchanged by `yy benchmark`)
 - Source: [yylo-dev/yylo-benchmark](https://github.com/yylo-dev/yylo-benchmark)
 
-Benchmark invokes [YYLO](https://github.com/yylo-dev/yylo) for agent execution and uses [YYLO Ledger](https://github.com/yylo-dev/yylo-ledger) through its public task/receipt contract. It does not replace either package: YYLO owns agent and repository orchestration; Ledger owns Records and task history; Benchmark owns evaluation plans and its private evidence registry.
+## Boundaries
 
-## Quick start: inspect without dispatch
+Benchmark owns case normalization, attempt isolation, retained evidence, evaluator provenance, recovery, doctor, and reports. The selected harness owns command/workflow interpretation, provider and model resolution, and process/session execution.
 
-**Prerequisites:** Node.js 20.10 or newer. The npm registry currently publishes `0.1.0-rc.1`; this package has no published stable release. Pin the prerelease explicitly:
+Model selectors are opaque. Benchmark has no provider allowlist, credential store, paid-command classifier, execution grant, reservation, or USD ceiling. Candidate and judge costs remain separate evidence; unavailable cost is never converted to zero. Running a plan grants no production or external authority.
+
+## Install and inspect
+
+Node.js 20.10 or newer is required. Pin the release selected by your operator:
 
 ```bash
-npm install --global '@yylo/benchmark@0.1.0-rc.1'
+npm install --global '@yylo/benchmark@VERSION'
 yylo-benchmark --version
 yylo-benchmark --help
 yylo-benchmark init --stdout
 ```
 
-A successful run prints `0.1.0-rc.1`, the public command inventory, and initialization configuration to stdout. `init --stdout` does not write project files or dispatch a model.
+These commands do not dispatch a candidate or judge. Publication and global installation are separate release-owner operations.
 
-The source manifest in this checkout is `0.1.0-rc.7`. That source version is not present in verified npm registry metadata, so do not install or describe it as published. Check channels before changing a pin:
+## Configuration
 
-```bash
-npm view '@yylo/benchmark' versions dist-tags --json
+Create `yylo-benchmark.config.json` with `yylo-benchmark init`, then replace placeholders with project-approved profiles. The v2 shape is:
+
+```json
+{
+  "schema_version": "yylo_benchmark_config.v2",
+  "yylo_version": "INSTALLED_YYLO_VERSION",
+  "workspace": {
+    "attempts_root": ".yylo-benchmark/attempts",
+    "registry_root": ".yylo-benchmark/registry"
+  },
+  "default_candidate_harness": "candidate",
+  "harnesses": {
+    "candidate": {
+      "kind": "yylo_pi",
+      "prompt": "Complete the configured benchmark case."
+    }
+  },
+  "default_evaluators": [],
+  "evaluators": {}
+}
 ```
 
-Next: choose a [task-case experiment](#task-case-experiments) or a [project-owned workflow experiment](#project-owned-workflow-experiments).
+Supported harness kinds are `yylo_pi`, `workflow_runner`, and project-approved `command` adapters. Candidate and LLM-judge profiles select harnesses independently.
 
-## Capabilities
+Evaluator profiles support deterministic commands and configurable LLM judges. The immutable plan binds both the initially selected profiles and the complete evaluator catalog available for later generation-only re-evaluation. Judge configuration binds prompt, rubric, selected evidence, byte limit, blinded or visible identity, single/reference/pairwise mode, settings, repetition/aggregation, and strict JSON or legacy `VERDICT: PASS|FAIL` parsing.
 
-| Need | Public commands | Evidence/safety boundary |
-| --- | --- | --- |
-| Initialize | `init` | Installs checksum-managed guidance/config; `--stdout` is read-only. |
-| Task cases | `case`, `plan`, `run`, `regrade`, `doctor`, `report` | Live runs require a plan-bound authorization and configured private registry. |
-| Workflow experiments | `setup`, `readiness`, `plan`, `run`, `recover`, `rejudge` | Dry-runs dispatch zero models; live work requires a reviewed boundary and exact identities. |
-| Recovery | `recover`, `doctor` | Reconciles retained durable intent; it does not blindly redispatch ambiguous work. |
-| Longitudinal analysis | `report`, `investigate` | Reads bounded retained evidence; it does not mutate candidate truth. |
-| Release evidence | `release-readiness` | Offline artifact readiness only; no tag, publish, spend, or deployment authority. |
+Keep workspace and registry roots ignored and private. The registry must be outside every candidate repository.
 
-Use `yylo-benchmark COMMAND --help` as the exact option contract for the installed version.
+## Plan
 
-## Project setup
-
-Run initialization from the Git project that owns the cases or tracked Workflow Runner YAML:
-
-```bash
-yylo-benchmark init
-```
-
-This installs package-managed Benchmark guidance and configuration while preserving project-owned pages. Evidence-retaining commands require a private local registry selected by the operator:
-
-```bash
-export YYLO_BENCHMARK_REGISTRY=/private/operator-owned/benchmark-registry
-```
-
-The path is illustrative. Keep the registry outside candidate snapshots, private to the operator, and out of source control. `YYLO_BENCHMARK_WORK_ROOT` may select retained attempt workspaces.
-
-## Task-case experiments
-
-A task case is a YYLO Ledger task tagged `benchmark-case` with valid `fields.benchmark` metadata. Its task body is the candidate prompt.
-
-```bash
-yylo-benchmark case lint TASK_ID
-yylo-benchmark plan --task TASK_ID --models :mini,:sol --attempts 3 --output plan.json
-```
-
-Replace `TASK_ID` with a real case ID. Planning is read-only and content-addressed. It binds the exact task, models, attempts, grader profile, source, and configured aliases. Legacy task-case plans use a USD 20 aggregate ceiling by default; `--max-usd` sets another positive plan ceiling.
-
-A live run is intentionally a separate step:
-
-```bash
-yylo-benchmark run --plan plan.json --authorization /external/task-authorization.json
-yylo-benchmark doctor EXPERIMENT_TASK_ID
-yylo-benchmark report --task TASK_ID
-```
-
-The authorization and experiment IDs are placeholders. A live task run requires an exact `juno_benchmark_task_authorization.v1` grant matching the immutable plan's models, currency, expiry, aggregate ceiling, and per-attempt ceiling. A plan is not spend authority.
-
-Use `--no-record` only with `--non-canonical-scope fixture|local`; it is not a canonical experiment.
-
-## Project-owned workflow experiments
-
-Workflow experiments benchmark stable step IDs from a tracked Workflow Runner YAML. A policy sidecar binds scoring IDs, resources, limits, redaction, recovery classes, governed judge behavior, and optional cost estimates.
-
-### Safe planning canary
-
-The following shape is read-only; replace the paths, step IDs, variables, and selectors with values that exist in your tracked project:
+Both case kinds produce `yylo_benchmark_experiment_plan.v2` and nested `yylo_benchmark_attempt_plan.v2` objects:
 
 ```bash
 yylo-benchmark plan \
-  --workflow .juno_task/workflows/example.yaml \
-  --steps-file benchmark-policy.yaml \
-  --steps collect,analyze \
-  --models :sol,:mini \
-  --var run_date=VALUE \
-  --attempts 1 \
-  --output workflow-plan.json \
-  --dry-run
+  --task benchmark/task.md \
+  --models vendor-a/model-1,vendor-b/model-2 \
+  --attempts 2 \
+  --output task-plan.json
 
-yylo-benchmark run --plan workflow-plan.json \
-  --steps-file benchmark-policy.yaml \
-  --dry-run
+yylo-benchmark plan \
+  --workflow .juno_task/workflows/evaluate.yaml \
+  --models vendor-a/model-1,vendor-b/model-2 \
+  --controlled-model-variable candidate_model \
+  --var run_date=2026-08-31 \
+  --output workflow-plan.json
 ```
 
-`VALUE` and the file/step names are explicit placeholders. Successful dry-runs report `dispatch_count: 0`; they never create spend authority.
+Workflow YAML is hash-bound and passed unchanged to the configured Workflow Runner. String variables remain literal; object, array, boolean, numeric, and null variables are forwarded as canonical JSON so runner argv remains lossless and plan-bound. Benchmark does not parse command admission, reject ordinary `cwd`/environment/executable/managed-agent fields, or rewrite model arguments. With `--controlled-model-variable`, the report classifies the matrix as `model_only`; otherwise it is an `agent_system` comparison.
 
-Planning binds raw and normalized workflow/policy bytes, Git identity, selected stable IDs, variables, exact model resolution, compiler output, Juno version, and deterministic order. Workflow commands must use the accepted argv forms shown by package guidance; hidden shell wrappers, inline code, ambiguous selectors, and command rewriting are rejected.
+Planning is always zero-dispatch. `--dry-run` remains an explicit compatibility affirmation.
 
-## Reviewed execution boundary
-
-Live workflow execution uses one package-shipped, hash-pinned JavaScript boundary module:
+## Run and recover
 
 ```bash
-yylo-benchmark setup
-yylo-benchmark readiness --models :mini,zai/glm-5.3
+yylo-benchmark run --plan workflow-plan.json --dry-run
+yylo-benchmark run --plan workflow-plan.json
+yylo-benchmark recover --plan workflow-plan.json
+yylo-benchmark doctor --plan workflow-plan.json
+yylo-benchmark report --plan workflow-plan.json
 ```
 
-`setup` installs the reviewed boundary into `.juno_task/boundary/` and records its digest, providers, and private registry binding without copying credentials. `readiness` performs zero dispatch and retains exact provider/model/YYLO identity evidence.
+Every candidate receives a dedicated fresh repository plus private home, temp, cache, and config roots. The snapshot has a private `.git` database with no remotes, alternates, worktree links, future refs/objects, controller route, hidden graders, reference solutions, sibling paths, or registry path. The default receipt truthfully declares trusted-host filesystem isolation rather than claiming a container boundary.
 
-Export the exact module path and SHA-256 printed by setup before planning or running live work:
+Intent is durable before candidate or judge dispatch. After candidate execution and before terminal publication, Benchmark retains a deterministic post-execution manifest covering Git HEAD/tree/refs/index/status and every worktree file. Intentional edits, additions, staging, and commits are therefore accepted as the bound candidate result; later repository drift is rejected. Recovery reuses hash-verified terminals. Retained state is rejected unless its state, plan, attempt, initial workspace receipt, post-execution manifest, candidate harness/model, terminal, evidence, evaluator configuration, and evaluation IDs form one exact linkage. Reuse, recovery, doctor, report, and re-evaluation verify that complete chain. An attempt directory without terminal state is ambiguous and remains manual; it is not blindly dispatched again. Doctor and report fail closed unless every attempt in the immutable plan has the complete retained chain; zero or partial experiments are never reported as complete.
+
+Candidate and evaluator subprocesses run in isolated POSIX process groups. A timeout records measured wall time only after bounded `TERM` grace, process-group `KILL`, direct-child close/reap, and confirmed process-group disappearance within an explicit cleanup bound, including when descendants ignore `SIGTERM`. Failure to confirm cleanup fails closed rather than publishing terminal timeout truth. Windows is rejected before dispatch because this package does not provide an equivalent job-object/tree-termination guarantee.
+
+## Re-evaluation
 
 ```bash
-export YYLO_BENCHMARK_WORKFLOW_BOUNDARY=/absolute/path/to/yylo-workflow-boundary.mjs
-export YYLO_BENCHMARK_WORKFLOW_BOUNDARY_SHA256=LOWERCASE_SHA256
+yylo-benchmark regrade --plan workflow-plan.json --profile checks-v2
+yylo-benchmark rejudge --plan workflow-plan.json --profile judge-v2
 ```
 
-These values are placeholders and must match the setup receipt. The boundary owns provider credentials and external reconciliation. Candidate operations receive only the immutable invocation. Governed judges receive a blinded, versioned task/rubric/evidence packet and no candidate credential or model-identity route. Each valid verdict retains the exact observed judge provider/model/Juno/session envelope, runtime, cost completeness, exit status, strict verdict, and redacted factual justification.
+Regrade and rejudge consume retained `AttemptEvidence`; they do not dispatch a candidate. The immutable plan binds the stable evaluator profile configuration; each repeated operation under that same profile ID derives and appends exactly the next generation, rejects same/non-monotonic replay, and aggregates deterministically with retained applicable records. Existing records are immutable, and historical required deterministic correctness/safety failures remain authoritative. A required deterministic correctness or safety failure cannot be overridden by judge prose. Missing or malformed deterministic protocol fields, malformed judge output, timeout, privacy failure, missing identity/session, and evaluator-harness failure produce an invalid infrastructure evaluation with unknown quality.
 
-### Credential-free synthetic acceptance
+## Evidence and reports
 
-```bash
-yylo-benchmark setup --synthetic
-yylo-benchmark readiness --models :mini,zai/glm-5.3
-```
+New durable objects use `yylo_version` and retain:
 
-Synthetic mode is for installed-CLI acceptance. It performs deterministic synthetic candidate/judge operations, labels all terminals, and does not dispatch a provider model. It is not evidence of live provider readiness.
+- requested, resolved, and observed candidate/evaluator identities;
+- initial workspace receipt plus post-execution repository manifest hashes linked through terminal, evidence, and state;
+- candidate truth separately from harness and evaluator validity;
+- candidate and judge cost completeness separately;
+- evaluator profile, prompt, rubric, output, generation, and provenance hashes;
+- evidence/evaluation IDs behind every aggregate;
+- valid resolved rate, invalidity, comparison classification, and generations;
+- authoritative `runtime` evidence in milliseconds: per-attempt wall time with evidence ID/timestamps, per-evaluator measured time with evaluation ID/generation, and candidate/evaluator/combined aggregates.
 
-## Run, recover, and rejudge
+Runtime remains separate from `candidate_cost` and `judge_cost`; no duration is inferred from token, billing, judge prose, or command-harness protocol claims. The launcher overwrites command-harness timing fields with its measured start, end, and elapsed wall time before evidence persistence.
 
-After separate review and authorization, live workflow commands are:
+The library exports a bounded hash-verifying projection for immutable v1 objects containing `juno_version`. It never rewrites historical bytes. Historical Daily Ops discrepancies are documented in [`docs/historical-daily-ops-evidence-inventory.md`](docs/historical-daily-ops-evidence-inventory.md) and are not v2 scoring oracles.
 
-```bash
-yylo-benchmark run --plan workflow-plan.json --steps-file benchmark-policy.yaml
-yylo-benchmark recover --plan workflow-plan.json --steps-file benchmark-policy.yaml
-yylo-benchmark rejudge --plan workflow-plan.json --steps-file benchmark-policy.yaml --judge :sol
-# Legacy hash-only plans additionally require: --rubric-file retained-rubric.md
-```
+## Delegation
 
-Safety invariants:
-
-- Live preflight checks every exact provider/model and Juno identity before durable candidate intent.
-- The boundary protocol and digest are revalidated before dispatch.
-- Persistent typed locks keep production model experiments sequential.
-- Known child terminals are retained, including harness failures; settled work is not redispatched.
-- Recovery reconciles durable intent before policy-permitted resume. Ambiguous external effects remain manual.
-- Rejudge reads retained blinded candidate truth, dispatches only missing or judge-invalid eligible work, and does not dispatch a candidate.
-- Provider non-dispatch, timeout, nonzero exit, malformed/no-verdict output, missing identity/task/rubric/artifacts, and redaction failure leave quality unknown; they are never valid rejections.
-- Reports separate candidate outcome, candidate-harness validity, judge validity, and quality. Unknown quality suppresses winner selection.
-- Cost is evidence, not authorization. Missing cost stays unavailable; genuine zero stays zero.
-
-Use dry-run first whenever it is offered:
+When compatible packages are installed independently, YYLO delegates argv, cwd, streams, signals, and exit status:
 
 ```bash
-yylo-benchmark recover --plan workflow-plan.json --steps-file benchmark-policy.yaml --dry-run
-yylo-benchmark rejudge --plan workflow-plan.json --steps-file benchmark-policy.yaml --judge :sol --dry-run
-```
-
-## Evidence and doctor
-
-Task experiments are identified by their Ledger experiment task ID. Workflow experiments use `workflow-` followed by a 64-character plan hash:
-
-```bash
-yylo-benchmark doctor EXPERIMENT_TASK_ID
-yylo-benchmark doctor workflow-PLAN_ID_HEX
-```
-
-`doctor` verifies retained identities, receipts, terminal truth, and integrity links. Workflow doctor can operate entirely from retained private-registry evidence, including harness failures and ambiguous dispatch intents.
-
-Benchmark execution consumes YYLO's public `juno_execution_envelope.v1`. Provider, model, session, version, and cost derive from marked backend evidence, not candidate prose. Grading is likewise bound to configured executable identity and integrity-linked grader artifacts; missing or tampered evidence fails closed.
-
-## Offline release readiness
-
-```bash
-yylo-benchmark release-readiness --input measured-identities.json
-```
-
-The input is produced by the package's release verification contract, not hand-authored booleans. The resulting `juno_benchmark_release_readiness.v1` receipt binds a clean commit/tree, package identities, source/dist/tarball hashes, standalone and delegated CLI identities, and the exact bounded coverage and leak-scan evidence.
-
-Release readiness is an offline D0 claim. It excludes live workflow/model execution, paid judging, tagging, npm publication, push, deployment, and production mutation. The source release workflow runs tests, typecheck, build, and exact tarball verification; prerelease versions use the `next` channel by contract. Separate owner and registry authority is still required for publication.
-
-## `yy benchmark` delegation
-
-When both packages are independently installed, YYLO exposes the same standalone CLI:
-
-```bash
-npm install --global '@yylo/cli@latest'
 yy benchmark --help
-yylo-benchmark --help
+yy benchmark plan --task benchmark/task.md --models vendor/model --output plan.json
 ```
 
-`yy benchmark` delegates the argument tail, cwd, standard streams, exit status, and signals. It does not discover a checkout-local Benchmark runtime. Install and version `@yylo/benchmark` independently.
+The delegated and standalone commands use the same Benchmark executable and v2 contracts.
 
 ## Development
 
 ```bash
-git clone https://github.com/yylo-dev/yylo-benchmark.git
-cd yylo-benchmark
 npm ci
 npm test
 npm run typecheck
 npm run build
-node dist/bin.js --help
+npm pack --dry-run
 ```
 
-Package acceptance scripts include synthetic installed-boundary and tracked-workflow canaries. They intentionally prove zero provider dispatch; they do not grant live execution or publication authority.
-
-## Help and links
-
-- CLI: `yylo-benchmark --help`
-- npm: [@yylo/benchmark](https://www.npmjs.com/package/%40yylo%2Fbenchmark)
-- Source/issues: [yylo-dev/yylo-benchmark](https://github.com/yylo-dev/yylo-benchmark)
-- YYLO CLI: [yylo-dev/yylo](https://github.com/yylo-dev/yylo)
-- YYLO Ledger: [yylo-dev/yylo-ledger](https://github.com/yylo-dev/yylo-ledger)
+Tests and packed acceptance use local deterministic harnesses. They do not make paid/live provider calls, mutate production, publish, install globally, push, or deploy.

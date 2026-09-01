@@ -1,0 +1,21 @@
+{
+  "schema_version": "yylo_benchmark_tdd_receipt.v1",
+  "task_id": "uUcc9l",
+  "phase": "RED",
+  "base_sha": "4a90226dea8e65b611eaaa873775948d7571d2c6",
+  "test_only_tree_sha": "b3aaf74a52c68512ce240295f7c78480c09cbb7b",
+  "cwd": "juno-benchmark",
+  "argv": ["npm", "test", "--", "test/v2/phase3-adapters.test.ts"],
+  "named_tests": ["P3-A1", "P3-A2", "P3-A3", "P3-A4", "P3-A5"],
+  "expected_missing_behavior": "Unified v2 task/workflow adapters, Workflow Runner passthrough, workspace-bound execution, comparison classification, and adapter recovery do not exist.",
+  "actual_failing_assertions": [
+    "P3-A1: v2 task/workflow adapter module must exist",
+    "P3-A2: v2 task/workflow adapter module must exist",
+    "P3-A3: v2 task/workflow adapter module must exist",
+    "P3-A4: v2 task/workflow adapter module must exist",
+    "P3-A5: v2 task/workflow adapter module must exist"
+  ],
+  "exit_status": 1,
+  "log": "red.log",
+  "log_sha256": "a9a5037a2a464da9218517e785b7c892a6300c1c35a1e45d5a2e18cd820b312d"
+}

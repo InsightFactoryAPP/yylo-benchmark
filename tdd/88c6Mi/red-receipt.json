@@ -1,0 +1,20 @@
+{
+  "schema_version": "yylo_benchmark_tdd_receipt.v1",
+  "task_id": "88c6Mi",
+  "phase": "RED",
+  "base_sha": "e6d2fcbab3ba203868e5073dab93b4d8e2391426",
+  "test_only_tree_sha": "d8334a028b0c85b5fb9025660d5b3841c7af0d48",
+  "cwd": "juno-benchmark",
+  "argv": ["npm", "test", "--", "test/v2/phase1-contracts.test.ts"],
+  "named_tests": ["P1-A1", "P1-A2", "P1-A3", "P1-A4"],
+  "expected_missing_behavior": "The parallel v2 serialized contract and bounded legacy projection module do not exist.",
+  "actual_failing_assertions": [
+    "P1-A1: v2 contract module must exist",
+    "P1-A2: v2 contract module must exist",
+    "P1-A3: v2 contract module must exist",
+    "P1-A4: v2 contract module must exist"
+  ],
+  "exit_status": 1,
+  "log": "red.log",
+  "log_sha256": "c279bee60df51d63a85336a3c015ad0c09ecf61c199a50bfc6c9c8c195b90904"
+}

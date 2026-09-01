@@ -1,0 +1,14 @@
+{
+  "schema_version": "yylo_benchmark_tdd_receipt.v1",
+  "task_id": "Gwu1KD",
+  "phase": "GREEN",
+  "base_sha": "3d8ede9d111ff798145ca01af35527bbe6f3ac65",
+  "implementation_tree_sha": "847f7658767f4e3d7749904337ef2be4fb90f598",
+  "cwd": "juno-benchmark",
+  "argv": ["npm", "test", "--", "test/v2/terminal-successor.test.ts"],
+  "named_tests": ["Gwu1KD-A1", "Gwu1KD-A2", "Gwu1KD-A3", "Gwu1KD-A4", "Gwu1KD-A5"],
+  "passing_assertions": ["Gwu1KD-A1", "Gwu1KD-A2", "Gwu1KD-A3", "Gwu1KD-A4", "Gwu1KD-A5"],
+  "exit_status": 0,
+  "log": "green.log",
+  "log_sha256": "39e9a3ef4c77f3e18a4e26142f28e36c94150e00cfb5575d6eb82ca68a3e7948"
+}

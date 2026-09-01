@@ -1,0 +1,14 @@
+{
+  "schema_version": "yylo_benchmark_tdd_receipt.v1",
+  "task_id": "fSC4KN",
+  "phase": "GREEN",
+  "base_sha": "7f66fcdbbb2fa041151c8cb65f9d18e864d88738",
+  "implementation_tree_sha": "248febd3cb4d3863683620e0bac1fd2ec0516e82",
+  "cwd": "juno-benchmark",
+  "argv": ["npm", "test", "--", "test/v2/phase2-workspace-harness.test.ts"],
+  "named_tests": ["P2-A1", "P2-A2", "P2-A3", "P2-A4", "P2-A5"],
+  "passing_assertions": ["P2-A1", "P2-A2", "P2-A3", "P2-A4", "P2-A5"],
+  "exit_status": 0,
+  "log": "green.log",
+  "log_sha256": "fbb4fac508e32cf3be922ef60fac35323ffce9ac11a162239f016d57b3981f1b"
+}

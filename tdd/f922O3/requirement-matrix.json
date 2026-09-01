@@ -1,0 +1,14 @@
+{
+  "schema_version": "yylo_benchmark_tdd_requirement_matrix.v1",
+  "task_id": "f922O3",
+  "phase": 5,
+  "command": ["npm", "test", "--", "test/v2/phase5-cli.test.ts"],
+  "cwd": "juno-benchmark",
+  "assertions": [
+    {"id":"P5-A1","requirement":"Public help exposes the v2 lifecycle and no spend/provider/boundary/policy-sidecar/overlay controls."},
+    {"id":"P5-A2","requirement":"Task and arbitrary workflow CLI plans/runs use isolated v2 evidence, yylo_version, and cost-only economics."},
+    {"id":"P5-A3","requirement":"Recovery reuses terminals and regrade/rejudge append evaluator generations without candidate redispatch."},
+    {"id":"P5-A4","requirement":"Doctor/report cover provenance, generations, invalidity, separate costs, and comparison classification."},
+    {"id":"P5-A5","requirement":"Standalone/delegated parity and packed no-dispatch acceptance have no restrictive v1 writable imports."}
+  ]
+}

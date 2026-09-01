@@ -1,0 +1,14 @@
+
+> @yylo/benchmark@0.1.0-rc.8 test
+> vitest run test/v2/terminal-successor.test.ts
+
+
+ RUN  v1.6.1 /Users/mahdiyar/Code/CA_JUNOAI/playground/juno-mono-002-worktrees/Gwu1KD/juno-benchmark
+
+ ✓ test/v2/terminal-successor.test.ts  (5 tests) 946ms
+
+ Test Files  1 passed (1)
+      Tests  5 passed (5)
+   Start at  22:25:32
+   Duration  1.17s (transform 92ms, setup 11ms, collect 104ms, tests 946ms, environment 0ms, prepare 41ms)
+

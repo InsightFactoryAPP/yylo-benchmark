@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { lstat, mkdir, readFile, readdir, realpath, rm, symlink, writeFile, chmod } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readdir, readlink, realpath, rm, symlink, writeFile, chmod } from 'node:fs/promises';
 import path from 'node:path';
 import { canonicalHash, sha256Hex } from '../contracts/canonical.js';
 
@@ -38,9 +38,22 @@ export interface BuildSnapshotOptions {
   readonly excludedPaths?: readonly string[];
 }
 
+export interface RepositoryResultManifest {
+  readonly schema_version: 'yylo_benchmark_repository_result.v2';
+  readonly head: string;
+  readonly head_identity: { readonly kind: 'symbolic'; readonly ref: string } | { readonly kind: 'detached' };
+  readonly tree: string;
+  readonly refs: readonly string[];
+  readonly index: readonly string[];
+  readonly status: readonly string[];
+  readonly entries: readonly SnapshotEntry[];
+  readonly manifest_hash: `sha256:${string}`;
+}
+
 export interface SnapshotDoctorOptions {
   readonly repository: string;
   readonly manifest: SnapshotManifest;
+  readonly resultManifest?: RepositoryResultManifest;
   readonly sourceRepository?: string;
   readonly prohibitedByteSequences?: readonly (string | Uint8Array)[];
   readonly canonicalControllerPaths?: readonly string[];
@@ -246,6 +259,44 @@ async function currentManifestEntries(repository: string): Promise<SnapshotEntry
   return entries.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
 }
 
+async function workingTreeEntries(repository: string): Promise<SnapshotEntry[]> {
+  const entries: SnapshotEntry[] = [];
+  const visit = async (directory: string, relativeRoot: string): Promise<void> => {
+    for (const item of await readdir(directory, { withFileTypes: true })) {
+      if (relativeRoot === '' && item.name === '.git') continue;
+      const relative = relativeRoot === '' ? item.name : `${relativeRoot}/${item.name}`;
+      const normalized = normalizedRelativePath(relative, 'result manifest path');
+      const absolute = path.join(directory, item.name);
+      if (item.isDirectory()) await visit(absolute, normalized);
+      else if (item.isFile()) {
+        const bytes = await readFile(absolute); const metadata = await lstat(absolute);
+        entries.push({ path: normalized, mode: (metadata.mode & 0o111) === 0 ? '100644' : '100755', type: 'file', size: bytes.length, sha256: `sha256:${sha256Hex(bytes)}` });
+      } else if (item.isSymbolicLink()) {
+        const target = await readlink(absolute); const bytes = Buffer.from(target); const resolved = path.resolve(path.dirname(absolute), target);
+        if (path.isAbsolute(target) || (resolved !== repository && !resolved.startsWith(`${repository}${path.sep}`))) throw new Error(`doctor: unsafe result symlink at ${normalized}`);
+        entries.push({ path: normalized, mode: '120000', type: 'symlink', size: bytes.length, sha256: `sha256:${sha256Hex(bytes)}` });
+      } else throw new Error(`doctor: unsupported result filesystem entry at ${normalized}`);
+    }
+  };
+  await visit(repository, '');
+  return entries.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+}
+
+/** Capture the exact candidate-produced Git and worktree result after execution. */
+export async function captureRepositoryResult(repositoryPath: string): Promise<RepositoryResultManifest> {
+  const repository = await realpath(repositoryPath);
+  const head = (await git(repository, ['rev-parse', '--verify', 'HEAD'])).toString('utf8').trim();
+  const symbolicHead = await git(repository, ['symbolic-ref', '--quiet', 'HEAD']).then((value) => value.toString('utf8').trim()).catch(() => '');
+  const head_identity: RepositoryResultManifest['head_identity'] = symbolicHead === '' ? { kind: 'detached' } : { kind: 'symbolic', ref: symbolicHead };
+  const tree = (await git(repository, ['rev-parse', '--verify', 'HEAD^{tree}'])).toString('utf8').trim();
+  const refs = (await git(repository, ['for-each-ref', '--format=%(refname)%00%(objectname)'])).toString('utf8').split('\n').filter(Boolean).sort();
+  const index = (await git(repository, ['ls-files', '--stage', '-z'])).toString('utf8').split('\0').filter(Boolean).sort();
+  const status = (await git(repository, ['status', '--porcelain=v1', '-z', '--untracked-files=all'])).toString('utf8').split('\0').filter(Boolean);
+  const entries = await workingTreeEntries(repository);
+  const core = { schema_version: 'yylo_benchmark_repository_result.v2' as const, head, head_identity, tree, refs, index, status, entries };
+  return Object.freeze({ ...core, manifest_hash: canonicalHash(core) });
+}
+
 const CREDENTIAL_PATTERNS = [
   /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/u,
   /\bAKIA[0-9A-Z]{16}\b/u,
@@ -254,7 +305,10 @@ const CREDENTIAL_PATTERNS = [
   /(?:api[_-]?key|access[_-]?token|client[_-]?secret|password)\s*[:=]\s*['"]?[A-Za-z0-9_\-/.+=]{12,}/iu,
 ];
 const ROUTING_ENV = /^(?:(?:YYLO_BENCHMARK_|JUNO_BENCHMARK_).*|JUNO_TASK_ROOT|JUNO_CONTROLLER_ROOT|JUNO_CANONICAL_CONTROLLER|(?:YYLO_LEDGER_|JUNO_KANBAN_)(?:ROOT|CONFIG|COMMAND)|GIT_(?:DIR|COMMON_DIR|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES))$/u;
-const CREDENTIAL_ENV = /(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY|CREDENTIAL|AUTHORIZATION|COOKIE)$/iu;
+const CREDENTIAL_ENV = /(?:(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|PRIVATE_KEY|CREDENTIAL|AUTHORIZATION|COOKIE)$|^AWS_(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN|SECURITY_TOKEN|PROFILE|DEFAULT_PROFILE|WEB_IDENTITY_TOKEN_FILE|SHARED_CREDENTIALS_FILE)$|^GOOGLE_APPLICATION_CREDENTIALS$|^AZURE_(?:CLIENT_ID|CLIENT_SECRET|CLIENT_CERTIFICATE_PATH|TENANT_ID|USERNAME|PASSWORD)$)/iu;
+
+/** One credential classification shared by candidate environment construction and doctor. */
+export function isCredentialEnvironmentName(name: string): boolean { return CREDENTIAL_ENV.test(name); }
 
 async function resolvedGitPath(repository: string, query: '--git-common-dir' | '--git-dir'): Promise<string> {
   const reported = (await git(repository, ['rev-parse', query])).toString('utf8').trim();
@@ -274,8 +328,10 @@ export async function doctorSnapshot(options: SnapshotDoctorOptions): Promise<Sn
   if (sourceGit !== undefined && (await realpath(path.join(gitPath, 'objects'))).startsWith(`${sourceGit}${path.sep}`)) throw new Error('doctor: snapshot object database reaches source Git directory');
 
   const refs = (await git(repository, ['for-each-ref', '--format=%(refname)'])).toString('utf8').trim().split('\n').filter(Boolean);
-  if (refs.length !== 1 || refs[0] !== `refs/heads/${SNAPSHOT_BRANCH}`) throw new Error(`doctor: unexpected refs: ${refs.join(', ') || '(none)'}`);
-  if ((await git(repository, ['rev-list', '--count', '--all'])).toString('utf8').trim() !== '1') throw new Error('doctor: repository must contain exactly one commit');
+  if (options.resultManifest === undefined) {
+    if (refs.length !== 1 || refs[0] !== `refs/heads/${SNAPSHOT_BRANCH}`) throw new Error(`doctor: unexpected refs: ${refs.join(', ') || '(none)'}`);
+    if ((await git(repository, ['rev-list', '--count', '--all'])).toString('utf8').trim() !== '1') throw new Error('doctor: repository must contain exactly one commit');
+  }
   if ((await git(repository, ['remote'])).toString('utf8').trim() !== '') throw new Error('doctor: remotes are forbidden');
   const forbiddenMetadata = ['objects/info/alternates', 'packed-refs', 'commondir', 'gitdir'];
   for (const relative of forbiddenMetadata) {
@@ -294,15 +350,22 @@ export async function doctorSnapshot(options: SnapshotDoctorOptions): Promise<Sn
   if (/\[(?:remote|include|includeIf)\b/iu.test(configText) || /(?:alternate|worktree|credential|http\..*extraheader)/iu.test(configText)) {
     throw new Error('doctor: unsafe Git configuration detected');
   }
-  const head = (await git(repository, ['rev-parse', 'HEAD'])).toString('utf8').trim();
-  if (head !== options.manifest.synthetic_commit) throw new Error('doctor: synthetic commit identity mismatch');
-  const tree = (await git(repository, ['rev-parse', 'HEAD^{tree}'])).toString('utf8').trim();
-  if (tree !== options.manifest.synthetic_tree) throw new Error('doctor: synthetic tree identity mismatch');
-  const entries = await currentManifestEntries(repository);
-  if (JSON.stringify(entries) !== JSON.stringify(options.manifest.entries)) throw new Error('doctor: committed manifest differs from the declared manifest');
-  const identityInput = { schema_version: SNAPSHOT_SCHEMA_VERSION, source_commit: options.manifest.source_commit, source_tree: options.manifest.source_tree, excluded_paths: options.manifest.excluded_paths, entries } as const;
-  if (manifestIdentity(identityInput) !== options.manifest.content_identity) throw new Error('doctor: deterministic content identity mismatch');
-  if ((await git(repository, ['status', '--porcelain=v1', '--untracked-files=all'])).length !== 0) throw new Error('doctor: candidate worktree differs from synthetic baseline');
+  const currentHead = (await git(repository, ['rev-parse', 'HEAD'])).toString('utf8').trim();
+  if (options.resultManifest === undefined) {
+    if (currentHead !== options.manifest.synthetic_commit) throw new Error('doctor: synthetic commit identity mismatch');
+    const tree = (await git(repository, ['rev-parse', 'HEAD^{tree}'])).toString('utf8').trim();
+    if (tree !== options.manifest.synthetic_tree) throw new Error('doctor: synthetic tree identity mismatch');
+    const entries = await currentManifestEntries(repository);
+    if (canonicalHash(entries) !== canonicalHash(options.manifest.entries)) throw new Error('doctor: committed manifest differs from the declared manifest');
+    const identityInput = { schema_version: SNAPSHOT_SCHEMA_VERSION, source_commit: options.manifest.source_commit, source_tree: options.manifest.source_tree, excluded_paths: options.manifest.excluded_paths, entries } as const;
+    if (manifestIdentity(identityInput) !== options.manifest.content_identity) throw new Error('doctor: deterministic content identity mismatch');
+    if ((await git(repository, ['status', '--porcelain=v1', '--untracked-files=all'])).length !== 0) throw new Error('doctor: candidate worktree differs from synthetic baseline');
+  } else {
+    const { manifest_hash: claimed, ...core } = options.resultManifest;
+    if (claimed !== canonicalHash(core)) throw new Error('doctor: post-execution repository manifest integrity failed');
+    const current = await captureRepositoryResult(repository);
+    if (canonicalHash(current) !== canonicalHash(options.resultManifest)) throw new Error('doctor: post-execution repository/workspace drift detected');
+  }
 
   const automaticSourceReferences = options.sourceRepository === undefined
     ? []
@@ -321,10 +384,10 @@ export async function doctorSnapshot(options: SnapshotDoctorOptions): Promise<Sn
   for (const [name, value] of Object.entries(options.candidateEnvironment ?? {})) {
     if (value === undefined) continue;
     if (ROUTING_ENV.test(name)) throw new Error(`doctor: canonical routing environment is present: ${name}`);
-    if (CREDENTIAL_ENV.test(name)) throw new Error(`doctor: credential environment is present: ${name}`);
+    if (isCredentialEnvironmentName(name)) throw new Error(`doctor: credential environment is present: ${name}`);
     if ((options.canonicalControllerPaths ?? []).some((controller) => value.includes(controller))) throw new Error(`doctor: canonical controller reference is present in environment: ${name}`);
   }
   const fsck = (await git(repository, ['fsck', '--full', '--no-reflogs', '--strict', '--unreachable'])).toString('utf8');
   if (/^(?:unreachable|dangling) /mu.test(fsck)) throw new Error('doctor: unreachable or extra Git objects detected');
-  return { ok: true, content_identity: options.manifest.content_identity, synthetic_commit: head, isolation: options.manifest.isolation };
+  return { ok: true, content_identity: options.manifest.content_identity, synthetic_commit: currentHead, isolation: options.manifest.isolation };
 }

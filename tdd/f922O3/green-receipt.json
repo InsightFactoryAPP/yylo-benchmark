@@ -1,0 +1,14 @@
+{
+  "schema_version": "yylo_benchmark_tdd_receipt.v1",
+  "task_id": "f922O3",
+  "phase": "GREEN",
+  "base_sha": "81f62614d61e8b6d1749590c4e8d61f4a2ace8fa",
+  "implementation_tree_sha": "27fc8913d4dde247400edd74b0d1c1524900de26",
+  "cwd": "juno-benchmark",
+  "argv": ["npm", "test", "--", "test/v2/phase5-cli.test.ts"],
+  "named_tests": ["P5-A1", "P5-A2", "P5-A3", "P5-A4", "P5-A5"],
+  "passing_assertions": ["P5-A1", "P5-A2", "P5-A3", "P5-A4", "P5-A5"],
+  "exit_status": 0,
+  "log": "green.log",
+  "log_sha256": "ad7077624753b28785cb02dc7498f3c6185c61520ba92777cbe4853a561b09f9"
+}
