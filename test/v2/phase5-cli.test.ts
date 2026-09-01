@@ -116,6 +116,17 @@ describe('f922O3 phase 5 v2 CLI cutover and restrictive v1 retirement', () => {
       await expect(runV2Experiment({ cwd: root, plan: candidate, dryRun: true })).rejects.toThrow(/attempt plan|attempt evaluator|candidate manifest/iu);
       await expect(runV2Experiment({ cwd: root, plan: candidate })).rejects.toThrow(/attempt plan|attempt evaluator|candidate manifest/iu);
     }
+    const { plan_hash: _outerHash, ...outerCore } = plan;
+    const mismatched = { ...outerCore, case_kind: 'workflow', plan_hash: canonicalHash({ ...outerCore, case_kind: 'workflow' }) } as never;
+    await expect(runV2Experiment({ cwd: root, plan: mismatched, dryRun: true })).rejects.toThrow(/attempt plan identity/iu);
+  });
+
+  it('rejects source commit/tree drift before a dry run or candidate dispatch', async () => {
+    const root = await fixture(); const plan = await capture(root, ['plan', '--task', 'task.md', '--models', 'vendor/model', '--output', 'plan.json']);
+    await writeFile(path.join(root, 'source-drift.txt'), 'drift'); await execFileAsync('git', ['add', 'source-drift.txt'], { cwd: root });
+    await execFileAsync('git', ['commit', '--quiet', '-m', 'source drift'], { cwd: root });
+    await expect(runV2Experiment({ cwd: root, plan: plan as never, dryRun: true })).rejects.toThrow(/actual source commit\/tree/iu);
+    await expect(runV2Experiment({ cwd: root, plan: plan as never })).rejects.toThrow(/actual source commit\/tree/iu);
   });
 
   it('keeps generated-default candidate roots and environment outside source and private control topology', async () => {
@@ -138,10 +149,13 @@ describe('f922O3 phase 5 v2 CLI cutover and restrictive v1 retirement', () => {
     try {
       process.env.PROJECT_ROOT = root; process.env.CONTROLLER_ROOT = controller; process.env.REGISTRY_PATH = registry; process.env.EXPECTED_SOURCE = root;
       process.env.PATH = `${path.join(root, 'node_modules', '.bin')}${path.delimiter}${previous.PATH ?? ''}`;
-      const plan = await capture(root, ['plan', '--task', 'task.md', '--models', 'vendor/one,vendor/two', '--output', 'plan.json']);
-      const run = await capture(root, ['run', '--plan', 'plan.json']);
-      const first = JSON.parse(run.attempts[0].evidence.candidate.output) as Record<string, any>;
-      const second = JSON.parse(run.attempts[1].evidence.candidate.output) as Record<string, any>;
+      const firstPlan = await capture(root, ['plan', '--task', 'task.md', '--models', 'vendor/one', '--output', 'plan-one.json']);
+      const firstRun = await capture(root, ['run', '--plan', 'plan-one.json']);
+      const secondPlan = await capture(root, ['plan', '--task', 'task.md', '--models', 'vendor/two', '--output', 'plan-two.json']);
+      const secondRun = await capture(root, ['run', '--plan', 'plan-two.json']);
+      expect(firstPlan.experiment_id).not.toBe(secondPlan.experiment_id);
+      const first = JSON.parse(firstRun.attempts[0].evidence.candidate.output) as Record<string, any>;
+      const second = JSON.parse(secondRun.attempts[0].evidence.candidate.output) as Record<string, any>;
       expect(first).toMatchObject({ pwd: null, oldpwd: null, initCwd: null, projectRoot: null, controllerRoot: null, registryPath: null,
         pathLeaksSource: false, sourceRoute: false, registryRoute: false, siblingReadable: 0 });
       expect(path.resolve(first.cwd)).not.toContain(path.resolve(root));

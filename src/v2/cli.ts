@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
-import { chmod, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { accessSync, constants as fsConstants } from 'node:fs';
+import { chmod, mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -89,6 +90,29 @@ interface PersistedAttempt {
 function object(value: unknown, label: string): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error(`${label} must be an object`);
   return value as Record<string, unknown>;
+}
+function exactKeys(value: Record<string, unknown>, allowed: readonly string[], label: string): void {
+  const extras = Object.keys(value).filter((key) => !allowed.includes(key));
+  if (extras.length > 0) throw new Error(`${label} contains unknown fields: ${extras.join(', ')}`);
+}
+function validateEvaluatorProfile(value: unknown, label: string): void {
+  const profile = object(value, label); const kind = profile['kind'];
+  const base = ['profileId', 'profileVersion', 'generation', 'kind', 'required'];
+  if (typeof profile['profileId'] !== 'string' || !profile['profileId'].trim() || typeof profile['profileVersion'] !== 'string'
+      || !profile['profileVersion'].trim() || !Number.isSafeInteger(profile['generation']) || (profile['generation'] as number) < 1
+      || typeof profile['required'] !== 'boolean') throw new Error(`${label} identity is invalid`);
+  if (kind === 'deterministic') {
+    exactKeys(profile, [...base, 'correctnessGate'], label);
+    if (profile['correctnessGate'] !== undefined && typeof profile['correctnessGate'] !== 'boolean') throw new Error(`${label}.correctnessGate is invalid`);
+  } else if (kind === 'imported' || kind === 'human') exactKeys(profile, base, label);
+  else if (kind === 'llm_judge') {
+    exactKeys(profile, [...base, 'harnessProfile', 'requestedModel', 'systemPrompt', 'promptTemplate', 'rubric', 'evidenceFields', 'maxEvidenceBytes',
+      'identityVisibility', 'mode', 'timeoutMs', 'repetitions', 'aggregation', 'parser', 'settings', 'reference'], label);
+    for (const key of ['harnessProfile', 'requestedModel']) if (typeof profile[key] !== 'string' || !(profile[key] as string).trim()) throw new Error(`${label}.${key} is invalid`);
+    for (const key of ['systemPrompt', 'promptTemplate', 'rubric', 'parser', 'settings']) object(profile[key], `${label}.${key}`);
+    if (!Array.isArray(profile['evidenceFields']) || !Number.isSafeInteger(profile['maxEvidenceBytes']) || !Number.isSafeInteger(profile['timeoutMs'])
+        || !Number.isSafeInteger(profile['repetitions'])) throw new Error(`${label} judge fields are invalid`);
+  } else throw new Error(`${label}.kind is invalid`);
 }
 function string(value: unknown, label: string): string { if (typeof value !== 'string' || !value.trim()) throw new Error(`${label} must be non-empty`); return value; }
 function integer(value: unknown, label: string, minimum = 1): number { if (!Number.isSafeInteger(value) || (value as number) < minimum) throw new Error(`${label} must be an integer >= ${minimum}`); return value as number; }
@@ -218,15 +242,24 @@ export async function createV2ExperimentPlan(input: {
 
 export function parseV2ExperimentPlan(value: unknown): V2ExperimentPlan {
   const root = object(value, 'v2 experiment plan');
+  exactKeys(root, ['schema_version', 'yylo_version', 'benchmark_version', 'experiment_id', 'plan_hash', 'config_hash', 'source_repository',
+    'source_commit', 'source_tree', 'comparison_kind', 'case_kind', 'case_path', 'evaluator_profiles', 'evaluator_catalog', 'attempts'], 'v2 experiment plan');
   if (root['schema_version'] !== V2_EXPERIMENT_PLAN_SCHEMA_VERSION || typeof root['yylo_version'] !== 'string' || typeof root['benchmark_version'] !== 'string'
       || typeof root['experiment_id'] !== 'string' || typeof root['plan_hash'] !== 'string' || typeof root['config_hash'] !== 'string'
       || typeof root['source_repository'] !== 'string' || typeof root['source_commit'] !== 'string' || typeof root['source_tree'] !== 'string'
       || (root['comparison_kind'] !== 'model_only' && root['comparison_kind'] !== 'agent_system') || (root['case_kind'] !== 'task' && root['case_kind'] !== 'workflow')
       || typeof root['case_path'] !== 'string' || !Array.isArray(root['attempts']) || !Array.isArray(root['evaluator_profiles'])
       || !Array.isArray(root['evaluator_catalog'])) throw new Error('v2 experiment plan shape is invalid');
+  if (!/^sha256:[0-9a-f]{64}$/u.test(root['experiment_id']) || !/^sha256:[0-9a-f]{64}$/u.test(root['plan_hash'])
+      || !/^sha256:[0-9a-f]{64}$/u.test(root['config_hash']) || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(root['source_commit'])
+      || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(root['source_tree'])) throw new Error('v2 experiment plan identities are invalid');
+  root['evaluator_profiles'].forEach((item, index) => validateEvaluatorProfile(item, `evaluator_profiles[${index}]`));
+  root['evaluator_catalog'].forEach((item, index) => validateEvaluatorProfile(item, `evaluator_catalog[${index}]`));
   const { plan_hash: claimed, ...core } = root;
   if (claimed !== canonicalHash(core)) throw new Error('v2 experiment plan hash verification failed');
-  const attempts = root['attempts'].map((item) => AttemptPlanV2Schema.parse(item));
+  let attempts: AttemptPlanV2[];
+  try { attempts = root['attempts'].map((item) => AttemptPlanV2Schema.parse(item)); }
+  catch (error) { throw new Error(`attempt plan schema verification failed: ${error instanceof Error ? error.message : String(error)}`); }
   const plan = Object.freeze({ ...root, attempts } as unknown as V2ExperimentPlan);
   assertPlannedAttemptCardinality(plan, 'plan');
   return plan;
@@ -276,11 +309,21 @@ class CommandHarnessAdapter implements HarnessAdapter {
   }
 }
 
+function resolvedExecutable(executable: string): string {
+  if (path.isAbsolute(executable) || executable.includes(path.sep)) return executable;
+  for (const directory of (process.env.PATH ?? '').split(path.delimiter)) {
+    if (!directory) continue;
+    const candidate = path.join(directory, executable);
+    try { accessSync(candidate, fsConstants.X_OK); return candidate; } catch { /* continue */ }
+  }
+  return executable;
+}
+
 function harnessAdapter(id: string, config: HarnessConfig): HarnessAdapter {
-  if (config.kind === 'command') return new CommandHarnessAdapter(id, config);
-  if (config.kind === 'yylo_pi') return new YyloPiHarnessAdapter({ profileId: id, prompt: config.prompt, ...(config.executable === undefined ? {} : { executable: config.executable }),
+  if (config.kind === 'command') return new CommandHarnessAdapter(id, { ...config, executable: resolvedExecutable(config.executable) });
+  if (config.kind === 'yylo_pi') return new YyloPiHarnessAdapter({ profileId: id, prompt: config.prompt, executable: resolvedExecutable(config.executable ?? 'yy'),
     ...(config.timeout_ms === undefined ? {} : { timeoutMs: config.timeout_ms }), ...(config.arguments === undefined ? {} : { extraArgs: config.arguments }) });
-  return new WorkflowRunnerHarnessAdapter({ profileId: id, executable: config.executable, ...(config.timeout_ms === undefined ? {} : { timeoutMs: config.timeout_ms }),
+  return new WorkflowRunnerHarnessAdapter({ profileId: id, executable: resolvedExecutable(config.executable), ...(config.timeout_ms === undefined ? {} : { timeoutMs: config.timeout_ms }),
     ...(config.arguments === undefined ? {} : { extraArgs: config.arguments }) });
 }
 
@@ -330,9 +373,14 @@ function assertPlanConfigBinding(plan: V2ExperimentPlan, config: V2Config): void
   }
 }
 
-function roots(cwd: string, config: V2Config): { attempts: string; registry: string; intents: string; evaluations: string; isolatedAttempts: true; enforcedBoundary: boolean } {
+function roots(cwd: string, config: V2Config): { attempts: string; registry: string; intents: string; evaluations: string; isolatedAttempts: boolean; enforcedBoundary: boolean } {
   const enforcedBoundary = config.workspace.attempts_root === '.yylo-benchmark/attempts'
     && config.workspace.registry_root === '.yylo-benchmark/registry';
+  if (!enforcedBoundary) {
+    const registry = path.resolve(cwd, config.workspace.registry_root);
+    return { attempts: path.resolve(cwd, config.workspace.attempts_root), registry, intents: path.join(registry, 'v2', 'intents'),
+      evaluations: path.join(registry, 'v2', 'evaluations'), isolatedAttempts: false, enforcedBoundary: false };
+  }
   const namespace = canonicalHash({ source_repository: path.resolve(cwd), attempts_root: config.workspace.attempts_root,
     registry_root: config.workspace.registry_root }).slice(7);
   const attempts = path.join(os.tmpdir(), `yylo-benchmark-attempt-${namespace}`);
@@ -345,19 +393,36 @@ function attemptWorkspaceRoot(root: ReturnType<typeof roots>, attempt: AttemptPl
     ? `${root.attempts}-${canonicalHash({ attempt_id: attempt.attempt_id, plan_hash: attempt.plan_hash }).slice(7)}`
     : root.attempts;
 }
-function ambientProtectedPaths(environment: NodeJS.ProcessEnv): string[] {
-  return [...new Set(Object.entries(environment).flatMap(([name, value]) => value !== undefined && name.toUpperCase() !== 'PATH'
-    && /(?:ROOT|PWD|DIR|PATH)$/iu.test(name) && path.isAbsolute(value) ? [path.resolve(value)] : []))];
+async function retainedAttemptRoots(root: ReturnType<typeof roots>): Promise<string[]> {
+  if (!root.enforcedBoundary) return [];
+  const parent = path.dirname(root.attempts); const prefix = `${path.basename(root.attempts)}-`;
+  try {
+    const entries = await readdir(parent, { withFileTypes: true });
+    return entries.filter((entry) => entry.name.startsWith(prefix) && (entry.isDirectory() || entry.isSymbolicLink()))
+      .map((entry) => path.join(parent, entry.name));
+  } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
 }
-function attemptBoundaryPaths(cwd: string, root: ReturnType<typeof roots>, plan: V2ExperimentPlan, attempt: AttemptPlanV2): {
+async function attemptBoundaryPaths(cwd: string, root: ReturnType<typeof roots>, plan: V2ExperimentPlan, attempt: AttemptPlanV2): Promise<{
   protectedPaths: string[]; deniedPaths: string[];
-} {
+}> {
   const ownRoot = path.resolve(attemptWorkspaceRoot(root, attempt));
-  const candidates = [root.registry, ...ambientProtectedPaths(process.env),
+  const explicitControllerRoots = ['CONTROLLER_ROOT', 'PROJECT_ROOT', 'JUNO_CONTROLLER_ROOT', 'JUNO_PROJECT_ROOT']
+    .flatMap((name) => { const value = process.env[name]; return value !== undefined && path.isAbsolute(value) ? [value] : []; });
+  const candidates = [root.registry, ...explicitControllerRoots, ...(await retainedAttemptRoots(root)),
     ...plan.attempts.filter((item) => item.attempt_id !== attempt.attempt_id).map((item) => attemptWorkspaceRoot(root, item))];
   const protectedPaths = [...new Set(candidates.map((item) => path.resolve(item)))]
     .filter((item) => item !== ownRoot && !ownRoot.startsWith(`${item}${path.sep}`));
   return { protectedPaths, deniedPaths: root.enforcedBoundary ? [path.resolve(cwd), ...protectedPaths] : [] };
+}
+
+async function verifySourceIdentity(cwd: string, plan: V2ExperimentPlan): Promise<void> {
+  const commit = await git(cwd, ['rev-parse', 'HEAD']);
+  const tree = await git(cwd, ['rev-parse', 'HEAD^{tree}']);
+  const manifest = canonicalHash({ tree, exclusions: ['.juno_task', 'hidden-graders', 'reference-solutions'] });
+  if (commit !== plan.source_commit || tree !== plan.source_tree) throw new Error('actual source commit/tree differs from the immutable experiment plan');
+  if (plan.attempts.some((attempt) => attempt.case.source.candidate_manifest_hash !== manifest)) {
+    throw new Error('actual source candidate manifest differs from the immutable experiment plan');
+  }
 }
 function statePath(registry: string, plan: V2ExperimentPlan, attempt: AttemptPlanV2): string {
   return path.join(registry, 'v2', 'runs', plan.experiment_id.slice(7), `${attempt.attempt_id.slice(7)}.json`);
@@ -378,7 +443,8 @@ function verifyAttemptPlan(plan: AttemptPlanV2, experiment: V2ExperimentPlan): v
     harness_profile: plan.harness_profile, requested_model: plan.requested_model });
   if (plan.attempt_id !== expectedAttemptId || plan.experiment_id !== experiment.experiment_id
       || plan.case.source.repository !== experiment.source_repository || plan.case.source.commit !== experiment.source_commit
-      || plan.case.source.tree !== experiment.source_tree) throw new Error('attempt plan identity failed');
+      || plan.case.source.tree !== experiment.source_tree || plan.case.kind !== experiment.case_kind
+      || plan.comparison_kind !== experiment.comparison_kind) throw new Error('attempt plan identity failed');
   for (const evaluator of plan.evaluators) {
     const profile = experiment.evaluator_catalog.find((item) => item.profileId === evaluator.profile_id && item.generation === evaluator.generation);
     if (profile === undefined || profile.profileVersion !== evaluator.profile_version || profile.kind !== evaluator.kind
@@ -423,7 +489,7 @@ async function loadState(file: string, plan: V2ExperimentPlan, attempt: AttemptP
 }
 async function verifyRetainedArtifacts(input: { cwd: string; root: ReturnType<typeof roots>; plan: V2ExperimentPlan; attempt: AttemptPlanV2;
   state: PersistedAttempt; harness: HarnessConfig; protectedPaths?: readonly string[]; deniedPaths?: readonly string[] }): Promise<void> {
-  const boundary = attemptBoundaryPaths(input.cwd, input.root, input.plan, input.attempt);
+  const boundary = await attemptBoundaryPaths(input.cwd, input.root, input.plan, input.attempt);
   const workspace = await loadAttemptWorkspace({ attemptId: input.attempt.attempt_id as `sha256:${string}`, attemptsRoot: attemptWorkspaceRoot(input.root, input.attempt),
     sourceRepository: input.cwd, privateRegistryRoot: input.root.registry, controllerPaths: input.protectedPaths ?? boundary.protectedPaths,
     deniedPaths: input.deniedPaths ?? boundary.deniedPaths });
@@ -444,6 +510,8 @@ async function verifyRetainedArtifacts(input: { cwd: string; root: ReturnType<ty
 async function exists(destination: string): Promise<boolean> { try { await stat(destination); return true; } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false; throw error; } }
 
 export async function runV2Experiment(input: { readonly cwd: string; readonly configPath?: string; readonly plan: V2ExperimentPlan; readonly recovery?: boolean; readonly dryRun?: boolean }): Promise<Record<string, unknown>> {
+  parseV2ExperimentPlan(input.plan);
+  await verifySourceIdentity(input.cwd, input.plan);
   const loaded = await loadV2Config(input.cwd, input.configPath); if (loaded.hash !== input.plan.config_hash) throw new Error('v2 config drifted from the immutable plan');
   assertPlanConfigBinding(input.plan, loaded.config);
   for (const attempt of input.plan.attempts) verifyAttemptPlan(attempt, input.plan);
@@ -453,7 +521,7 @@ export async function runV2Experiment(input: { readonly cwd: string; readonly co
     dispatch_count: 0, attempt_count: input.plan.attempts.length, comparison_kind: input.plan.comparison_kind };
   const root = roots(input.cwd, loaded.config); const attempts: Array<Record<string, unknown>> = []; let dispatched = 0; let reused = 0; let ambiguous = 0;
   for (const attempt of input.plan.attempts) {
-    const { protectedPaths, deniedPaths } = attemptBoundaryPaths(input.cwd, root, input.plan, attempt);
+    const { protectedPaths, deniedPaths } = await attemptBoundaryPaths(input.cwd, root, input.plan, attempt);
     const file = statePath(root.registry, input.plan, attempt); const retained = await loadState(file, input.plan, attempt);
     if (retained !== null) {
       const retainedHarness = loaded.config.harnesses[attempt.harness_profile]; if (retainedHarness === undefined) throw new Error(`candidate harness unavailable: ${attempt.harness_profile}`);
@@ -493,6 +561,8 @@ export async function runV2Experiment(input: { readonly cwd: string; readonly co
 }
 
 export async function reevaluateV2Experiment(input: { readonly cwd: string; readonly configPath?: string; readonly plan: V2ExperimentPlan; readonly profileId: string; readonly kind: 'regrade' | 'rejudge' }): Promise<Record<string, unknown>> {
+  parseV2ExperimentPlan(input.plan);
+  await verifySourceIdentity(input.cwd, input.plan);
   const loaded = await loadV2Config(input.cwd, input.configPath); if (loaded.hash !== input.plan.config_hash) throw new Error('v2 config drifted from the immutable plan');
   assertPlanConfigBinding(input.plan, loaded.config);
   const config = loaded.config.evaluators[input.profileId]; if (config === undefined || (input.kind === 'regrade') !== (config.kind === 'deterministic')) throw new Error(`${input.kind} profile kind is invalid: ${input.profileId}`);
@@ -536,7 +606,8 @@ function sumCosts(values: readonly { completeness: string; usd: number | null }[
 }
 
 export async function doctorV2Experiment(input: { readonly cwd: string; readonly configPath?: string; readonly plan: V2ExperimentPlan }): Promise<Record<string, unknown>> {
-  assertPlannedAttemptCardinality(input.plan, 'doctor');
+  parseV2ExperimentPlan(input.plan);
+  await verifySourceIdentity(input.cwd, input.plan);
   const loaded = await loadV2Config(input.cwd, input.configPath); if (loaded.hash !== input.plan.config_hash) throw new Error('v2 config drifted from the immutable plan');
   assertPlanConfigBinding(input.plan, loaded.config);
   const root = roots(input.cwd, loaded.config); let retained = 0; let ambiguous = 0; const evidenceIds: string[] = []; const evaluationIds: string[] = [];
@@ -557,7 +628,8 @@ export async function doctorV2Experiment(input: { readonly cwd: string; readonly
 }
 
 export async function reportV2Experiment(input: { readonly cwd: string; readonly configPath?: string; readonly plan: V2ExperimentPlan }): Promise<Record<string, unknown>> {
-  assertPlannedAttemptCardinality(input.plan, 'report');
+  parseV2ExperimentPlan(input.plan);
+  await verifySourceIdentity(input.cwd, input.plan);
   const loaded = await loadV2Config(input.cwd, input.configPath); if (loaded.hash !== input.plan.config_hash) throw new Error('v2 config drifted from the immutable plan');
   assertPlanConfigBinding(input.plan, loaded.config);
   const root = roots(input.cwd, loaded.config); const states: PersistedAttempt[] = [];

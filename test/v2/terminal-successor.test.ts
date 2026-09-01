@@ -69,6 +69,18 @@ describe('fT49yV terminal successor contracts', () => {
     }
   });
 
+  it('qWJc7U-A1 canonicalizes arbitrary path-bearing environment values while preserving the active Node toolchain', async () => {
+    const root = await cliFixture(); const commit = (await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim();
+    const external = await mkdtemp(path.join(os.tmpdir(), 'yylo-toolchain-boundary-')); const nvm = path.join(external, 'nvm');
+    const bin = path.join(nvm, 'versions', 'node', 'v22', 'bin');
+    const workspace = await createAttemptWorkspace({ attemptId: hash('b'), sourceRepository: root, baseCommit: commit,
+      attemptsRoot: path.join(external, 'attempts'), privateRegistryRoot: path.join(external, 'registry'),
+      inheritedEnvironment: { NVM_DIR: nvm, PATH: bin, UNRELATED_ALIAS: path.join(root, 'intermediate', '..') } });
+    expect(workspace.candidateEnvironment).toMatchObject({ NVM_DIR: nvm, PATH: bin });
+    expect(workspace.candidateEnvironment.UNRELATED_ALIAS).toBeUndefined();
+    await expect(doctorAttemptWorkspace(workspace, { sourceRepository: root })).resolves.toMatchObject({ ok: true });
+  });
+
   it('8lyWtv-002 rejects zero attempts and duplicate attempt identities in plans, doctor, and report', async () => {
     const root = await cliFixture(); const plan = await capture(root, ['plan', '--task', 'task.md', '--models', 'vendor/a', '--output', 'plan.json']) as unknown as V2ExperimentPlan;
     const forged = (attempts: V2ExperimentPlan['attempts']): V2ExperimentPlan => {
@@ -113,6 +125,13 @@ describe('fT49yV terminal successor contracts', () => {
     for (const args of [['run', '--plan', 'plan.json'], ['recover', '--plan', 'plan.json'], ['doctor', '--plan', 'plan.json'], ['report', '--plan', 'plan.json'], ['regrade', '--plan', 'plan.json', '--profile', 'gate']]) {
       await expect(capture(root, args)).rejects.toThrow(/post-execution.*drift|repository\/workspace drift/iu);
     }
+  });
+
+  it('qWJc7U-A2 retains explicitly configured trusted workspace roots', async () => {
+    const root = await cliFixture(); const plan = await capture(root, ['plan', '--task', 'task.md', '--models', 'vendor/a', '--output', 'plan.json']);
+    const runtime = await resolveV2RuntimePaths({ cwd: root, plan: plan as never, attemptIndex: 0 });
+    expect(runtime.attemptsRoot).toBe(path.join(root, '.benchmark', 'attempts'));
+    expect(runtime.registry).toBe(path.join(root, '.benchmark', 'registry'));
   });
 
   it('fT49yV-A2 makes doctor and report reject every incomplete planned state/workspace/intent/terminal/evidence chain', async () => {

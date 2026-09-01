@@ -1,7 +1,7 @@
 import { chmod, lstat, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { canonicalHash, canonicalJson } from '../contracts/canonical.js';
-import { buildSnapshot, captureRepositoryResult, doctorSnapshot, isCredentialEnvironmentName, type RepositoryResultManifest, type SnapshotManifest } from '../snapshot/index.js';
+import { buildSnapshot, captureRepositoryResult, doctorSnapshot, environmentValueDisclosesProtectedPath, isCredentialEnvironmentName, type RepositoryResultManifest, type SnapshotManifest } from '../snapshot/index.js';
 
 export const ATTEMPT_WORKSPACE_SCHEMA_VERSION = 'yylo_benchmark_attempt_workspace.v2' as const;
 
@@ -88,7 +88,7 @@ function candidateEnvironment(options: {
 }): Readonly<NodeJS.ProcessEnv> {
   const environment: NodeJS.ProcessEnv = {};
   const protectedPaths = [...new Set(options.protectedPaths.map((item) => path.resolve(item)))];
-  const disclosed = (value: string) => protectedPaths.some((item) => value.includes(item));
+  const disclosed = (value: string) => environmentValueDisclosesProtectedPath(value, protectedPaths);
   for (const [name, value] of Object.entries(options.inherited)) {
     if (value === undefined || ROUTING.test(name) || isCredentialEnvironmentName(name)) continue;
     if (name.toUpperCase() === 'PATH') {

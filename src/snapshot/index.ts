@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { realpathSync } from 'node:fs';
 import { lstat, mkdir, readFile, readdir, readlink, realpath, rm, symlink, writeFile, chmod } from 'node:fs/promises';
 import path from 'node:path';
 import { canonicalHash, sha256Hex } from '../contracts/canonical.js';
@@ -73,6 +74,26 @@ const FIXED_GIT_ENV = Object.freeze({
   LC_ALL: 'C',
   LANG: 'C',
 });
+
+function canonicalFilesystemPath(value: string): string {
+  const resolved = path.resolve(value);
+  try { return realpathSync(resolved); } catch { return resolved; }
+}
+
+/** Detect protected filesystem references even when an arbitrary environment value uses lexical aliases. */
+export function environmentValueDisclosesProtectedPath(value: string, protectedPaths: readonly string[], allowedPaths: readonly string[] = []): boolean {
+  const protectedCanonical = [...new Set(protectedPaths.map(canonicalFilesystemPath))];
+  const allowedCanonical = [...new Set(allowedPaths.map(canonicalFilesystemPath))];
+  const candidates = new Set<string>();
+  if (path.isAbsolute(value)) candidates.add(value);
+  for (const item of value.split(path.delimiter)) if (path.isAbsolute(item)) candidates.add(item);
+  for (const match of value.matchAll(/\/[^\0\r\n\s"'`,;:]+/gu)) if (match[0].length > 1) candidates.add(match[0]);
+  return [...candidates].some((candidate) => {
+    const canonical = canonicalFilesystemPath(candidate);
+    if (allowedCanonical.some((allowedPath) => canonical === allowedPath || canonical.startsWith(`${allowedPath}${path.sep}`))) return false;
+    return protectedCanonical.some((protectedPath) => canonical === protectedPath || canonical.startsWith(`${protectedPath}${path.sep}`));
+  });
+}
 
 function gitEnvironment(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {};
@@ -385,7 +406,7 @@ export async function doctorSnapshot(options: SnapshotDoctorOptions): Promise<Sn
     if (value === undefined) continue;
     if (ROUTING_ENV.test(name)) throw new Error(`doctor: canonical routing environment is present: ${name}`);
     if (isCredentialEnvironmentName(name)) throw new Error(`doctor: credential environment is present: ${name}`);
-    if ([...(options.canonicalControllerPaths ?? []), ...automaticSourceReferences].some((protectedPath) => value.includes(protectedPath))) {
+    if (environmentValueDisclosesProtectedPath(value, [...(options.canonicalControllerPaths ?? []), ...automaticSourceReferences], [path.dirname(options.repository)])) {
       throw new Error(`doctor: protected source or controller reference is present in environment: ${name}`);
     }
   }

@@ -192,6 +192,12 @@ export async function executeCaseAttempt(options: ExecuteCaseAttemptOptions): Pr
     excludedPaths: ['.juno_task', 'hidden-graders', 'reference-solutions', ...(options.excludedPaths ?? [])],
     ...(options.controllerPaths === undefined ? {} : { controllerPaths: options.controllerPaths }),
     ...(options.deniedPaths === undefined ? {} : { deniedPaths: options.deniedPaths }) });
+  if (workspace.receipt.source_commit !== options.plan.case.source.commit
+      || workspace.receipt.source_tree !== options.plan.case.source.tree
+      || workspace.snapshot.source_commit !== options.plan.case.source.commit
+      || workspace.snapshot.source_tree !== options.plan.case.source.tree) {
+    throw new Error('attempt workspace receipt/source identity mismatch before candidate dispatch');
+  }
   const run = async () => dispatch(options.plan, workspace, options.intentRoot, options.adapter);
   const lockedResources = options.plan.resources.filter((item) => item.access !== 'read').map(({ type, id }) => ({ type, id }));
   const terminal = options.locks === undefined ? await run() : await options.locks.withResources(lockedResources, run);
