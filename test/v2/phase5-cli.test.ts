@@ -93,6 +93,32 @@ describe('f922O3 phase 5 v2 CLI cutover and restrictive v1 retirement', () => {
     }
   });
 
+  it('publishes invalid terminal and evidence truth for malformed command-harness output', async () => {
+    const payloads = [
+      `const r=JSON.parse(process.env.YYLO_BENCHMARK_REQUEST_JSON);process.stdout.write(JSON.stringify({status:'success',cost:{completeness:'not_applicable',usd:null},artifacts:[],raw_output:'omitted identity'}));`,
+      `const r=JSON.parse(process.env.YYLO_BENCHMARK_REQUEST_JSON);process.stdout.write(JSON.stringify({status:'unsupported',exit_code:0,signal:null,session_id:'candidate-session',resolved_provider:'vendor',resolved_model:r.requestedModel,observed_provider:'vendor',observed_model:r.requestedModel,harness_version:'fixture-1',cost:{completeness:'not_applicable',usd:null},artifacts:[],raw_output:'unsupported status'}));`,
+      `process.stdout.write('{not-json');`,
+    ];
+    for (const [index, source] of payloads.entries()) {
+      const root = await fixture(); const harness = path.join(root, 'scripts', `malformed-${index}.mjs`);
+      await writeFile(harness, source);
+      const configPath = path.join(root, 'yylo-benchmark.config.json');
+      const config = JSON.parse(await readFile(configPath, 'utf8')) as Record<string, any>;
+      config.harnesses.candidate.arguments = [harness]; await writeFile(configPath, JSON.stringify(config));
+      const plan = await capture(root, ['plan', '--task', 'task.md', '--models', 'vendor/model', '--output', 'plan.json']);
+      const run = await capture(root, ['run', '--plan', 'plan.json']);
+      expect(run.attempts[0].evidence.candidate).toMatchObject({ status: 'invalid', validity: 'invalid' });
+      expect(run.attempts[0].evidence.candidate.diagnostics).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'malformed_protocol_field' }),
+      ]));
+      expect(run.attempts[0].evaluation).toMatchObject({ validity: 'invalid', quality: 'unknown' });
+      const runtime = await resolveV2RuntimePaths({ cwd: root, plan: plan as never, attemptIndex: 0 });
+      const terminal = JSON.parse(await readFile(path.join(runtime.intents, `${plan.attempts[0].attempt_id.slice(7)}.terminal.json`), 'utf8')) as Record<string, unknown>;
+      expect(terminal).toMatchObject({ terminal_status: index === 0 ? 'success' : 'invalid', validity: 'invalid' });
+      expect(terminal.terminal_hash).toMatch(/^sha256:[0-9a-f]{64}$/u);
+    }
+  });
+
   it('rejects every malformed nested attempt before dry-run success or fresh dispatch', async () => {
     const root = await fixture();
     const plan = await capture(root, ['plan', '--task', 'task.md', '--models', 'vendor/model', '--output', 'plan.json']);

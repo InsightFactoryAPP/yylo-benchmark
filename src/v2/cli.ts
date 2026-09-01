@@ -356,8 +356,9 @@ class CommandHarnessAdapter implements HarnessAdapter {
         resolved_provider: null, resolved_model: null, observed_provider: null, observed_model: null, harness_version: this.version,
         started_at: started.toISOString(), ended_at: ended.toISOString(), runtime_ms: output.runtimeMs, cost: { completeness: 'unavailable', usd: null }, process: { pid: output.pid, command: [this.#config.executable, ...this.#config.arguments] }, artifacts: [], raw_output: output.stdout };
     }
-    let parsed: unknown; try { parsed = JSON.parse(output.stdout) as unknown; } catch { throw new Error(`command harness emitted malformed JSON: ${output.stdout.slice(0, 200)}`); }
-    const terminal = object(parsed, 'command harness terminal') as unknown as HarnessTerminalInput; const ended = new Date();
+    let parsed: unknown; try { parsed = JSON.parse(output.stdout) as unknown; } catch { parsed = { status: 'malformed_json', raw_output: output.stdout }; }
+    const terminal = (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+      ? parsed : { status: 'malformed_payload', raw_output: output.stdout }) as unknown as HarnessTerminalInput; const ended = new Date();
     const measuredFailure = output.code !== 0 || output.signal !== null;
     return { ...terminal, status: measuredFailure ? 'failure' : terminal.status, exit_code: output.code, signal: output.signal,
       started_at: started.toISOString(), ended_at: ended.toISOString(), runtime_ms: output.runtimeMs,

@@ -167,7 +167,89 @@ function parseIntent(value: unknown, request: HarnessRequest, adapter: HarnessAd
   return intent as HarnessIntentV2;
 }
 
-function diagnostics(input: HarnessTerminalInput): HarnessDiagnostic[] {
+interface NormalizedHarnessTerminalInput {
+  readonly status: HarnessTerminalInput['status'];
+  readonly exit_code: number | null;
+  readonly signal: string | null;
+  readonly session_id: string | null;
+  readonly resolved_provider: string | null;
+  readonly resolved_model: string | null;
+  readonly observed_provider: string | null;
+  readonly observed_model: string | null;
+  readonly harness_version: string | null;
+  readonly started_at: string | null;
+  readonly ended_at: string | null;
+  readonly runtime_ms: number | null;
+  readonly cost: CostEvidence;
+  readonly process: HarnessProcessIdentity | null;
+  readonly artifacts: readonly HarnessArtifact[];
+  readonly raw_output: string | null;
+}
+
+function normalizeTerminalInput(value: unknown): { readonly input: NormalizedHarnessTerminalInput; readonly diagnostics: HarnessDiagnostic[] } {
+  const source = typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const observed: HarnessDiagnostic[] = [];
+  const malformed = (field: string, expected: string): void => {
+    observed.push({ code: 'malformed_protocol_field', message: `command harness field ${field} must be ${expected}` });
+  };
+  const nullableString = (field: string): string | null => {
+    const candidate = source[field];
+    if (candidate === null) return null;
+    if (typeof candidate === 'string' && candidate.trim() !== '') return candidate;
+    malformed(field, 'a non-empty string or null'); return null;
+  };
+  const nullableInteger = (field: string): number | null => {
+    const candidate = source[field];
+    if (candidate === null) return null;
+    if (Number.isSafeInteger(candidate)) return candidate as number;
+    malformed(field, 'a safe integer or null'); return null;
+  };
+  const nullableTimestamp = (field: string): string | null => {
+    const candidate = source[field];
+    if (typeof candidate === 'string' && Number.isFinite(Date.parse(candidate))) return candidate;
+    malformed(field, 'an ISO timestamp'); return null;
+  };
+  const statuses = new Set(['success', 'failure', 'timeout', 'cancelled', 'invalid']);
+  const status = typeof source['status'] === 'string' && statuses.has(source['status'])
+    ? source['status'] as HarnessTerminalInput['status']
+    : (malformed('status', 'a supported terminal status'), 'invalid' as const);
+  const runtime = source['runtime_ms'];
+  const runtime_ms = Number.isSafeInteger(runtime) && (runtime as number) >= 0
+    ? runtime as number : (malformed('runtime_ms', 'a non-negative safe integer'), null);
+  const costResult = CostEvidenceSchema.safeParse(source['cost']);
+  if (!costResult.success) malformed('cost', 'valid cost evidence');
+  const processValue = source['process'];
+  let processIdentity: HarnessProcessIdentity | null = null;
+  if (typeof processValue === 'object' && processValue !== null && !Array.isArray(processValue)) {
+    const record = processValue as Record<string, unknown>;
+    const pid = record['pid']; const command = record['command'];
+    if ((pid === null || Number.isSafeInteger(pid)) && Array.isArray(command) && command.every((item) => typeof item === 'string')) {
+      processIdentity = { pid: pid as number | null, command: command as string[] };
+    } else malformed('process', 'a valid process identity');
+  } else malformed('process', 'a valid process identity');
+  const artifactsValue = source['artifacts'];
+  const artifacts: HarnessArtifact[] = [];
+  if (Array.isArray(artifactsValue) && artifactsValue.every((item) => {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) return false;
+    const record = item as Record<string, unknown>;
+    return typeof record['role'] === 'string' && record['role'].trim() !== ''
+      && typeof record['sha256'] === 'string' && /^sha256:[0-9a-f]{64}$/u.test(record['sha256'])
+      && Number.isSafeInteger(record['size']) && (record['size'] as number) >= 0;
+  })) artifacts.push(...artifactsValue as HarnessArtifact[]);
+  else malformed('artifacts', 'an array of valid artifact records');
+  const raw = source['raw_output'];
+  if (raw !== undefined && raw !== null && typeof raw !== 'string') malformed('raw_output', 'a string or null');
+  return { input: {
+    status, exit_code: nullableInteger('exit_code'), signal: nullableString('signal'), session_id: nullableString('session_id'),
+    resolved_provider: nullableString('resolved_provider'), resolved_model: nullableString('resolved_model'),
+    observed_provider: nullableString('observed_provider'), observed_model: nullableString('observed_model'),
+    harness_version: nullableString('harness_version'), started_at: nullableTimestamp('started_at'), ended_at: nullableTimestamp('ended_at'),
+    runtime_ms, cost: costResult.success ? costResult.data : { completeness: 'unavailable', usd: null }, process: processIdentity,
+    artifacts, raw_output: typeof raw === 'string' ? raw : null,
+  }, diagnostics: observed };
+}
+
+function diagnostics(input: NormalizedHarnessTerminalInput): HarnessDiagnostic[] {
   const result: HarnessDiagnostic[] = [];
   if (input.resolved_provider === null || input.resolved_model === null || input.observed_provider === null || input.observed_model === null || input.harness_version === null) {
     result.push({ code: 'missing_identity', message: 'resolved/observed harness identity is incomplete' });
@@ -177,42 +259,43 @@ function diagnostics(input: HarnessTerminalInput): HarnessDiagnostic[] {
   if (input.session_id === null) result.push({ code: 'missing_session', message: 'harness did not report a candidate session ID' });
   if (input.status === 'timeout') result.push({ code: 'timeout', message: 'candidate reached its timeout' });
   if (input.signal !== null) result.push({ code: 'signal', message: `candidate terminated with ${input.signal}` });
-  if (!Number.isSafeInteger(input.runtime_ms) || input.runtime_ms < 0 || !Number.isFinite(Date.parse(input.started_at))
-      || !Number.isFinite(Date.parse(input.ended_at)) || Date.parse(input.ended_at) < Date.parse(input.started_at)) {
+  if (input.runtime_ms === null || input.started_at === null || input.ended_at === null
+      || Date.parse(input.ended_at) < Date.parse(input.started_at)) {
     result.push({ code: 'invalid_timing', message: 'candidate timing evidence is malformed' });
   }
   return result;
 }
 
 function terminalFromInput(intent: HarnessIntentV2, adapter: HarnessAdapter, input: HarnessTerminalInput, recovery: HarnessTerminalV2['recovery'], workspaceManifestHash: `sha256:${string}`): HarnessTerminalV2 {
-  const cost = CostEvidenceSchema.parse(input.cost);
-  const observedDiagnostics = diagnostics(input);
-  const invalidCodes = new Set(['missing_identity', 'identity_mismatch', 'missing_session', 'invalid_timing']);
+  const normalized = normalizeTerminalInput(input);
+  const observedDiagnostics = [...normalized.diagnostics, ...diagnostics(normalized.input)];
+  const invalidCodes = new Set(['malformed_protocol_field', 'missing_identity', 'identity_mismatch', 'missing_session', 'invalid_timing']);
+  const terminalInput = normalized.input;
   const core = {
     schema_version: HARNESS_TERMINAL_SCHEMA_VERSION,
     attempt_id: intent.attempt_id,
     requested_model: intent.requested_model,
     harness_profile: adapter.profileId,
     harness_version: adapter.version,
-    observed_harness_version: input.harness_version,
-    terminal_status: input.status,
+    observed_harness_version: terminalInput.harness_version,
+    terminal_status: terminalInput.status,
     recovery,
     validity: observedDiagnostics.some((item) => invalidCodes.has(item.code)) ? 'invalid' as const : 'valid' as const,
     diagnostics: observedDiagnostics,
-    session_id: input.session_id,
-    resolved_provider: input.resolved_provider,
-    resolved_model: input.resolved_model,
-    observed_provider: input.observed_provider,
-    observed_model: input.observed_model,
-    exit_code: input.exit_code,
-    signal: input.signal,
-    started_at: input.started_at,
-    ended_at: input.ended_at,
-    runtime_ms: input.runtime_ms,
-    cost,
-    process: input.process,
-    artifacts: input.artifacts,
-    raw_output: input.raw_output ?? null,
+    session_id: terminalInput.session_id,
+    resolved_provider: terminalInput.resolved_provider,
+    resolved_model: terminalInput.resolved_model,
+    observed_provider: terminalInput.observed_provider,
+    observed_model: terminalInput.observed_model,
+    exit_code: terminalInput.exit_code,
+    signal: terminalInput.signal,
+    started_at: terminalInput.started_at,
+    ended_at: terminalInput.ended_at,
+    runtime_ms: terminalInput.runtime_ms,
+    cost: terminalInput.cost,
+    process: terminalInput.process,
+    artifacts: terminalInput.artifacts,
+    raw_output: terminalInput.raw_output,
     intent_hash: intent.intent_hash,
     workspace_manifest_hash: workspaceManifestHash,
   } as const;
