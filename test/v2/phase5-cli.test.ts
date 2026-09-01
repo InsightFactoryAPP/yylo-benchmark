@@ -5,6 +5,8 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import { createProgram, runCli } from '../../src/cli/program.js';
+import { canonicalHash } from '../../src/contracts/canonical.js';
+import { runV2Experiment } from '../../src/v2/cli.js';
 
 const execFileAsync = promisify(execFile);
 async function api() { return import('../../src/v2/cli.js').catch(() => null); }
@@ -89,6 +91,46 @@ describe('f922O3 phase 5 v2 CLI cutover and restrictive v1 retirement', () => {
         signal: outcome === 'signal' ? 'SIGTERM' : null });
       expect(run.attempts[0].evidence.candidate.process).not.toMatchObject({ pid: 1, command: ['claimed'] });
     }
+  });
+
+  it('rejects every malformed nested attempt before dry-run success or fresh dispatch', async () => {
+    const root = await fixture();
+    const plan = await capture(root, ['plan', '--task', 'task.md', '--models', 'vendor/model', '--output', 'plan.json']);
+    const rebuild = (mutate: (attempt: Record<string, any>) => void, rehashAttempt = true) => {
+      const attempt = structuredClone(plan.attempts[0]) as Record<string, any>;
+      mutate(attempt);
+      if (rehashAttempt) { const { plan_hash: _attemptHash, ...attemptCore } = attempt; attempt.plan_hash = canonicalHash(attemptCore); }
+      const { plan_hash: _planHash, ...planCore } = plan;
+      const attempts = [attempt];
+      return { ...planCore, attempts, plan_hash: canonicalHash({ ...planCore, attempts }) } as never;
+    };
+    const malformed = [
+      rebuild((attempt) => { attempt.requested_model = 'vendor/changed'; }),
+      rebuild((attempt) => { attempt.case.source.commit = '0'.repeat(40); }),
+      rebuild((attempt) => { attempt.evaluators[0].config_hash = `sha256:${'0'.repeat(64)}`; }),
+      rebuild((attempt) => { attempt.requested_model = 'vendor/changed-with-stale-hash'; }, false),
+    ];
+    for (const candidate of malformed) {
+      await expect(runV2Experiment({ cwd: root, plan: candidate, dryRun: true })).rejects.toThrow(/attempt plan|attempt evaluator/iu);
+      await expect(runV2Experiment({ cwd: root, plan: candidate })).rejects.toThrow(/attempt plan|attempt evaluator/iu);
+    }
+  });
+
+  it('keeps generated-default candidate roots and environment outside source and private control topology', async () => {
+    const root = await fixture();
+    const harness = path.join(root, 'scripts', 'topology-probe.mjs');
+    await writeFile(harness, `import{existsSync,readdirSync}from'node:fs';import path from'node:path';const r=JSON.parse(process.env.YYLO_BENCHMARK_REQUEST_JSON);const probe={cwd:process.cwd(),pwd:process.env.PWD??null,oldpwd:process.env.OLDPWD??null,initCwd:process.env.INIT_CWD??null,sourceRoute:existsSync(path.resolve(process.cwd(),'../../../../.juno_task')),registryRoute:existsSync(path.resolve(process.cwd(),'../../../registry')),controlEntries:readdirSync(path.resolve(process.cwd(),'../..'))};const now=new Date().toISOString();process.stdout.write(JSON.stringify({status:'success',exit_code:0,signal:null,session_id:'probe',resolved_provider:'vendor',resolved_model:r.requestedModel,observed_provider:'vendor',observed_model:r.requestedModel,harness_version:'fixture-1',started_at:now,ended_at:now,runtime_ms:1,cost:{completeness:'not_applicable',usd:null},process:{pid:process.pid,command:['probe']},artifacts:[],raw_output:JSON.stringify(probe)}));`);
+    const configPath = path.join(root, 'yylo-benchmark.config.json');
+    const config = JSON.parse(await readFile(configPath, 'utf8')) as Record<string, any>;
+    config.workspace = { attempts_root: '.yylo-benchmark/attempts', registry_root: '.yylo-benchmark/registry' };
+    config.harnesses.candidate.arguments = [harness];
+    await writeFile(configPath, JSON.stringify(config));
+    const plan = await capture(root, ['plan', '--task', 'task.md', '--models', 'vendor/model', '--output', 'plan.json']);
+    const run = await capture(root, ['run', '--plan', 'plan.json']);
+    const probe = JSON.parse(run.attempts[0].evidence.candidate.output) as Record<string, any>;
+    expect(probe).toMatchObject({ pwd: null, oldpwd: null, initCwd: null, sourceRoute: false, registryRoute: false });
+    expect(path.resolve(probe.cwd)).not.toContain(path.resolve(root));
+    expect(probe.controlEntries).toEqual([plan.attempts[0].attempt_id.slice(7)]);
   });
 
   it('P5-A3 recovers known terminals and appends regrade/rejudge generations without candidate redispatch', async () => {

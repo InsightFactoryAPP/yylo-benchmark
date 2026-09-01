@@ -56,7 +56,7 @@ export interface CreateAttemptWorkspaceOptions {
   readonly inheritedEnvironment?: NodeJS.ProcessEnv;
 }
 
-const ROUTING = /^(?:(?:YYLO|JUNO)_(?:BENCHMARK|TASK|CONTROLLER|CANONICAL|KANBAN|LEDGER).*|GIT_(?:DIR|COMMON_DIR|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES))$/iu;
+const ROUTING = /^(?:(?:PWD|OLDPWD|INIT_CWD)|NPM_(?:CONFIG_LOCAL_PREFIX|PACKAGE_JSON)|(?:YYLO|JUNO)_(?:BENCHMARK|TASK|CONTROLLER|CANONICAL|KANBAN|LEDGER).*|GIT_(?:DIR|COMMON_DIR|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES))$/iu;
 
 function digestFromAttemptId(attemptId: string): string {
   if (!/^sha256:[0-9a-f]{64}$/u.test(attemptId)) throw new Error('attempt ID must be sha256:<lowercase hex>');

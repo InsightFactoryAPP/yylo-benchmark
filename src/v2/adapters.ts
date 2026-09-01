@@ -131,6 +131,7 @@ export interface ExecuteCaseAttemptOptions {
   readonly privateRegistryRoot: string;
   readonly intentRoot: string;
   readonly adapter: HarnessAdapter;
+  readonly excludedPaths?: readonly string[];
   readonly controllerPaths?: readonly string[];
   readonly locks?: PersistentTypedResourceLocks;
 }
@@ -187,7 +188,8 @@ export async function executeCaseAttempt(options: ExecuteCaseAttemptOptions): Pr
   if (options.plan.workspace_backend !== 'fresh_repository') throw new Error('this executor requires the fresh_repository workspace backend');
   const workspace = await createAttemptWorkspace({ attemptId: options.plan.attempt_id as `sha256:${string}`, sourceRepository: options.sourceRepository,
     baseCommit: options.plan.case.source.commit, attemptsRoot: options.attemptsRoot, privateRegistryRoot: options.privateRegistryRoot,
-    excludedPaths: ['.juno_task', 'hidden-graders', 'reference-solutions'], ...(options.controllerPaths === undefined ? {} : { controllerPaths: options.controllerPaths }) });
+    excludedPaths: ['.juno_task', 'hidden-graders', 'reference-solutions', ...(options.excludedPaths ?? [])],
+    ...(options.controllerPaths === undefined ? {} : { controllerPaths: options.controllerPaths }) });
   const run = async () => dispatch(options.plan, workspace, options.intentRoot, options.adapter);
   const lockedResources = options.plan.resources.filter((item) => item.access !== 'read').map(({ type, id }) => ({ type, id }));
   const terminal = options.locks === undefined ? await run() : await options.locks.withResources(lockedResources, run);

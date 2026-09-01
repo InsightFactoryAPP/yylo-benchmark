@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { chmod, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { canonicalHash, canonicalJson, sha256Hex, type JsonValue } from '../contracts/canonical.js';
@@ -315,9 +316,24 @@ function assertPlanConfigBinding(plan: V2ExperimentPlan, config: V2Config): void
   }
 }
 
-function roots(cwd: string, config: V2Config): { attempts: string; registry: string; intents: string; evaluations: string } {
-  const registry = path.resolve(cwd, config.workspace.registry_root);
-  return { attempts: path.resolve(cwd, config.workspace.attempts_root), registry, intents: path.join(registry, 'v2', 'intents'), evaluations: path.join(registry, 'v2', 'evaluations') };
+function roots(cwd: string, config: V2Config): { attempts: string; registry: string; intents: string; evaluations: string; isolatedAttempts: boolean } {
+  const isolatedDefaults = config.workspace.attempts_root === '.yylo-benchmark/attempts'
+    && config.workspace.registry_root === '.yylo-benchmark/registry';
+  if (!isolatedDefaults) {
+    const registry = path.resolve(cwd, config.workspace.registry_root);
+    return { attempts: path.resolve(cwd, config.workspace.attempts_root), registry, intents: path.join(registry, 'v2', 'intents'),
+      evaluations: path.join(registry, 'v2', 'evaluations'), isolatedAttempts: false };
+  }
+  const namespace = canonicalHash({ source_repository: path.resolve(cwd), attempts_root: config.workspace.attempts_root,
+    registry_root: config.workspace.registry_root }).slice(7);
+  const attempts = path.join(os.tmpdir(), `yylo-benchmark-attempt-${namespace}`);
+  const registry = path.join(os.homedir(), '.local', 'state', 'yylo-benchmark', 'registry', namespace);
+  return { attempts, registry, intents: path.join(registry, 'v2', 'intents'), evaluations: path.join(registry, 'v2', 'evaluations'), isolatedAttempts: true };
+}
+function attemptWorkspaceRoot(root: ReturnType<typeof roots>, attempt: AttemptPlanV2): string {
+  return root.isolatedAttempts
+    ? `${root.attempts}-${canonicalHash({ attempt_id: attempt.attempt_id, plan_hash: attempt.plan_hash }).slice(7)}`
+    : root.attempts;
 }
 function statePath(registry: string, plan: V2ExperimentPlan, attempt: AttemptPlanV2): string {
   return path.join(registry, 'v2', 'runs', plan.experiment_id.slice(7), `${attempt.attempt_id.slice(7)}.json`);
@@ -378,7 +394,7 @@ async function loadState(file: string, plan: V2ExperimentPlan, attempt: AttemptP
   return Object.freeze(state);
 }
 async function verifyRetainedArtifacts(input: { cwd: string; root: ReturnType<typeof roots>; attempt: AttemptPlanV2; state: PersistedAttempt; harness: HarnessConfig }): Promise<void> {
-  const workspace = await loadAttemptWorkspace({ attemptId: input.attempt.attempt_id as `sha256:${string}`, attemptsRoot: input.root.attempts });
+  const workspace = await loadAttemptWorkspace({ attemptId: input.attempt.attempt_id as `sha256:${string}`, attemptsRoot: attemptWorkspaceRoot(input.root, input.attempt) });
   if (workspace.resultManifest === null) throw new Error('retained post-execution repository/workspace manifest is missing');
   await doctorAttemptWorkspace(workspace, { sourceRepository: input.cwd });
   if (workspace.receipt.receipt_hash !== input.state.evidence.workspace_receipt_hash) throw new Error('retained workspace receipt linkage mismatch');
@@ -398,6 +414,9 @@ async function exists(destination: string): Promise<boolean> { try { await stat(
 export async function runV2Experiment(input: { readonly cwd: string; readonly configPath?: string; readonly plan: V2ExperimentPlan; readonly recovery?: boolean; readonly dryRun?: boolean }): Promise<Record<string, unknown>> {
   const loaded = await loadV2Config(input.cwd, input.configPath); if (loaded.hash !== input.plan.config_hash) throw new Error('v2 config drifted from the immutable plan');
   assertPlanConfigBinding(input.plan, loaded.config);
+  for (const attempt of input.plan.attempts) verifyAttemptPlan(attempt, input.plan);
+  const configRelative = path.relative(path.resolve(input.cwd), loaded.path).split(path.sep).join('/');
+  const snapshotExclusions = configRelative !== '' && !configRelative.startsWith('../') && !path.isAbsolute(configRelative) ? [configRelative] : [];
   if (input.dryRun === true) return { schema_version: 'yylo_benchmark_run_dry_run.v2', yylo_version: input.plan.yylo_version, plan_hash: input.plan.plan_hash,
     dispatch_count: 0, attempt_count: input.plan.attempts.length, comparison_kind: input.plan.comparison_kind };
   const root = roots(input.cwd, loaded.config); const attempts: Array<Record<string, unknown>> = []; let dispatched = 0; let reused = 0; let ambiguous = 0;
@@ -408,13 +427,14 @@ export async function runV2Experiment(input: { readonly cwd: string; readonly co
       await verifyRetainedArtifacts({ cwd: input.cwd, root, attempt, state: retained, harness: retainedHarness });
       reused += 1; attempts.push({ attempt_id: attempt.attempt_id, reused: true, evidence: retained.evidence,
       evaluation: { records: retained.evaluation_records, quality: retained.quality, validity: retained.validity } }); continue; }
-    const attemptDirectory = path.join(root.attempts, attempt.attempt_id.slice(7));
+    const attemptsRoot = attemptWorkspaceRoot(root, attempt);
+    const attemptDirectory = path.join(attemptsRoot, attempt.attempt_id.slice(7));
     const harnessConfig = loaded.config.harnesses[attempt.harness_profile]; if (harnessConfig === undefined) throw new Error(`candidate harness unavailable: ${attempt.harness_profile}`);
     let executed: { evidence: AttemptEvidenceV2; terminal: { terminal_hash: `sha256:${string}`; workspace_manifest_hash: `sha256:${string}` } };
     if (await exists(attemptDirectory)) {
       if (input.recovery !== true) { ambiguous += 1; attempts.push({ attempt_id: attempt.attempt_id, reused: false, recovery: 'manual', quality: 'unknown' }); continue; }
       try {
-        const workspace = await loadAttemptWorkspace({ attemptId: attempt.attempt_id as `sha256:${string}`, attemptsRoot: root.attempts });
+        const workspace = await loadAttemptWorkspace({ attemptId: attempt.attempt_id as `sha256:${string}`, attemptsRoot });
         await doctorAttemptWorkspace(workspace, { sourceRepository: input.cwd });
         const terminal = await recoverCaseAttempt({ plan: attempt, workspace, intentRoot: root.intents, adapter: harnessAdapter(attempt.harness_profile, harnessConfig) });
         if (terminal.recovery === 'manual') { ambiguous += 1; attempts.push({ attempt_id: attempt.attempt_id, reused: false, recovery: 'manual', quality: 'unknown' }); continue; }
@@ -422,7 +442,7 @@ export async function runV2Experiment(input: { readonly cwd: string; readonly co
         reused += 1;
       } catch { ambiguous += 1; attempts.push({ attempt_id: attempt.attempt_id, reused: false, recovery: 'manual', quality: 'unknown' }); continue; }
     } else {
-      executed = await executeCaseAttempt({ plan: attempt, sourceRepository: input.cwd, attemptsRoot: root.attempts, privateRegistryRoot: root.registry,
+      executed = await executeCaseAttempt({ plan: attempt, sourceRepository: input.cwd, attemptsRoot, privateRegistryRoot: root.registry, excludedPaths: snapshotExclusions,
         intentRoot: root.intents, adapter: harnessAdapter(attempt.harness_profile, harnessConfig) });
       dispatched += 1;
     }
@@ -493,7 +513,7 @@ export async function doctorV2Experiment(input: { readonly cwd: string; readonly
       await verifyRetainedArtifacts({ cwd: input.cwd, root, attempt, state, harness: retainedHarness });
       retained += 1; evidenceIds.push(state.evidence.evidence_hash); evaluationIds.push(...state.evaluation_records.map((item) => item.evaluation_id));
     }
-    else if (await exists(path.join(root.attempts, attempt.attempt_id.slice(7)))) ambiguous += 1;
+    else if (await exists(path.join(attemptWorkspaceRoot(root, attempt), attempt.attempt_id.slice(7)))) ambiguous += 1;
   }
   const missing = input.plan.attempts.length - retained - ambiguous;
   if (missing > 0 || ambiguous > 0) throw new Error(`doctor: planned attempt chain is incomplete (missing=${missing}, ambiguous=${ambiguous})`);
