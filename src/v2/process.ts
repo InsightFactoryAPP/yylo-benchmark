@@ -1,4 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { existsSync, realpathSync } from 'node:fs';
+import path from 'node:path';
 
 export interface CapturedProcessOptions {
   readonly cwd: string;
@@ -8,6 +10,7 @@ export interface CapturedProcessOptions {
   readonly cleanupTimeoutMs?: number;
   readonly stdin?: string;
   readonly extraPipeCount?: number;
+  readonly deniedPaths?: readonly string[];
 }
 
 export interface CapturedProcessResult {
@@ -46,9 +49,28 @@ export async function runCapturedProcess(executable: string, args: readonly stri
   const termGraceMs = options.termGraceMs ?? DEFAULT_TERM_GRACE_MS; const cleanupTimeoutMs = options.cleanupTimeoutMs ?? 2000;
   if (!Number.isSafeInteger(termGraceMs) || termGraceMs < 0) throw new Error('TERM grace must be a nonnegative integer');
   if (!Number.isSafeInteger(cleanupTimeoutMs) || cleanupTimeoutMs < 1) throw new Error('cleanup timeout must be a positive integer');
+  const deniedPaths = [...new Set((options.deniedPaths ?? []).map((item) => {
+    const resolved = path.resolve(item);
+    return existsSync(resolved) ? realpathSync(resolved) : resolved;
+  }))]
+    .filter((item) => item !== path.resolve(options.cwd) && !path.resolve(options.cwd).startsWith(`${item}${path.sep}`));
+  let effectiveExecutable = executable; let effectiveArgs = [...args];
+  if (deniedPaths.length > 0 && process.platform === 'darwin') {
+    const profile = `(version 1)\n(allow default)\n${deniedPaths.map((item) => `(deny file-read* file-write* (subpath ${JSON.stringify(item)}))`).join('\n')}`;
+    effectiveExecutable = '/usr/bin/sandbox-exec'; effectiveArgs = ['-p', profile, executable, ...args];
+  } else if (deniedPaths.length > 0 && process.platform === 'linux') {
+    const bubblewrap = ['/usr/bin/bwrap', '/bin/bwrap'].find((item) => existsSync(item));
+    if (bubblewrap === undefined) throw new Error('candidate filesystem boundary is unavailable: install bubblewrap before dispatch');
+    effectiveExecutable = bubblewrap;
+    effectiveArgs = ['--die-with-parent', '--ro-bind', '/', '/', '--dev-bind', '/dev', '/dev', '--proc', '/proc',
+      '--bind', path.resolve(options.cwd), path.resolve(options.cwd), ...deniedPaths.filter((item) => existsSync(item)).flatMap((item) => ['--tmpfs', item]),
+      '--chdir', path.resolve(options.cwd), executable, ...args];
+  } else if (deniedPaths.length > 0) {
+    throw new Error(`candidate filesystem boundary is unsupported on ${process.platform}; refusing dispatch`);
+  }
   return await new Promise((resolve, reject) => {
     const started = Date.now(); const extraPipeCount = options.extraPipeCount ?? 0;
-    const child = spawn(executable, [...args], {
+    const child = spawn(effectiveExecutable, effectiveArgs, {
       cwd: options.cwd, env: { ...options.environment }, shell: false, detached: true,
       stdio: ['pipe', 'pipe', 'pipe', ...Array.from({ length: extraPipeCount }, () => 'pipe' as const)],
     });

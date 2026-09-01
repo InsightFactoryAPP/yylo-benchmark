@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import { createProgram, runCli } from '../../src/cli/program.js';
 import { canonicalHash } from '../../src/contracts/canonical.js';
-import { runV2Experiment } from '../../src/v2/cli.js';
+import { resolveV2RuntimePaths, runV2Experiment } from '../../src/v2/cli.js';
 
 const execFileAsync = promisify(execFile);
 async function api() { return import('../../src/v2/cli.js').catch(() => null); }
@@ -109,28 +109,47 @@ describe('f922O3 phase 5 v2 CLI cutover and restrictive v1 retirement', () => {
       rebuild((attempt) => { attempt.case.source.commit = '0'.repeat(40); }),
       rebuild((attempt) => { attempt.evaluators[0].config_hash = `sha256:${'0'.repeat(64)}`; }),
       rebuild((attempt) => { attempt.requested_model = 'vendor/changed-with-stale-hash'; }, false),
+      rebuild((attempt) => { attempt.case.normalized_input.prompt = 'forged prompt'; }),
+      rebuild((attempt) => { attempt.case.source.candidate_manifest_hash = `sha256:${'1'.repeat(64)}`; }),
     ];
     for (const candidate of malformed) {
-      await expect(runV2Experiment({ cwd: root, plan: candidate, dryRun: true })).rejects.toThrow(/attempt plan|attempt evaluator/iu);
-      await expect(runV2Experiment({ cwd: root, plan: candidate })).rejects.toThrow(/attempt plan|attempt evaluator/iu);
+      await expect(runV2Experiment({ cwd: root, plan: candidate, dryRun: true })).rejects.toThrow(/attempt plan|attempt evaluator|candidate manifest/iu);
+      await expect(runV2Experiment({ cwd: root, plan: candidate })).rejects.toThrow(/attempt plan|attempt evaluator|candidate manifest/iu);
     }
   });
 
   it('keeps generated-default candidate roots and environment outside source and private control topology', async () => {
     const root = await fixture();
-    const harness = path.join(root, 'scripts', 'topology-probe.mjs');
-    await writeFile(harness, `import{existsSync,readdirSync}from'node:fs';import path from'node:path';const r=JSON.parse(process.env.YYLO_BENCHMARK_REQUEST_JSON);const probe={cwd:process.cwd(),pwd:process.env.PWD??null,oldpwd:process.env.OLDPWD??null,initCwd:process.env.INIT_CWD??null,sourceRoute:existsSync(path.resolve(process.cwd(),'../../../../.juno_task')),registryRoute:existsSync(path.resolve(process.cwd(),'../../../registry')),controlEntries:readdirSync(path.resolve(process.cwd(),'../..'))};const now=new Date().toISOString();process.stdout.write(JSON.stringify({status:'success',exit_code:0,signal:null,session_id:'probe',resolved_provider:'vendor',resolved_model:r.requestedModel,observed_provider:'vendor',observed_model:r.requestedModel,harness_version:'fixture-1',started_at:now,ended_at:now,runtime_ms:1,cost:{completeness:'not_applicable',usd:null},process:{pid:process.pid,command:['probe']},artifacts:[],raw_output:JSON.stringify(probe)}));`);
+    const probeRoot = await mkdtemp(path.join(os.tmpdir(), 'yylo-topology-probe-'));
+    const harness = path.join(probeRoot, 'topology-probe.mjs');
+    const siblingHint = path.join(probeRoot, 'sibling-hint');
+    await writeFile(harness, `import{existsSync,readFileSync,readdirSync,writeFileSync}from'node:fs';import path from'node:path';const r=JSON.parse(process.env.YYLO_BENCHMARK_REQUEST_JSON);const outer=path.resolve(process.cwd(),'..');const hint=${JSON.stringify(siblingHint)};let sibling=null;let readable=0;if(existsSync(hint)){sibling=readFileSync(hint,'utf8');try{readdirSync(sibling);readable=1}catch{}}else writeFileSync(hint,outer);const probe={cwd:process.cwd(),pwd:process.env.PWD??null,oldpwd:process.env.OLDPWD??null,initCwd:process.env.INIT_CWD??null,projectRoot:process.env.PROJECT_ROOT??null,controllerRoot:process.env.CONTROLLER_ROOT??null,registryPath:process.env.REGISTRY_PATH??null,pathLeaksSource:(process.env.PATH??'').includes(process.env.EXPECTED_SOURCE??'never'),sourceRoute:existsSync(path.resolve(process.cwd(),'../../../../.juno_task')),registryRoute:existsSync(path.resolve(process.cwd(),'../../../registry')),siblingDiscovered:sibling!==null,siblingReadable:readable};const now=new Date().toISOString();process.stdout.write(JSON.stringify({status:'success',exit_code:0,signal:null,session_id:'probe',resolved_provider:'vendor',resolved_model:r.requestedModel,observed_provider:'vendor',observed_model:r.requestedModel,harness_version:'fixture-1',started_at:now,ended_at:now,runtime_ms:1,cost:{completeness:'not_applicable',usd:null},process:{pid:process.pid,command:['probe']},artifacts:[],raw_output:JSON.stringify(probe)}));`);
     const configPath = path.join(root, 'yylo-benchmark.config.json');
     const config = JSON.parse(await readFile(configPath, 'utf8')) as Record<string, any>;
     config.workspace = { attempts_root: '.yylo-benchmark/attempts', registry_root: '.yylo-benchmark/registry' };
     config.harnesses.candidate.arguments = [harness];
     await writeFile(configPath, JSON.stringify(config));
-    const plan = await capture(root, ['plan', '--task', 'task.md', '--models', 'vendor/model', '--output', 'plan.json']);
-    const run = await capture(root, ['run', '--plan', 'plan.json']);
-    const probe = JSON.parse(run.attempts[0].evidence.candidate.output) as Record<string, any>;
-    expect(probe).toMatchObject({ pwd: null, oldpwd: null, initCwd: null, sourceRoute: false, registryRoute: false });
-    expect(path.resolve(probe.cwd)).not.toContain(path.resolve(root));
-    expect(probe.controlEntries).toEqual([plan.attempts[0].attempt_id.slice(7)]);
+    const controller = await mkdtemp(path.join(os.tmpdir(), 'yylo-controller-root-'));
+    const namespace = canonicalHash({ source_repository: path.resolve(root), attempts_root: config.workspace.attempts_root,
+      registry_root: config.workspace.registry_root }).slice(7);
+    const registry = path.join(os.homedir(), '.local', 'state', 'yylo-benchmark', 'registry', namespace);
+    const previous = { PROJECT_ROOT: process.env.PROJECT_ROOT, CONTROLLER_ROOT: process.env.CONTROLLER_ROOT, REGISTRY_PATH: process.env.REGISTRY_PATH,
+      EXPECTED_SOURCE: process.env.EXPECTED_SOURCE, PATH: process.env.PATH };
+    try {
+      process.env.PROJECT_ROOT = root; process.env.CONTROLLER_ROOT = controller; process.env.REGISTRY_PATH = registry; process.env.EXPECTED_SOURCE = root;
+      process.env.PATH = `${path.join(root, 'node_modules', '.bin')}${path.delimiter}${previous.PATH ?? ''}`;
+      const plan = await capture(root, ['plan', '--task', 'task.md', '--models', 'vendor/one,vendor/two', '--output', 'plan.json']);
+      const run = await capture(root, ['run', '--plan', 'plan.json']);
+      const first = JSON.parse(run.attempts[0].evidence.candidate.output) as Record<string, any>;
+      const second = JSON.parse(run.attempts[1].evidence.candidate.output) as Record<string, any>;
+      expect(first).toMatchObject({ pwd: null, oldpwd: null, initCwd: null, projectRoot: null, controllerRoot: null, registryPath: null,
+        pathLeaksSource: false, sourceRoute: false, registryRoute: false, siblingReadable: 0 });
+      expect(path.resolve(first.cwd)).not.toContain(path.resolve(root));
+      expect(second.siblingDiscovered).toBe(true);
+      expect(second.siblingReadable).toBe(0);
+    } finally {
+      for (const [name, value] of Object.entries(previous)) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+    }
   });
 
   it('P5-A3 recovers known terminals and appends regrade/rejudge generations without candidate redispatch', async () => {
@@ -139,7 +158,8 @@ describe('f922O3 phase 5 v2 CLI cutover and restrictive v1 retirement', () => {
     const plan = await capture(root, ['plan', '--task', 'task.md', '--models', 'vendor/model', '--output', 'plan.json']);
     await capture(root, ['run', '--plan', 'plan.json']);
     // Crash window: workspace, intent, and hash-valid terminal are durable, but state publication is absent.
-    await rm(path.join(root, '.benchmark', 'registry', 'v2', 'runs', plan.experiment_id.slice(7), `${plan.attempts[0].attempt_id.slice(7)}.json`));
+    const runtime = await resolveV2RuntimePaths({ cwd: root, plan: plan as never, attemptIndex: 0 });
+    await rm(path.join(runtime.registry, 'v2', 'runs', plan.experiment_id.slice(7), `${plan.attempts[0].attempt_id.slice(7)}.json`));
     const recovered = await capture(root, ['recover', '--plan', 'plan.json']);
     expect(recovered).toMatchObject({ candidate_dispatch_count: 0, reused_terminal_count: 1, ambiguous_count: 0 });
     const regraded = await capture(root, ['regrade', '--plan', 'plan.json', '--profile', 'checks-v2']);

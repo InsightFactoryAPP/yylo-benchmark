@@ -133,6 +133,7 @@ export interface ExecuteCaseAttemptOptions {
   readonly adapter: HarnessAdapter;
   readonly excludedPaths?: readonly string[];
   readonly controllerPaths?: readonly string[];
+  readonly deniedPaths?: readonly string[];
   readonly locks?: PersistentTypedResourceLocks;
 }
 
@@ -180,7 +181,7 @@ function boundedOutput(value: string | null): string | null {
 
 async function dispatch(plan: AttemptPlanV2, workspace: AttemptWorkspaceV2, intentRoot: string, adapter: HarnessAdapter): Promise<HarnessTerminalV2> {
   return runHarnessAttempt({ attemptId: plan.attempt_id as `sha256:${string}`, requestedModel: plan.requested_model, cwd: workspace.repository,
-    environment: workspace.candidateEnvironment, invocation: caseInvocation(plan), intentRoot, adapter,
+    environment: workspace.candidateEnvironment, invocation: caseInvocation(plan), intentRoot, adapter, deniedPaths: workspace.deniedPaths,
     publishWorkspaceResult: async () => (await publishAttemptWorkspaceResult(workspace)).manifest_hash });
 }
 
@@ -189,7 +190,8 @@ export async function executeCaseAttempt(options: ExecuteCaseAttemptOptions): Pr
   const workspace = await createAttemptWorkspace({ attemptId: options.plan.attempt_id as `sha256:${string}`, sourceRepository: options.sourceRepository,
     baseCommit: options.plan.case.source.commit, attemptsRoot: options.attemptsRoot, privateRegistryRoot: options.privateRegistryRoot,
     excludedPaths: ['.juno_task', 'hidden-graders', 'reference-solutions', ...(options.excludedPaths ?? [])],
-    ...(options.controllerPaths === undefined ? {} : { controllerPaths: options.controllerPaths }) });
+    ...(options.controllerPaths === undefined ? {} : { controllerPaths: options.controllerPaths }),
+    ...(options.deniedPaths === undefined ? {} : { deniedPaths: options.deniedPaths }) });
   const run = async () => dispatch(options.plan, workspace, options.intentRoot, options.adapter);
   const lockedResources = options.plan.resources.filter((item) => item.access !== 'read').map(({ type, id }) => ({ type, id }));
   const terminal = options.locks === undefined ? await run() : await options.locks.withResources(lockedResources, run);
@@ -231,7 +233,7 @@ export class WorkflowRunnerHarnessAdapter implements HarnessAdapter {
     const args = ['--workflow', invocation.workflow_path, ...Object.entries(invocation.variables).flatMap(([key, value]) => ['--var', `${key}=${workflowVariable(value)}`]), ...this.#extraArgs];
     const started = new Date();
     const result = await runCapturedProcess(this.#executable, args, { cwd: request.cwd, environment: request.environment,
-      timeoutMs: request.timeoutMs ?? this.#timeoutMs });
+      timeoutMs: request.timeoutMs ?? this.#timeoutMs, ...(request.deniedPaths === undefined ? {} : { deniedPaths: request.deniedPaths }) });
     const ended = new Date(); const output = `${result.stdout}${result.stderr}`;
     const sessionId = output.match(/(?:session[_ ]id|Session ID)[:= ]+([A-Za-z0-9._:-]+)/iu)?.[1] ?? null;
     return { status: result.timedOut ? 'timeout' : result.signal !== null ? 'failure' : result.code === 0 ? 'success' : 'failure',

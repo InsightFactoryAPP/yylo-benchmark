@@ -385,7 +385,9 @@ export async function doctorSnapshot(options: SnapshotDoctorOptions): Promise<Sn
     if (value === undefined) continue;
     if (ROUTING_ENV.test(name)) throw new Error(`doctor: canonical routing environment is present: ${name}`);
     if (isCredentialEnvironmentName(name)) throw new Error(`doctor: credential environment is present: ${name}`);
-    if ((options.canonicalControllerPaths ?? []).some((controller) => value.includes(controller))) throw new Error(`doctor: canonical controller reference is present in environment: ${name}`);
+    if ([...(options.canonicalControllerPaths ?? []), ...automaticSourceReferences].some((protectedPath) => value.includes(protectedPath))) {
+      throw new Error(`doctor: protected source or controller reference is present in environment: ${name}`);
+    }
   }
   const fsck = (await git(repository, ['fsck', '--full', '--no-reflogs', '--strict', '--unreachable'])).toString('utf8');
   if (/^(?:unreachable|dangling) /mu.test(fsck)) throw new Error('doctor: unreachable or extra Git objects detected');

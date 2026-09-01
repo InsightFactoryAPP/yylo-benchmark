@@ -41,6 +41,8 @@ export interface HarnessRequest {
   readonly resumeToken?: string;
   /** Per-operation bound; adapters must prefer it over their profile default. */
   readonly timeoutMs?: number;
+  /** Host paths that the candidate process is forbidden to read or write. */
+  readonly deniedPaths?: readonly string[];
 }
 
 export type HarnessReconcileResult =
@@ -352,7 +354,8 @@ export class YyloPiHarnessAdapter implements HarnessAdapter {
     const prompt = promptForInvocation(request.invocation, this.#prompt);
     const args = ['--execution-envelope', 'pi', '--model', request.requestedModel, ...this.#extraArgs, '-p', prompt];
     const result = await runCapturedProcess(this.#executable, args, { cwd: request.cwd,
-      environment: { ...request.environment, YYLO_EXECUTION_EVIDENCE_FD: '3' }, timeoutMs: request.timeoutMs ?? this.#timeoutMs, extraPipeCount: 1 });
+      environment: { ...request.environment, YYLO_EXECUTION_EVIDENCE_FD: '3' }, timeoutMs: request.timeoutMs ?? this.#timeoutMs, extraPipeCount: 1,
+      ...(request.deniedPaths === undefined ? {} : { deniedPaths: request.deniedPaths }) });
     const ended = new Date();
     let envelope: Record<string, unknown> = {};
     try { envelope = JSON.parse(result.stdout.trim()) as Record<string, unknown>; } catch { /* retained as missing identity/session */ }

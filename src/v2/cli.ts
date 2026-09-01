@@ -240,6 +240,17 @@ export async function writeV2Plan(cwd: string, planPath: string, plan: V2Experim
   await writeFile(path.resolve(cwd, planPath), `${serializeV2(plan)}\n`, { flag: 'wx', mode: 0o600 });
 }
 
+/** Resolve controller-only retained paths without exposing them to a candidate environment. */
+export async function resolveV2RuntimePaths(input: { readonly cwd: string; readonly configPath?: string; readonly plan: V2ExperimentPlan;
+  readonly attemptIndex: number }): Promise<{ attemptsRoot: string; workspaceRoot: string; repository: string; registry: string; intents: string }> {
+  const loaded = await loadV2Config(input.cwd, input.configPath);
+  const attempt = input.plan.attempts[input.attemptIndex];
+  if (attempt === undefined) throw new Error('runtime path attempt index is out of range');
+  const root = roots(input.cwd, loaded.config); const attemptsRoot = attemptWorkspaceRoot(root, attempt);
+  const workspaceRoot = path.join(attemptsRoot, attempt.attempt_id.slice(7));
+  return { attemptsRoot, workspaceRoot, repository: path.join(workspaceRoot, 'repository'), registry: root.registry, intents: root.intents };
+}
+
 class CommandHarnessAdapter implements HarnessAdapter {
   public readonly profileId: string; public readonly version = '2'; readonly #config: CommandHarnessConfig;
   public constructor(profileId: string, config: CommandHarnessConfig) { this.profileId = profileId; this.#config = config; }
@@ -249,7 +260,8 @@ class CommandHarnessAdapter implements HarnessAdapter {
   public async run(request: HarnessRequest): Promise<HarnessTerminalInput> {
     const started = new Date();
     const output = await captured(this.#config.executable, this.#config.arguments, request.cwd, { ...request.environment,
-      YYLO_BENCHMARK_REQUEST_JSON: canonicalJson({ attemptId: request.attemptId, requestedModel: request.requestedModel, invocation: request.invocation ?? null }) }, request.timeoutMs ?? this.#config.timeout_ms);
+      YYLO_BENCHMARK_REQUEST_JSON: canonicalJson({ attemptId: request.attemptId, requestedModel: request.requestedModel, invocation: request.invocation ?? null }) },
+      request.timeoutMs ?? this.#config.timeout_ms, undefined, request.deniedPaths);
     if (output.timedOut) {
       const ended = new Date(); return { status: 'timeout', exit_code: output.code, signal: output.signal, session_id: null,
         resolved_provider: null, resolved_model: null, observed_provider: null, observed_model: null, harness_version: this.version,
@@ -272,10 +284,12 @@ function harnessAdapter(id: string, config: HarnessConfig): HarnessAdapter {
     ...(config.arguments === undefined ? {} : { extraArgs: config.arguments }) });
 }
 
-async function captured(executable: string, args: readonly string[], cwd: string, environment: NodeJS.ProcessEnv, timeoutMs: number, stdin?: string): Promise<{
+async function captured(executable: string, args: readonly string[], cwd: string, environment: NodeJS.ProcessEnv, timeoutMs: number, stdin?: string,
+  deniedPaths?: readonly string[]): Promise<{
   pid: number | null; code: number | null; signal: string | null; stdout: string; timedOut: boolean; runtimeMs: number;
 }> {
-  const result = await runCapturedProcess(executable, args, { cwd, environment, timeoutMs, ...(stdin === undefined ? {} : { stdin }) });
+  const result = await runCapturedProcess(executable, args, { cwd, environment, timeoutMs, ...(stdin === undefined ? {} : { stdin }),
+    ...(deniedPaths === undefined ? {} : { deniedPaths }) });
   return { pid: result.pid, code: result.code, signal: result.signal, stdout: result.stdout, timedOut: result.timedOut, runtimeMs: result.runtimeMs };
 }
 
@@ -316,24 +330,34 @@ function assertPlanConfigBinding(plan: V2ExperimentPlan, config: V2Config): void
   }
 }
 
-function roots(cwd: string, config: V2Config): { attempts: string; registry: string; intents: string; evaluations: string; isolatedAttempts: boolean } {
-  const isolatedDefaults = config.workspace.attempts_root === '.yylo-benchmark/attempts'
+function roots(cwd: string, config: V2Config): { attempts: string; registry: string; intents: string; evaluations: string; isolatedAttempts: true; enforcedBoundary: boolean } {
+  const enforcedBoundary = config.workspace.attempts_root === '.yylo-benchmark/attempts'
     && config.workspace.registry_root === '.yylo-benchmark/registry';
-  if (!isolatedDefaults) {
-    const registry = path.resolve(cwd, config.workspace.registry_root);
-    return { attempts: path.resolve(cwd, config.workspace.attempts_root), registry, intents: path.join(registry, 'v2', 'intents'),
-      evaluations: path.join(registry, 'v2', 'evaluations'), isolatedAttempts: false };
-  }
   const namespace = canonicalHash({ source_repository: path.resolve(cwd), attempts_root: config.workspace.attempts_root,
     registry_root: config.workspace.registry_root }).slice(7);
   const attempts = path.join(os.tmpdir(), `yylo-benchmark-attempt-${namespace}`);
   const registry = path.join(os.homedir(), '.local', 'state', 'yylo-benchmark', 'registry', namespace);
-  return { attempts, registry, intents: path.join(registry, 'v2', 'intents'), evaluations: path.join(registry, 'v2', 'evaluations'), isolatedAttempts: true };
+  return { attempts, registry, intents: path.join(registry, 'v2', 'intents'), evaluations: path.join(registry, 'v2', 'evaluations'),
+    isolatedAttempts: true, enforcedBoundary };
 }
 function attemptWorkspaceRoot(root: ReturnType<typeof roots>, attempt: AttemptPlanV2): string {
   return root.isolatedAttempts
     ? `${root.attempts}-${canonicalHash({ attempt_id: attempt.attempt_id, plan_hash: attempt.plan_hash }).slice(7)}`
     : root.attempts;
+}
+function ambientProtectedPaths(environment: NodeJS.ProcessEnv): string[] {
+  return [...new Set(Object.entries(environment).flatMap(([name, value]) => value !== undefined && name.toUpperCase() !== 'PATH'
+    && /(?:ROOT|PWD|DIR|PATH)$/iu.test(name) && path.isAbsolute(value) ? [path.resolve(value)] : []))];
+}
+function attemptBoundaryPaths(cwd: string, root: ReturnType<typeof roots>, plan: V2ExperimentPlan, attempt: AttemptPlanV2): {
+  protectedPaths: string[]; deniedPaths: string[];
+} {
+  const ownRoot = path.resolve(attemptWorkspaceRoot(root, attempt));
+  const candidates = [root.registry, ...ambientProtectedPaths(process.env),
+    ...plan.attempts.filter((item) => item.attempt_id !== attempt.attempt_id).map((item) => attemptWorkspaceRoot(root, item))];
+  const protectedPaths = [...new Set(candidates.map((item) => path.resolve(item)))]
+    .filter((item) => item !== ownRoot && !ownRoot.startsWith(`${item}${path.sep}`));
+  return { protectedPaths, deniedPaths: root.enforcedBoundary ? [path.resolve(cwd), ...protectedPaths] : [] };
 }
 function statePath(registry: string, plan: V2ExperimentPlan, attempt: AttemptPlanV2): string {
   return path.join(registry, 'v2', 'runs', plan.experiment_id.slice(7), `${attempt.attempt_id.slice(7)}.json`);
@@ -344,8 +368,12 @@ async function atomicJson(destination: string, value: unknown): Promise<void> {
 }
 function makeState(input: Omit<PersistedAttempt, 'state_hash'>): PersistedAttempt { return Object.freeze({ ...input, state_hash: canonicalHash(input) }); }
 function verifyAttemptPlan(plan: AttemptPlanV2, experiment: V2ExperimentPlan): void {
+  const parsed = AttemptPlanV2Schema.safeParse(plan);
+  if (!parsed.success) throw new Error(`attempt plan schema verification failed: ${parsed.error.issues.map((item) => item.message).join('; ')}`);
   const { plan_hash: claimed, ...core } = plan;
   if (claimed !== canonicalHash(core)) throw new Error('attempt plan integrity failed');
+  const expectedCandidateManifest = canonicalHash({ tree: plan.case.source.tree, exclusions: ['.juno_task', 'hidden-graders', 'reference-solutions'] });
+  if (plan.case.source.candidate_manifest_hash !== expectedCandidateManifest) throw new Error('attempt source candidate manifest identity failed');
   const expectedAttemptId = canonicalHash({ experiment_id: plan.experiment_id, case_hash: plan.case.normalized_input_hash, attempt_index: plan.attempt_index,
     harness_profile: plan.harness_profile, requested_model: plan.requested_model });
   if (plan.attempt_id !== expectedAttemptId || plan.experiment_id !== experiment.experiment_id
@@ -393,8 +421,12 @@ async function loadState(file: string, plan: V2ExperimentPlan, attempt: AttemptP
   }
   return Object.freeze(state);
 }
-async function verifyRetainedArtifacts(input: { cwd: string; root: ReturnType<typeof roots>; attempt: AttemptPlanV2; state: PersistedAttempt; harness: HarnessConfig }): Promise<void> {
-  const workspace = await loadAttemptWorkspace({ attemptId: input.attempt.attempt_id as `sha256:${string}`, attemptsRoot: attemptWorkspaceRoot(input.root, input.attempt) });
+async function verifyRetainedArtifacts(input: { cwd: string; root: ReturnType<typeof roots>; plan: V2ExperimentPlan; attempt: AttemptPlanV2;
+  state: PersistedAttempt; harness: HarnessConfig; protectedPaths?: readonly string[]; deniedPaths?: readonly string[] }): Promise<void> {
+  const boundary = attemptBoundaryPaths(input.cwd, input.root, input.plan, input.attempt);
+  const workspace = await loadAttemptWorkspace({ attemptId: input.attempt.attempt_id as `sha256:${string}`, attemptsRoot: attemptWorkspaceRoot(input.root, input.attempt),
+    sourceRepository: input.cwd, privateRegistryRoot: input.root.registry, controllerPaths: input.protectedPaths ?? boundary.protectedPaths,
+    deniedPaths: input.deniedPaths ?? boundary.deniedPaths });
   if (workspace.resultManifest === null) throw new Error('retained post-execution repository/workspace manifest is missing');
   await doctorAttemptWorkspace(workspace, { sourceRepository: input.cwd });
   if (workspace.receipt.receipt_hash !== input.state.evidence.workspace_receipt_hash) throw new Error('retained workspace receipt linkage mismatch');
@@ -421,10 +453,11 @@ export async function runV2Experiment(input: { readonly cwd: string; readonly co
     dispatch_count: 0, attempt_count: input.plan.attempts.length, comparison_kind: input.plan.comparison_kind };
   const root = roots(input.cwd, loaded.config); const attempts: Array<Record<string, unknown>> = []; let dispatched = 0; let reused = 0; let ambiguous = 0;
   for (const attempt of input.plan.attempts) {
+    const { protectedPaths, deniedPaths } = attemptBoundaryPaths(input.cwd, root, input.plan, attempt);
     const file = statePath(root.registry, input.plan, attempt); const retained = await loadState(file, input.plan, attempt);
     if (retained !== null) {
       const retainedHarness = loaded.config.harnesses[attempt.harness_profile]; if (retainedHarness === undefined) throw new Error(`candidate harness unavailable: ${attempt.harness_profile}`);
-      await verifyRetainedArtifacts({ cwd: input.cwd, root, attempt, state: retained, harness: retainedHarness });
+      await verifyRetainedArtifacts({ cwd: input.cwd, root, plan: input.plan, attempt, state: retained, harness: retainedHarness, protectedPaths, deniedPaths });
       reused += 1; attempts.push({ attempt_id: attempt.attempt_id, reused: true, evidence: retained.evidence,
       evaluation: { records: retained.evaluation_records, quality: retained.quality, validity: retained.validity } }); continue; }
     const attemptsRoot = attemptWorkspaceRoot(root, attempt);
@@ -434,7 +467,8 @@ export async function runV2Experiment(input: { readonly cwd: string; readonly co
     if (await exists(attemptDirectory)) {
       if (input.recovery !== true) { ambiguous += 1; attempts.push({ attempt_id: attempt.attempt_id, reused: false, recovery: 'manual', quality: 'unknown' }); continue; }
       try {
-        const workspace = await loadAttemptWorkspace({ attemptId: attempt.attempt_id as `sha256:${string}`, attemptsRoot });
+        const workspace = await loadAttemptWorkspace({ attemptId: attempt.attempt_id as `sha256:${string}`, attemptsRoot, sourceRepository: input.cwd,
+          privateRegistryRoot: root.registry, controllerPaths: protectedPaths, deniedPaths });
         await doctorAttemptWorkspace(workspace, { sourceRepository: input.cwd });
         const terminal = await recoverCaseAttempt({ plan: attempt, workspace, intentRoot: root.intents, adapter: harnessAdapter(attempt.harness_profile, harnessConfig) });
         if (terminal.recovery === 'manual') { ambiguous += 1; attempts.push({ attempt_id: attempt.attempt_id, reused: false, recovery: 'manual', quality: 'unknown' }); continue; }
@@ -443,7 +477,7 @@ export async function runV2Experiment(input: { readonly cwd: string; readonly co
       } catch { ambiguous += 1; attempts.push({ attempt_id: attempt.attempt_id, reused: false, recovery: 'manual', quality: 'unknown' }); continue; }
     } else {
       executed = await executeCaseAttempt({ plan: attempt, sourceRepository: input.cwd, attemptsRoot, privateRegistryRoot: root.registry, excludedPaths: snapshotExclusions,
-        intentRoot: root.intents, adapter: harnessAdapter(attempt.harness_profile, harnessConfig) });
+        controllerPaths: protectedPaths, deniedPaths, intentRoot: root.intents, adapter: harnessAdapter(attempt.harness_profile, harnessConfig) });
       dispatched += 1;
     }
     const profiles = input.plan.evaluator_profiles; const runtime = runtimeEvaluators(loaded.config, profiles, input.cwd);
@@ -470,7 +504,7 @@ export async function reevaluateV2Experiment(input: { readonly cwd: string; read
   for (const attempt of input.plan.attempts) {
     const file = statePath(root.registry, input.plan, attempt); const retained = await loadState(file, input.plan, attempt); if (retained === null) throw new Error('re-evaluation requires retained candidate evidence');
     const retainedHarness = loaded.config.harnesses[attempt.harness_profile]; if (retainedHarness === undefined) throw new Error(`candidate harness unavailable: ${attempt.harness_profile}`);
-    await verifyRetainedArtifacts({ cwd: input.cwd, root, attempt, state: retained, harness: retainedHarness }); verified.push({ attempt, retained, file });
+    await verifyRetainedArtifacts({ cwd: input.cwd, root, plan: input.plan, attempt, state: retained, harness: retainedHarness }); verified.push({ attempt, retained, file });
   }
   for (const { attempt, retained, file } of verified) {
     const priorGenerations = retained.evaluation_records.filter((item) => item.evaluator_profile_id === profile.profileId).map((item) => item.evaluator_generation);
@@ -510,7 +544,7 @@ export async function doctorV2Experiment(input: { readonly cwd: string; readonly
     const state = await loadState(statePath(root.registry, input.plan, attempt), input.plan, attempt);
     if (state !== null) {
       const retainedHarness = loaded.config.harnesses[attempt.harness_profile]; if (retainedHarness === undefined) throw new Error(`candidate harness unavailable: ${attempt.harness_profile}`);
-      await verifyRetainedArtifacts({ cwd: input.cwd, root, attempt, state, harness: retainedHarness });
+      await verifyRetainedArtifacts({ cwd: input.cwd, root, plan: input.plan, attempt, state, harness: retainedHarness });
       retained += 1; evidenceIds.push(state.evidence.evidence_hash); evaluationIds.push(...state.evaluation_records.map((item) => item.evaluation_id));
     }
     else if (await exists(path.join(attemptWorkspaceRoot(root, attempt), attempt.attempt_id.slice(7)))) ambiguous += 1;
@@ -531,7 +565,7 @@ export async function reportV2Experiment(input: { readonly cwd: string; readonly
     const state = await loadState(statePath(root.registry, input.plan, attempt), input.plan, attempt);
     if (state !== null) {
       const retainedHarness = loaded.config.harnesses[attempt.harness_profile]; if (retainedHarness === undefined) throw new Error(`candidate harness unavailable: ${attempt.harness_profile}`);
-      await verifyRetainedArtifacts({ cwd: input.cwd, root, attempt, state, harness: retainedHarness }); states.push(state);
+      await verifyRetainedArtifacts({ cwd: input.cwd, root, plan: input.plan, attempt, state, harness: retainedHarness }); states.push(state);
     }
   }
   if (states.length !== input.plan.attempts.length) throw new Error(`report: planned attempt chain is incomplete (retained=${states.length}, planned=${input.plan.attempts.length})`);

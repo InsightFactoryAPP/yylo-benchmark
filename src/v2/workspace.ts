@@ -21,7 +21,7 @@ export interface AttemptWorkspaceReceiptV2 {
   };
   readonly isolation: {
     readonly git_objects: 'isolated';
-    readonly host_filesystem: 'trusted';
+    readonly host_filesystem: 'trusted' | 'selectively_sandboxed';
     readonly container: 'none';
     readonly sibling_discovery: 'not_exposed';
     readonly private_registry: 'not_exposed';
@@ -41,6 +41,7 @@ export interface AttemptWorkspaceV2 {
   readonly snapshot: SnapshotManifest;
   readonly resultManifest: RepositoryResultManifest | null;
   readonly controllerPaths: readonly string[];
+  readonly deniedPaths: readonly string[];
   /** True only for paths intentionally inside this attempt's candidate-visible repository. */
   assertCandidateVisible(candidate: string): boolean;
 }
@@ -53,6 +54,7 @@ export interface CreateAttemptWorkspaceOptions {
   readonly privateRegistryRoot: string;
   readonly excludedPaths?: readonly string[];
   readonly controllerPaths?: readonly string[];
+  readonly deniedPaths?: readonly string[];
   readonly inheritedEnvironment?: NodeJS.ProcessEnv;
 }
 
@@ -82,10 +84,17 @@ function candidateEnvironment(options: {
   cache: string;
   config: string;
   home: string;
+  protectedPaths: readonly string[];
 }): Readonly<NodeJS.ProcessEnv> {
   const environment: NodeJS.ProcessEnv = {};
+  const protectedPaths = [...new Set(options.protectedPaths.map((item) => path.resolve(item)))];
+  const disclosed = (value: string) => protectedPaths.some((item) => value.includes(item));
   for (const [name, value] of Object.entries(options.inherited)) {
-    if (value !== undefined && !ROUTING.test(name) && !isCredentialEnvironmentName(name)) environment[name] = value;
+    if (value === undefined || ROUTING.test(name) || isCredentialEnvironmentName(name)) continue;
+    if (name.toUpperCase() === 'PATH') {
+      const safe = value.split(path.delimiter).filter((item) => item !== '' && !disclosed(path.resolve(item))).join(path.delimiter);
+      if (safe !== '') environment[name] = safe;
+    } else if (!disclosed(value)) environment[name] = value;
   }
   Object.assign(environment, {
     HOME: options.home,
@@ -106,6 +115,7 @@ export async function createAttemptWorkspace(options: CreateAttemptWorkspaceOpti
   const digest = digestFromAttemptId(options.attemptId);
   const attemptsRoot = path.resolve(options.attemptsRoot);
   const registryRoot = path.resolve(options.privateRegistryRoot);
+  const protectedPaths = [...new Set([path.resolve(options.sourceRepository), registryRoot, ...(options.controllerPaths ?? []).map((item) => path.resolve(item))])];
   if (inside(attemptsRoot, registryRoot) || inside(registryRoot, attemptsRoot)) {
     throw new Error('private registry and attempt roots must be disjoint');
   }
@@ -130,7 +140,7 @@ export async function createAttemptWorkspace(options: CreateAttemptWorkspaceOpti
     excludedPaths: [...new Set(mandatoryExclusions)],
   });
   await chmod(repository, 0o700);
-  const environment = candidateEnvironment({ inherited: options.inheritedEnvironment ?? process.env, repository, temporary, cache, config, home });
+  const environment = candidateEnvironment({ inherited: options.inheritedEnvironment ?? process.env, repository, temporary, cache, config, home, protectedPaths });
   const core = {
     schema_version: ATTEMPT_WORKSPACE_SCHEMA_VERSION,
     attempt_id: options.attemptId,
@@ -141,7 +151,7 @@ export async function createAttemptWorkspace(options: CreateAttemptWorkspaceOpti
     roots: { repository: 'repository', temporary: 'tmp', cache: 'cache', config: 'config', home: 'home' },
     isolation: {
       git_objects: 'isolated' as const,
-      host_filesystem: 'trusted' as const,
+      host_filesystem: (options.deniedPaths?.length ?? 0) > 0 ? 'selectively_sandboxed' as const : 'trusted' as const,
       container: 'none' as const,
       sibling_discovery: 'not_exposed' as const,
       private_registry: 'not_exposed' as const,
@@ -161,12 +171,14 @@ export async function createAttemptWorkspace(options: CreateAttemptWorkspaceOpti
     receipt,
     snapshot,
     resultManifest: null,
-    controllerPaths: Object.freeze([...(options.controllerPaths ?? [])]),
+    controllerPaths: Object.freeze(protectedPaths), deniedPaths: Object.freeze([...(options.deniedPaths ?? [])]),
     assertCandidateVisible(candidate: string): boolean { return inside(canonicalRepository, candidate); },
   });
 }
 
-export async function loadAttemptWorkspace(options: Pick<CreateAttemptWorkspaceOptions, 'attemptId' | 'attemptsRoot' | 'inheritedEnvironment'>): Promise<AttemptWorkspaceV2> {
+export async function loadAttemptWorkspace(options: Pick<CreateAttemptWorkspaceOptions, 'attemptId' | 'attemptsRoot' | 'inheritedEnvironment'> & {
+  readonly sourceRepository?: string; readonly privateRegistryRoot?: string; readonly controllerPaths?: readonly string[]; readonly deniedPaths?: readonly string[];
+}): Promise<AttemptWorkspaceV2> {
   const root = path.join(path.resolve(options.attemptsRoot), digestFromAttemptId(options.attemptId));
   const value = JSON.parse(await readFile(path.join(root, '.workspace.json'), 'utf8')) as { receipt?: AttemptWorkspaceReceiptV2; snapshot?: SnapshotManifest };
   let resultManifest: RepositoryResultManifest | null = null;
@@ -185,10 +197,14 @@ export async function loadAttemptWorkspace(options: Pick<CreateAttemptWorkspaceO
   const config = path.join(root, receipt.roots.config);
   const home = path.join(root, receipt.roots.home);
   const canonicalRepository = await realpath(repository);
-  const environment = candidateEnvironment({ inherited: options.inheritedEnvironment ?? process.env, repository, temporary, cache, config, home });
+  const protectedPaths = [...new Set([...(options.sourceRepository === undefined ? [] : [path.resolve(options.sourceRepository)]),
+    ...(options.privateRegistryRoot === undefined ? [] : [path.resolve(options.privateRegistryRoot)]),
+    ...(options.controllerPaths ?? []).map((item) => path.resolve(item))])];
+  const environment = candidateEnvironment({ inherited: options.inheritedEnvironment ?? process.env, repository, temporary, cache, config, home, protectedPaths });
   return Object.freeze({ root, repository, temporaryRoot: temporary, cacheRoot: cache, configRoot: config, homeRoot: home,
     candidateEnvironment: environment, receipt: Object.freeze(receipt), snapshot: Object.freeze(snapshot),
-    resultManifest: resultManifest === null ? null : Object.freeze(resultManifest), controllerPaths: Object.freeze([]),
+    resultManifest: resultManifest === null ? null : Object.freeze(resultManifest), controllerPaths: Object.freeze(protectedPaths),
+    deniedPaths: Object.freeze([...(options.deniedPaths ?? [])]),
     assertCandidateVisible(candidate: string): boolean { return inside(canonicalRepository, candidate); } });
 }
 

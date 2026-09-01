@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { canonicalHash } from '../../src/contracts/canonical.js';
 import { createProgram, runCli } from '../../src/cli/program.js';
 import { assertProcessTreeSupported, runCapturedProcess } from '../../src/v2/process.js';
-import { doctorV2Experiment, parseV2ExperimentPlan, reportV2Experiment, type V2ExperimentPlan } from '../../src/v2/cli.js';
+import { doctorV2Experiment, parseV2ExperimentPlan, reportV2Experiment, resolveV2RuntimePaths, type V2ExperimentPlan } from '../../src/v2/cli.js';
 import { createAttemptWorkspace, doctorAttemptWorkspace } from '../../src/v2/workspace.js';
 
 const execFileAsync = promisify(execFile);
@@ -53,8 +53,9 @@ function record(profile: typeof gate, quality: 'resolved' | 'unresolved') {
 describe('fT49yV terminal successor contracts', () => {
   it('8lyWtv-001 excludes common ambient cloud credentials and doctor rejects the identical classes', async () => {
     const root = await cliFixture(); const commit = (await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim();
+    const external = await mkdtemp(path.join(os.tmpdir(), 'yylo-credential-boundary-'));
     const workspace = await createAttemptWorkspace({ attemptId: hash('a'), sourceRepository: root, baseCommit: commit,
-      attemptsRoot: path.join(root, '.outside-attempts'), privateRegistryRoot: path.join(root, '.outside-registry'),
+      attemptsRoot: path.join(external, 'attempts'), privateRegistryRoot: path.join(external, 'registry'),
       inheritedEnvironment: { PATH: process.env.PATH, AWS_ACCESS_KEY_ID: 'access', AWS_SECRET_ACCESS_KEY: 'secret', AWS_SESSION_TOKEN: 'session',
         GOOGLE_APPLICATION_CREDENTIALS: '/credentials.json', AZURE_CLIENT_SECRET: 'azure', SSH_AUTH_SOCK: '/agent.sock',
         AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: '/v2/credentials', AWS_CONTAINER_CREDENTIALS_FULL_URI: 'http://169.254.170.2/credentials',
@@ -85,7 +86,7 @@ describe('fT49yV terminal successor contracts', () => {
     const root = await cliFixture(); await writeFile(path.join(root, 'task.md'), 'mutate repository');
     await execFileAsync('git', ['add', 'task.md'], { cwd: root }); await execFileAsync('git', ['commit', '--quiet', '-m', 'mutating case'], { cwd: root });
     const plan = await capture(root, ['plan', '--task', 'task.md', '--models', 'vendor/a', '--output', 'plan.json']); await capture(root, ['run', '--plan', 'plan.json']);
-    const repository = path.join(root, '.benchmark', 'attempts', plan.attempts[0].attempt_id.slice(7), 'repository');
+    const repository = (await resolveV2RuntimePaths({ cwd: root, plan: plan as never, attemptIndex: 0 })).repository;
     const before = (await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: repository })).stdout.trim();
     await execFileAsync('git', ['checkout', '--quiet', '--detach', 'HEAD'], { cwd: repository });
     expect((await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: repository })).stdout.trim()).toBe(before);
@@ -105,7 +106,7 @@ describe('fT49yV terminal successor contracts', () => {
     await expect(capture(root, ['doctor', '--plan', 'plan.json'])).resolves.toMatchObject({ ok: true, candidate_dispatch_count: 1 });
     await expect(capture(root, ['report', '--plan', 'plan.json'])).resolves.toMatchObject({ evidence_count: 1 });
     await expect(capture(root, ['regrade', '--plan', 'plan.json', '--profile', 'gate'])).resolves.toMatchObject({ evaluator_dispatch_count: 1 });
-    const digest = plan.attempts[0].attempt_id.slice(7); const repository = path.join(root, '.benchmark', 'attempts', digest, 'repository');
+    const repository = (await resolveV2RuntimePaths({ cwd: root, plan: plan as never, attemptIndex: 0 })).repository;
     expect(await readFile(path.join(repository, 'task.md'), 'utf8')).toBe('candidate edit\n');
     expect(await readFile(path.join(repository, 'candidate-added.txt'), 'utf8')).toBe('candidate add\n');
     await writeFile(path.join(repository, 'later-drift.txt'), 'not bound');
@@ -119,11 +120,12 @@ describe('fT49yV terminal successor contracts', () => {
     for (const missing of cases) {
       const root = await cliFixture(); const plan = await capture(root, ['plan', '--task', 'task.md', '--models', 'vendor/a,vendor/b', '--output', 'plan.json']);
       await capture(root, ['run', '--plan', 'plan.json']); const attempt = plan.attempts[1]; const digest = attempt.attempt_id.slice(7);
-      const stateFile = path.join(root, '.benchmark', 'registry', 'v2', 'runs', plan.experiment_id.slice(7), `${digest}.json`);
+      const runtime = await resolveV2RuntimePaths({ cwd: root, plan: plan as never, attemptIndex: 1 });
+      const stateFile = path.join(runtime.registry, 'v2', 'runs', plan.experiment_id.slice(7), `${digest}.json`);
       if (missing === 'state') await rm(stateFile);
-      else if (missing === 'workspace') await rm(path.join(root, '.benchmark', 'attempts', digest, '.workspace.json'));
-      else if (missing === 'result-workspace') await rm(path.join(root, '.benchmark', 'attempts', digest, '.result-workspace.json'));
-      else if (missing === 'intent' || missing === 'terminal') await rm(path.join(root, '.benchmark', 'registry', 'v2', 'intents', `${digest}.${missing}.json`));
+      else if (missing === 'workspace') await rm(path.join(runtime.workspaceRoot, '.workspace.json'));
+      else if (missing === 'result-workspace') await rm(path.join(runtime.workspaceRoot, '.result-workspace.json'));
+      else if (missing === 'intent' || missing === 'terminal') await rm(path.join(runtime.intents, `${digest}.${missing}.json`));
       else {
         const state = JSON.parse(await readFile(stateFile, 'utf8')); delete state.evidence; delete state.state_hash; state.state_hash = canonicalHash(state); await writeFile(stateFile, JSON.stringify(state));
       }
@@ -150,7 +152,8 @@ describe('fT49yV terminal successor contracts', () => {
     const root = await cliFixture();
     const plan = await capture(root, ['plan', '--task', 'task.md', '--models', 'vendor/a,vendor/b', '--output', 'plan.json']);
     await capture(root, ['run', '--plan', 'plan.json']);
-    const registry = path.join(root, '.benchmark', 'registry', 'v2', 'runs', plan.experiment_id.slice(7));
+    const runtime = await resolveV2RuntimePaths({ cwd: root, plan: plan as never, attemptIndex: 0 });
+    const registry = path.join(runtime.registry, 'v2', 'runs', plan.experiment_id.slice(7));
     const first = path.join(registry, `${plan.attempts[0].attempt_id.slice(7)}.json`);
     const second = path.join(registry, `${plan.attempts[1].attempt_id.slice(7)}.json`);
     await writeFile(second, await readFile(first));
@@ -197,13 +200,15 @@ describe('fT49yV terminal successor contracts', () => {
 
   it('l9V5Xy-A2 rejects workspace and retained-terminal drift before doctor, report, or reuse', async () => {
     const workspaceRoot = await cliFixture(); const workspacePlan = await capture(workspaceRoot, ['plan', '--task', 'task.md', '--models', 'vendor/a', '--output', 'plan.json']);
-    await capture(workspaceRoot, ['run', '--plan', 'plan.json']); const digest = workspacePlan.attempts[0].attempt_id.slice(7);
-    await writeFile(path.join(workspaceRoot, '.benchmark', 'attempts', digest, 'repository', 'drift.txt'), 'drift');
+    await capture(workspaceRoot, ['run', '--plan', 'plan.json']);
+    const workspaceRuntime = await resolveV2RuntimePaths({ cwd: workspaceRoot, plan: workspacePlan as never, attemptIndex: 0 });
+    await writeFile(path.join(workspaceRuntime.repository, 'drift.txt'), 'drift');
     await expect(capture(workspaceRoot, ['doctor', '--plan', 'plan.json'])).rejects.toThrow(/workspace|snapshot|drift|untracked|baseline/iu);
 
     const terminalRoot = await cliFixture(); const terminalPlan = await capture(terminalRoot, ['plan', '--task', 'task.md', '--models', 'vendor/a', '--output', 'plan.json']);
     await capture(terminalRoot, ['run', '--plan', 'plan.json']); const terminalDigest = terminalPlan.attempts[0].attempt_id.slice(7);
-    await rm(path.join(terminalRoot, '.benchmark', 'registry', 'v2', 'intents', `${terminalDigest}.terminal.json`));
+    const terminalRuntime = await resolveV2RuntimePaths({ cwd: terminalRoot, plan: terminalPlan as never, attemptIndex: 0 });
+    await rm(path.join(terminalRuntime.intents, `${terminalDigest}.terminal.json`));
     await expect(capture(terminalRoot, ['report', '--plan', 'plan.json'])).rejects.toThrow(/terminal.*missing/iu);
   });
 
