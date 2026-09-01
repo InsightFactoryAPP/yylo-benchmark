@@ -56,9 +56,12 @@ describe('fT49yV terminal successor contracts', () => {
     const workspace = await createAttemptWorkspace({ attemptId: hash('a'), sourceRepository: root, baseCommit: commit,
       attemptsRoot: path.join(root, '.outside-attempts'), privateRegistryRoot: path.join(root, '.outside-registry'),
       inheritedEnvironment: { PATH: process.env.PATH, AWS_ACCESS_KEY_ID: 'access', AWS_SECRET_ACCESS_KEY: 'secret', AWS_SESSION_TOKEN: 'session',
-        GOOGLE_APPLICATION_CREDENTIALS: '/credentials.json', AZURE_CLIENT_SECRET: 'azure', SAFE_VALUE: 'retained' } });
+        GOOGLE_APPLICATION_CREDENTIALS: '/credentials.json', AZURE_CLIENT_SECRET: 'azure', SSH_AUTH_SOCK: '/agent.sock',
+        AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: '/v2/credentials', AWS_CONTAINER_CREDENTIALS_FULL_URI: 'http://169.254.170.2/credentials',
+        AWS_CONFIG_FILE: '/host/aws/config', GIT_ASKPASS: '/host/git-askpass', SSH_ASKPASS: '/host/ssh-askpass', SAFE_VALUE: 'retained' } });
     expect(workspace.candidateEnvironment).toMatchObject({ SAFE_VALUE: 'retained' });
-    for (const name of ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'GOOGLE_APPLICATION_CREDENTIALS', 'AZURE_CLIENT_SECRET']) {
+    for (const name of ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'GOOGLE_APPLICATION_CREDENTIALS', 'AZURE_CLIENT_SECRET',
+      'SSH_AUTH_SOCK', 'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI', 'AWS_CONTAINER_CREDENTIALS_FULL_URI', 'AWS_CONFIG_FILE', 'GIT_ASKPASS', 'SSH_ASKPASS']) {
       expect(workspace.candidateEnvironment[name]).toBeUndefined();
       await expect(doctorAttemptWorkspace({ ...workspace, candidateEnvironment: { ...workspace.candidateEnvironment, [name]: 'ambient' } }))
         .rejects.toThrow(new RegExp(`credential environment.*${name}`, 'iu'));
