@@ -74,11 +74,12 @@ describe('fT49yV terminal successor contracts', () => {
     const external = await mkdtemp(path.join(os.tmpdir(), 'yylo-toolchain-boundary-')); const nvm = path.join(external, 'nvm');
     const bin = path.join(nvm, 'versions', 'node', 'v22', 'bin');
     const alias = path.join(external, 'source-alias'); await symlink(root, alias);
-    await mkdir(path.join(root, 'child'));
+    await mkdir(path.join(root, 'child')); await mkdir(path.join(root, 'bin'));
     const childAlias = path.join(external, 'child-alias'); await symlink(path.join(root, 'child'), childAlias);
+    const parentPathAlias = `${childAlias}/../bin`;
     const workspace = await createAttemptWorkspace({ attemptId: hash('b'), sourceRepository: root, baseCommit: commit,
       attemptsRoot: path.join(external, 'attempts'), privateRegistryRoot: path.join(external, 'registry'),
-      inheritedEnvironment: { NVM_DIR: nvm, PATH: bin, UNRELATED_ALIAS: path.join(root, 'intermediate', '..'), SOURCE_GLOB: `${alias}/*.secret`,
+      inheritedEnvironment: { NVM_DIR: nvm, PATH: `${bin}${path.delimiter}${parentPathAlias}`, UNRELATED_ALIAS: path.join(root, 'intermediate', '..'), SOURCE_GLOB: `${alias}/*.secret`,
         PARENT_ALIAS: `${childAlias}/../task.md` } });
     expect(workspace.candidateEnvironment).toMatchObject({ NVM_DIR: nvm, PATH: bin });
     expect(workspace.candidateEnvironment.UNRELATED_ALIAS).toBeUndefined();
@@ -88,6 +89,8 @@ describe('fT49yV terminal successor contracts', () => {
     await expect(doctorAttemptWorkspace({ ...workspace, candidateEnvironment: { ...workspace.candidateEnvironment, SOURCE_GLOB: `${alias}/*.secret` } },
       { sourceRepository: root })).rejects.toThrow(/protected source or controller reference/iu);
     await expect(doctorAttemptWorkspace({ ...workspace, candidateEnvironment: { ...workspace.candidateEnvironment, PARENT_ALIAS: `${childAlias}/../task.md` } },
+      { sourceRepository: root })).rejects.toThrow(/protected source or controller reference/iu);
+    await expect(doctorAttemptWorkspace({ ...workspace, candidateEnvironment: { ...workspace.candidateEnvironment, PATH: `${bin}${path.delimiter}${parentPathAlias}` } },
       { sourceRepository: root })).rejects.toThrow(/protected source or controller reference/iu);
   });
 
