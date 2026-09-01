@@ -15,6 +15,8 @@ export interface HarnessArtifact { readonly role: string; readonly sha256: `sha2
 
 export interface HarnessTerminalInput {
   readonly status: 'success' | 'failure' | 'timeout' | 'cancelled' | 'invalid';
+  /** Adapter-owned process truth applied only after validating the emitted status. */
+  readonly measured_status?: 'failure';
   readonly exit_code: number | null;
   readonly signal: string | null;
   readonly session_id: string | null;
@@ -209,10 +211,16 @@ function normalizeTerminalInput(value: unknown): { readonly input: NormalizedHar
     if (typeof candidate === 'string' && Number.isFinite(Date.parse(candidate))) return candidate;
     malformed(field, 'an ISO timestamp'); return null;
   };
+  const supportedFields = new Set(['status', 'measured_status', 'exit_code', 'signal', 'session_id', 'resolved_provider', 'resolved_model',
+    'observed_provider', 'observed_model', 'harness_version', 'started_at', 'ended_at', 'runtime_ms', 'cost', 'process', 'artifacts', 'raw_output']);
+  for (const field of Object.keys(source)) if (!supportedFields.has(field)) malformed(field, 'a supported command-harness field');
   const statuses = new Set(['success', 'failure', 'timeout', 'cancelled', 'invalid']);
-  const status = typeof source['status'] === 'string' && statuses.has(source['status'])
+  const emittedStatus = typeof source['status'] === 'string' && statuses.has(source['status'])
     ? source['status'] as HarnessTerminalInput['status']
     : (malformed('status', 'a supported terminal status'), 'invalid' as const);
+  const measuredStatus = source['measured_status'];
+  if (measuredStatus !== undefined && measuredStatus !== 'failure') malformed('measured_status', 'failure when present');
+  const status = measuredStatus === 'failure' ? 'failure' as const : emittedStatus;
   const runtime = source['runtime_ms'];
   const runtime_ms = Number.isSafeInteger(runtime) && (runtime as number) >= 0
     ? runtime as number : (malformed('runtime_ms', 'a non-negative safe integer'), null);

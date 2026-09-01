@@ -360,7 +360,7 @@ class CommandHarnessAdapter implements HarnessAdapter {
     const terminal = (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
       ? parsed : { status: 'malformed_payload', raw_output: output.stdout }) as unknown as HarnessTerminalInput; const ended = new Date();
     const measuredFailure = output.code !== 0 || output.signal !== null;
-    return { ...terminal, status: measuredFailure ? 'failure' : terminal.status, exit_code: output.code, signal: output.signal,
+    return { ...terminal, ...(measuredFailure ? { measured_status: 'failure' as const } : {}), exit_code: output.code, signal: output.signal,
       started_at: started.toISOString(), ended_at: ended.toISOString(), runtime_ms: output.runtimeMs,
       process: { pid: output.pid, command: [this.#config.executable, ...this.#config.arguments] } };
   }
