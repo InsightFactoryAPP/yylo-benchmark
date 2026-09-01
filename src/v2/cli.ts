@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import { canonicalHash, canonicalJson, sha256Hex, type JsonValue } from '../contracts/canonical.js';
 import { caseInvocation, compileTaskAttempt, compileWorkflowAttempt, evidenceFromTerminal, executeCaseAttempt, nonModelInputHash, recoverCaseAttempt } from './adapters.js';
 import { evaluateAttempt, reevaluateAttempt, type DeterministicEvaluator, type EvaluationComposition, type EvaluatorProfile, type RichEvaluationRecord } from './evaluators.js';
-import { loadHarnessTerminalForVerification, YyloPiHarnessAdapter, type HarnessAdapter, type HarnessRequest, type HarnessReconcileResult, type HarnessTerminalInput } from './harness.js';
+import { loadHarnessTerminalForVerification, withMeasuredProcessFailure, YyloPiHarnessAdapter, type HarnessAdapter, type HarnessRequest, type HarnessReconcileResult, type HarnessTerminalInput } from './harness.js';
 import { AttemptEvidenceV2Schema, AttemptPlanV2Schema, EvaluationRecordV2Schema, ReportProvenanceV2Schema, ReportV2Schema, serializeV2, type AttemptEvidenceV2, type AttemptPlanV2 } from './contracts.js';
 import { WorkflowRunnerHarnessAdapter } from './adapters.js';
 import { doctorAttemptWorkspace, loadAttemptWorkspace } from './workspace.js';
@@ -360,9 +360,10 @@ class CommandHarnessAdapter implements HarnessAdapter {
     const terminal = (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
       ? parsed : { status: 'malformed_payload', raw_output: output.stdout }) as unknown as HarnessTerminalInput; const ended = new Date();
     const measuredFailure = output.code !== 0 || output.signal !== null;
-    return { ...terminal, ...(measuredFailure ? { measured_status: 'failure' as const } : {}), exit_code: output.code, signal: output.signal,
+    const measured = { ...terminal, exit_code: output.code, signal: output.signal,
       started_at: started.toISOString(), ended_at: ended.toISOString(), runtime_ms: output.runtimeMs,
       process: { pid: output.pid, command: [this.#config.executable, ...this.#config.arguments] } };
+    return measuredFailure ? withMeasuredProcessFailure(measured) : measured;
   }
 }
 
