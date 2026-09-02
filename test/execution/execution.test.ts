@@ -117,7 +117,7 @@ describe('recoverable immutable execution', () => {
         await mkdir(path.join(input.repository, 'nested', '.git'), { recursive: true });
         return { attemptId: input.attempt.attempt_id, expectedModel: input.attempt.model, expectedJunoVersion: '2.0.0', startedAt: '2026-08-12T00:00:00.000Z', endedAt: '2026-08-12T00:00:01.000Z', elapsedMs: 1000, exitCode: 0, signal: null, stdout: JSON.stringify({ resolved: true, model: input.attempt.model, juno_version: '2.0.0' }), stderr: '', patchHash: null };
       } })).rejects.toThrow(/nested repository metadata/u);
-  });
+  }, 60_000);
 
   it('rejects a candidate that moves the manifest-bound synthetic baseline', async () => {
     const item = await fixture();

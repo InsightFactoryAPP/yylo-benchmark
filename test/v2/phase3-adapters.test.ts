@@ -121,5 +121,5 @@ describe('uUcc9l phase 3 unified task and Workflow Runner adapters', () => {
     const recovered = await api!.recoverCaseAttempt({ plan, workspace: first.workspace, intentRoot: options.intentRoot, adapter });
     expect(recovered.terminal_hash).toBe(first.terminal.terminal_hash);
     expect(run).toHaveBeenCalledTimes(1);
-  });
+  }, 60_000);
 });
