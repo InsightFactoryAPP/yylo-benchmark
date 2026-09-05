@@ -1,5 +1,7 @@
 # YYLO Benchmark
 
+[![Mentioned in Awesome Coding Agents](https://awesome.re/mentioned-badge.svg)](https://github.com/kailiu42/awesome-coding-agents)
+
 <p align="center">
   <a href="https://yylo.dev"><strong>yylo.dev</strong></a> ·
   <a href="https://github.com/yylo-dev/yylo">YYLO CLI</a> ·
